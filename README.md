@@ -31,3 +31,6 @@ npm run dev
 ```sh
 npm run build
 ```
+# 依赖记录
+ npm install  @antv/g6 --save
+npm install vditor --save
