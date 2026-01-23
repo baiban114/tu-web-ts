@@ -56,13 +56,19 @@ const initGraphs = () => {
 
 onMounted(() => {
   if (vditorRef.value) {
+    // 直接传递配置对象给Vditor构造函数
     vditorInstance.value = new Vditor(vditorRef.value, {
       height: props.height,
       width: props.width,
       value: props.content,
-      mode: 'wysiwyg',
+      mode: 'wysiwyg' as const,
       cache: { enable: false },
-      customWysiwygToolbar: (toolbar: any) => toolbar,
+      // 设置toolbarConfig为正确的对象格式，hide为true表示隐藏工具栏
+      toolbarConfig: {
+        hide: true
+      },
+      // 确保不使用任何自定义工具栏
+      toolbar: [],
       input: (value: string) => {
         emit('content-change', value);
       },
@@ -73,39 +79,6 @@ onMounted(() => {
           initGraphs();
         }, 0);
       },
-      // 添加自定义工具栏按钮
-      toolbar: [
-        'bold', 'italic', 'strike', '|',
-        'h1', 'h2', 'h3', '|',
-        'list', 'ordered-list', 'check', '|',
-        'link', 'image', '|',
-        {
-          name: 'insert-graph',
-          icon: '<svg width="16" height="16" viewBox="0 0 16 16"><path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h10A1.5 1.5 0 0 1 14 2.5v10a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 1 12.5v-10zM2.5 2a.5.5 0 0 0-.5.5v10a.5.5 0 0 0 .5.5h10a.5.5 0 0 0 .5-.5v-10a.5.5 0 0 0-.5-.5h-10zM3 3v8h2V7h3V5H5V3H3z" fill="currentColor"></path></svg>',
-          tipPosition: 'n',
-          tip: '插入图表',
-          click: () => {
-            // 插入图表容器
-            const graphData = {
-              nodes: [
-                { id: 'node-1', style: { x: 100, y: 100 }, label: '节点1' },
-                { id: 'node-2', style: { x: 300, y: 100 }, label: '节点2' },
-              ],
-              edges: [
-                { id: 'edge-1', source: 'node-1', target: 'node-2' },
-              ],
-            };
-            const graphDataStr = JSON.stringify(graphData).replace(/"/g, '&quot;');
-            const graphHtml = `<div class="g6-graph-container" data-graph-data="${graphDataStr}" style="width: 100%; height: 400px; border: 1px solid #d9d9d9; border-radius: 4px; background: #fafafa;"></div>`;
-            
-            vditorInstance.value?.insertValue(graphHtml);
-            // 重新初始化图表
-            setTimeout(() => {
-              initGraphs();
-            }, 0);
-          },
-        },
-      ],
     });
   }
 });
@@ -143,5 +116,28 @@ watch(
   border-radius: 4px;
   min-height: 300px;
   overflow: hidden;
+}
+/* 彻底隐藏工具栏 */
+.vditor-container :deep(.vditor-toolbar) {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+/* 确保悬停时也不显示工具栏 */
+.vditor-container :deep(.vditor-toolbar:hover) {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+/* 确保工具栏的任何变体都被隐藏 */
+.vditor-container :deep(.vditor-toolbar--hide) {
+  display: none !important;
+  height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
 }
 </style>

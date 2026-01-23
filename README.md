@@ -34,3 +34,4 @@ npm run build
 # 依赖记录
  npm install  @antv/g6 --save
 npm install vditor --save
+npm install @antv/x6 --save
