@@ -189,19 +189,23 @@ onMounted(() => {
       },
       // 确保不使用任何自定义工具栏
       toolbar: [],
-      input: (value: string) => {
-        emit('content-change', value);
-        // 内容变化时更新高度
-        setTimeout(() => {
-          updateHeight();
-        }, 0);
+      // 禁用所有工具栏相关功能
+      hint: { 
+        enabled: false 
       },
-      // 使用after钩子在渲染完成后初始化图表
+      // 避免自定义工具栏函数问题
       after: () => {
         // 延迟一下，确保DOM已经渲染完成
         setTimeout(() => {
           initGraphs();
           // 初始化完成后更新高度
+          updateHeight();
+        }, 0);
+      },
+      input: (value: string) => {
+        emit('content-change', value);
+        // 内容变化时更新高度
+        setTimeout(() => {
           updateHeight();
         }, 0);
       },

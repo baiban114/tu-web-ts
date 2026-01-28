@@ -114,53 +114,7 @@ const createNewLineBlock = (position: number): Block => {
     id: generateId(),
     type: 'line',
     title: '新的时间轴',
-    timelineData: [
-      {
-        id: 'event-1',
-        title: 'Design',
-        content: 'UI/UX design',
-        date: '2024-02',
-        color: '#4169E1',
-        lightColor: 'rgba(65, 105, 225, 0.1)',
-        type: 'normal'
-      },
-      {
-        id: 'event-2',
-        title: 'Build',
-        content: 'Development',
-        date: '2024-03',
-        color: '#FF8C00',
-        lightColor: 'rgba(255, 140, 0, 0.1)',
-        type: 'normal'
-      },
-      {
-        id: 'milestone-1',
-        title: 'V1.0',
-        content: 'First release',
-        date: '2024-04',
-        color: '#4169E1',
-        lightColor: 'rgba(65, 105, 225, 0.1)',
-        type: 'milestone'
-      },
-      {
-        id: 'event-3',
-        title: 'Test',
-        content: 'QA testing',
-        date: '2024-05',
-        color: '#FF1493',
-        lightColor: 'rgba(255, 20, 147, 0.1)',
-        type: 'normal'
-      },
-      {
-        id: 'event-4',
-        title: 'Launch',
-        content: 'Go live',
-        date: '2024-06',
-        color: '#2E8B57',
-        lightColor: 'rgba(46, 139, 87, 0.1)',
-        type: 'normal'
-      }
-    ]
+    timelineData: []
   };
 };
 
@@ -388,6 +342,17 @@ const handleInsertBlockAtCursor = () => {
     showBlockInsert.value = false;
   }
 };
+
+// 获取block的属性，排除id和type
+const getBlockProperties = (block: Block) => {
+  const properties: Record<string, any> = {};
+  for (const [key, value] of Object.entries(block)) {
+    if (key !== 'id' && key !== 'type') {
+      properties[key] = typeof value === 'object' ? JSON.stringify(value) : value;
+    }
+  }
+  return properties;
+};
 </script>
 
 <template>
@@ -466,7 +431,16 @@ const handleInsertBlockAtCursor = () => {
           v-else
           class="block-content unknown-block"
         >
-          <p>未知的 block 类型: {{ block.type }}</p>
+          <h3>未知的 block 类型: {{ block.type }}</h3>
+          <div class="block-info">
+            <p><strong>ID:</strong> {{ block.id }}</p>
+            <p><strong>Type:</strong> {{ block.type }}</p>
+            <div class="block-properties">
+              <p v-for="(value, key) in getBlockProperties(block)" :key="key">
+                <strong>{{ key }}:</strong> {{ value }}
+              </p>
+            </div>
+          </div>
         </div>
       </div>
       
@@ -610,10 +584,44 @@ const handleInsertBlockAtCursor = () => {
 .unknown-block {
   min-height: 100px;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #999;
-  background: #fafafa;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 15px;
+  color: #666;
+  background: #fff9f9; /* 浅红色背景表示未知类型 */
+  border: 1px dashed #ffccc7;
+}
+
+.block-info {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.block-info h3 {
+  margin: 0 0 10px 0;
+  color: #f5222d;
+  font-size: 16px;
+}
+
+.block-info p {
+  margin: 5px 0;
+  font-family: monospace;
+}
+
+.block-properties {
+  margin-top: 10px;
+  padding: 10px;
+  background-color: #f6f6f6;
+  border-radius: 4px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.block-properties p {
+  margin: 3px 0;
+  padding: 2px 0;
+  font-size: 12px;
+  word-break: break-word;
 }
 
 /* BlockInsert组件的容器样式 */
