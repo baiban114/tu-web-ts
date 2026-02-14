@@ -6,6 +6,7 @@ const emit = defineEmits<{
 }>();
 
 const handleClick = () => {
+  console.log('BlockInsert组件被点击，事件: click');
   emit('click');
 };
 </script>

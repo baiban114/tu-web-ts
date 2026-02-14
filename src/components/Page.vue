@@ -5,6 +5,7 @@ import BlockInsert from './BlockInsert.vue';
 import DrawingBoard from './DrawingBoard.vue';
 import Line from './line.vue';
 import X6Component from './X6Component.vue';
+import Toast from './Toast.vue';
 
 interface GraphData {
   nodes: Array<{
@@ -36,7 +37,7 @@ interface GraphData {
 
 export interface Block {
   id: string;
-  type: 'richtext' | 'graph' | 'line' | 'x6' | string;
+  type: 'richtext' | 'richText' | 'graph' | 'line' | 'x6' | string;
   title?: string;
   content?: string;
   graphData?: GraphData;
@@ -67,15 +68,42 @@ const emit = defineEmits<{
 }>();
 
 const blockRefs = ref<HTMLElement[]>([]);
+/** 富文本编辑器实例（按块索引），用于提取时获取带格式的 Markdown */
+const richTextEditorRefs = ref<Record<number, { getSelectionAsMarkdown: () => string }>>({});
 const hasSelection = ref(false);
 const selectedText = ref('');
 const selectedBlockIndex = ref(-1);
+
+const setRichTextEditorRef = (el: unknown, index: number) => {
+  if (el) {
+    richTextEditorRefs.value[index] = el as { getSelectionAsMarkdown: () => string };
+  } else {
+    delete richTextEditorRefs.value[index];
+  }
+};
 
 // 光标位置相关状态
 const cursorBlockIndex = ref(-1);
 const showBlockInsert = ref(false);
 const blockInsertPosition = ref({ x: 0, y: 0 });
 const cursorLineIndex = ref(-1);
+
+// Toast相关状态
+const toastMessages = ref<Array<{ id: string; message: string }>>([]);
+
+// 显示Toast消息
+const showToast = (message: string) => {
+  const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  toastMessages.value.push({ id, message });
+};
+
+// 移除Toast消息
+const removeToast = (id: string) => {
+  const index = toastMessages.value.findIndex(toast => toast.id === id);
+  if (index >= 0) {
+    toastMessages.value.splice(index, 1);
+  }
+};
 
 // 生成唯一ID
 const generateId = (): string => {
@@ -87,8 +115,8 @@ const createNewRichTextBlock = (position: number): Block => {
   return {
     id: generateId(),
     type: 'richtext',
-    title: '新的富文本编辑器',
-    content: '# 新内容\n\n在这里输入你的内容...'
+    title: '',
+    content: ''
   };
 };
 
@@ -136,15 +164,31 @@ const createNewX6Block = (position: number): Block => {
   };
 };
 
+// 统一富文本类型为 'richtext'，避免 'richText' 导致未知类型显示
+const normalizeBlockType = (block: Block): Block => {
+  if (block.type === 'richText') {
+    return { ...block, type: 'richtext' };
+  }
+  return block;
+};
+
+// 判断是否为富文本块（统一用此方法，避免大小写/驼峰混用导致误判）
+const isRichTextBlock = (block: Block): boolean => {
+  return block != null && (block.type === 'richtext' || block.type === 'richText');
+};
+
 // 在指定位置插入新block
 const insertBlock = (position: number, block: Block) => {
-  props.contentList.splice(position, 0, block);
+  const normalized = normalizeBlockType(block);
+  console.log(`insertBlock函数被调用，位置: ${position}, 类型: ${normalized.type}`);
+  props.contentList.splice(position, 0, normalized);
   emit('content-change', props.contentList);
 };
 
 // 删除指定位置的block
 const removeBlock = (position: number) => {
   if (props.contentList.length > 0) {
+    const removedBlock = props.contentList[position];
     props.contentList.splice(position, 1);
     emit('content-change', props.contentList);
   }
@@ -161,11 +205,11 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'E') {
     if (isRichTextEditor) {
       event.preventDefault();
-      
-      // 获取选中文本
-      const selectedText = window.getSelection()?.toString() || '';
-      if (selectedText) {
-        handleExtractSelection(selectedText, blockIndex);
+      // 优先从富文本编辑器取带格式的 Markdown，否则用纯文本
+      const editor = richTextEditorRefs.value[blockIndex];
+      const content = editor?.getSelectionAsMarkdown?.() || window.getSelection()?.toString()?.trim() || '';
+      if (content) {
+        handleExtractSelection(content, blockIndex);
       }
     }
     return;
@@ -204,6 +248,28 @@ const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
   }
 };
 
+// 处理富文本编辑器的点击事件
+const handleRichTextEditorClick = (event: MouseEvent, blockIndex: number) => {
+  // 点击事件处理
+};
+
+// 富文本块失焦时：若内容为空则删除该块
+const handleRichTextBlur = (blockIndex: number, content: string) => {
+  if (!props.editable) return;
+  const text = (content ?? props.contentList[blockIndex]?.content ?? '').toString().trim();
+  if (text === '') {
+    removeBlock(blockIndex);
+  }
+};
+
+// 处理富文本编辑器的生命周期事件
+const handleRichTextEditorLifecycle = (method: string, blockIndex: number) => {
+  showToast(`富文本组件[${blockIndex}]触发: ${method}`);
+};
+
+// 标记：是否正在规范化contentList，避免循环触发
+const isNormalizing = ref(false);
+
 // 监听contentList变化，更新refs
 watch(
   () => props.contentList.length,
@@ -211,6 +277,74 @@ watch(
     // 重置refs数组
     blockRefs.value = [];
   }
+);
+
+// 监听contentList的变化，检测block的变动
+watch(
+  () => props.contentList,
+  (newList, oldList) => {
+    // 若存在 richText 类型，统一规范为 richtext 并回写给父组件，避免“未知的block类型”误报
+    const hasRichText = newList.some(block => block?.type === 'richText');
+    if (hasRichText) {
+      isNormalizing.value = true;
+      const normalizedList = newList.map(block => normalizeBlockType(block));
+      emit('content-change', normalizedList);
+      // 使用setTimeout确保emit完成后再重置标记
+      setTimeout(() => {
+        isNormalizing.value = false;
+      }, 0);
+      return;
+    }
+
+    // 如果只是blockHeight等属性变化，不触发toast（避免频繁提示）
+    const isOnlyPropertyChange = oldList && 
+      newList.length === oldList.length &&
+      newList.every((block, index) => {
+        const oldBlock = oldList[index];
+        return oldBlock && 
+          block.id === oldBlock.id && 
+          block.type === oldBlock.type &&
+          block.content === oldBlock.content;
+      });
+
+    if (isOnlyPropertyChange) {
+      // 只是属性变化（如blockHeight），不输出日志和toast
+      return;
+    }
+
+    console.log('contentList发生变化', {
+      oldLength: oldList?.length,
+      newLength: newList.length,
+      oldList: oldList,
+      newList: newList
+    });
+
+    if (!oldList || newList.length !== oldList.length) {
+      // block数量变化
+      if (newList.length > oldList?.length) {
+        showToast(`已插入新的block，当前共${newList.length}个block`);
+      } else if (newList.length < oldList?.length) {
+        showToast(`已删除block，当前共${newList.length}个block`);
+      }
+    } else {
+      // block数量没有变化，但内容可能变化了
+      // 检查是否有未知类型的block（使用统一判断）
+      const unknownBlocks = newList.filter(block =>
+        !isRichTextBlock(block) &&
+        block.type !== 'graph' &&
+        block.type !== 'line' &&
+        block.type !== 'x6'
+      );
+
+      if (unknownBlocks.length > 0) {
+        unknownBlocks.forEach(block => {
+          console.log('发现未知类型的block:', block);
+          showToast(`发现未知类型的block: ${block.type}`);
+        });
+      }
+    }
+  },
+  { deep: true }
 );
 
 // 生命周期钩子
@@ -257,14 +391,18 @@ const checkSelection = () => {
 
 // 处理提取选中文本为新块
 const handleExtractSelection = (text: string, blockIndex: number) => {
+  console.log('handleExtractSelection 接收到的文本:', text);
+  
   if (!text || !props.editable) return;
   
   // 创建新的富文本块
   const newBlock: Block = {
     id: generateId(),
-    type: 'vditor',
+    type: 'richtext',
     content: text
   };
+  
+  console.log('创建的新块:', newBlock);
   
   // 在当前块之后插入新块
   const insertPosition = blockIndex + 1;
@@ -276,8 +414,13 @@ const handleExtractSelection = (text: string, blockIndex: number) => {
 
 // 处理工具栏提取成块按钮点击
 const handleExtractSelectionButtonClick = () => {
-  if (hasSelection.value && selectedText.value && selectedBlockIndex.value >= 0) {
-    handleExtractSelection(selectedText.value, selectedBlockIndex.value);
+  if (!hasSelection.value || selectedBlockIndex.value < 0) return;
+  const index = selectedBlockIndex.value;
+  // 若选中在富文本块内，优先用编辑器返回的 Markdown（保留格式）
+  const editor = richTextEditorRefs.value[index];
+  const content = editor?.getSelectionAsMarkdown?.() || selectedText.value;
+  if (content) {
+    handleExtractSelection(content, index);
   }
 };
 
@@ -296,28 +439,37 @@ const handleCursorPosition = () => {
         const blockElement = blockRefs.value[i];
         if (blockElement && blockElement.contains(range.commonAncestorContainer as Node)) {
           // 确保是富文本类型的块
-          if (props.contentList[i].type === 'richtext') {
+          if (isRichTextBlock(props.contentList[i])) {
             foundBlockIndex = i;
             break;
           }
         }
       }
       
-      if (foundBlockIndex >= 0) {
+      // 只有在富文本编辑器内部且有选区或光标时才显示BlockInsert组件
+      if (foundBlockIndex >= 0 && selection.focusNode) {
         const blockElement = blockRefs.value[foundBlockIndex];
         if (blockElement) {
-          const rect = range.getBoundingClientRect();
-          const blockRect = blockElement.getBoundingClientRect();
+          // 检查焦点是否在富文本编辑器内部
+          const isFocusInEditor = blockElement.contains(selection.focusNode);
           
-          // 计算相对位置
-          const relativeTop = rect.top - blockRect.top;
-          
-          cursorBlockIndex.value = foundBlockIndex;
-          showBlockInsert.value = true;
-          blockInsertPosition.value = {
-            x: -45, // 紧贴左边框外侧
-            y: relativeTop - 12 // 向上偏移12px，使按钮垂直居中
-          };
+          if (isFocusInEditor) {
+            const rect = range.getBoundingClientRect();
+            const blockRect = blockElement.getBoundingClientRect();
+            
+            // 计算相对位置
+            const relativeTop = rect.top - blockRect.top;
+            
+            cursorBlockIndex.value = foundBlockIndex;
+            showBlockInsert.value = true;
+            blockInsertPosition.value = {
+              x: -45, // 紧贴左边框外侧
+              y: relativeTop - 12 // 向上偏移12px，使按钮垂直居中
+            };
+          } else {
+            showBlockInsert.value = false;
+            cursorBlockIndex.value = -1;
+          }
         }
       } else {
         showBlockInsert.value = false;
@@ -330,6 +482,7 @@ const handleCursorPosition = () => {
   } catch (error) {
     console.error('获取光标位置失败:', error);
     showBlockInsert.value = false;
+    cursorBlockIndex.value = -1;
   }
 };
 
@@ -379,40 +532,46 @@ const getBlockProperties = (block: Block) => {
     <template v-for="(block, index) in contentList" :key="block.id">
       <div 
         class="content-wrapper"
+        :class="{ 'content-wrapper--richtext': isRichTextBlock(block) }"
         :ref="(el) => { if(el) blockRefs[index] = el as HTMLElement }"
         @keydown="handleKeyDown($event, index)"
         @click="handleBlockClick($event, index)"
         :tabindex="editable ? 0 : -1"
       >
         <!-- 只对非富文本块显示标题 -->
-        <div class="block-header" v-if="block.type !== 'richtext'">
+        <div class="block-header" v-if="!isRichTextBlock(block)">
           <h3>{{ block.title || `${block.type === 'graph' ? '图表' : block.type} ${index + 1}` }}</h3>
           <div class="block-type-badge">{{ block.type }}</div>
         </div>
         
         <!-- 根据block类型动态渲染不同组件 -->
-        <component 
-          :is="block.type === 'richtext' ? RichTextEditor : 'div'"
-          v-else-if="block.type === 'richtext'"
-          :content="block.content || ''"
-          :editable="editable"
-          @content-change="(content: string) => block.content = content"
-          @height-change="(height: number) => block.blockHeight = height"
-          @extract-selection="(text: string) => handleExtractSelection(text, index)"
-          @insert-block="() => insertBlock(index + 1, createNewRichTextBlock(index + 1))"
-          class="block-content"
-        />
-        <!-- 在富文本编辑器中显示BlockInsert组件 -->
-        <div 
-          v-if="block.type === 'richtext' && showBlockInsert && cursorBlockIndex === index"
-          class="block-insert-container"
-          :style="{
-            left: `${blockInsertPosition.x}px`,
-            top: `${blockInsertPosition.y}px`
-          }"
-        >
-          <BlockInsert @click="handleInsertBlockAtCursor" />
-        </div>
+        <template v-if="isRichTextBlock(block)">
+          <RichTextEditor
+            :ref="(el) => setRichTextEditorRef(el, index)"
+            :key="`richtext-${block.id}`"
+            :content="block.content || ''"
+            :editable="editable"
+            @content-change="(content: string) => { console.log('富文本内容变化:', content); block.content = content; }"
+            @height-change="(height: number) => block.blockHeight = height"
+            @extract-selection="(text: string) => handleExtractSelection(text, index)"
+            @insert-block="() => insertBlock(index + 1, createNewRichTextBlock(index + 1))"
+            @blur="(content: string) => handleRichTextBlur(index, content)"
+            @click="(event: MouseEvent) => handleRichTextEditorClick(event, index)"
+            @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index)"
+            class="block-content"
+          />
+          <!-- 在富文本编辑器中显示BlockInsert组件 -->
+          <div 
+            v-if="showBlockInsert && cursorBlockIndex === index"
+            class="block-insert-container"
+            :style="{
+              left: `${blockInsertPosition.x}px`,
+              top: `${blockInsertPosition.y}px`
+            }"
+          >
+            <BlockInsert @click="handleInsertBlockAtCursor" />
+          </div>
+        </template>
         <DrawingBoard 
           v-else-if="block.type === 'graph' && block.graphData"
           v-model:graphData="block.graphData"
@@ -450,6 +609,16 @@ const getBlockProperties = (block: Block) => {
         @click="insertBlock(index + 1, createNewRichTextBlock(index + 1))" 
       />
     </template>
+    </div>
+    
+    <!-- Toast消息容器 -->
+    <div class="toast-container">
+      <Toast 
+        v-for="toast in toastMessages" 
+        :key="toast.id" 
+        :message="toast.message"
+        @close="removeToast(toast.id)"
+      />
     </div>
   </div>
 </template>
@@ -508,6 +677,24 @@ const getBlockProperties = (block: Block) => {
 .content-wrapper:hover {
   border-color: #1890ff;
   box-shadow: 0 2px 8px rgba(24, 144, 255, 0.1);
+}
+
+/* 富文本块不显示外边框 */
+.content-wrapper--richtext {
+  border: none;
+  box-shadow: none;
+}
+.content-wrapper--richtext:hover {
+  border: none;
+  box-shadow: none;
+}
+.content-wrapper--richtext:focus {
+  outline: none;
+  box-shadow: none;
+  border: none;
+}
+.content-wrapper--richtext:focus::before {
+  display: none;
 }
 
 .content-wrapper:focus {
@@ -654,6 +841,27 @@ const getBlockProperties = (block: Block) => {
 
 .block-insert-container :deep(.insert-button) {
   opacity: 1;
+  pointer-events: auto;
+}
+
+/* Toast容器样式 */
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.toast-container :deep(.toast-container) {
+  position: relative;
+  bottom: auto;
+  right: auto;
+  z-index: auto;
+  display: block;
   pointer-events: auto;
 }
 </style>

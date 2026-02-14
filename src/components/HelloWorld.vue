@@ -132,7 +132,7 @@ defineProps<{
 
 <template>
   <div>
-    <h1>{{ msg }}</h1>
+    <!-- <h1>{{ msg }}</h1> -->
     <Page 
       v-if="contentList.length > 0" 
       :contentList="contentList" 
