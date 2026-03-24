@@ -1,21 +1,21 @@
 <script setup lang="ts">
 import Vditor from 'vditor';
 import 'vditor/dist/index.css';
-import { ref, onMounted, watch, onBeforeUnmount, nextTick } from 'vue';
-import { Graph } from '@antv/g6';
-import BlockInsert from './BlockInsert.vue';
+import { ref, onMounted, watch, onBeforeUnmount, nextTick, onUnmounted } from 'vue';
 
 interface Props {
   content: string;
   height?: number;
   width?: string;
   editable?: boolean;
+  autoFocus?: boolean;
 }
 
 const props = withDefaults(defineProps<Props>(), {
   height: undefined,
   width: '100%',
   editable: true,
+  autoFocus: false,
 });
 
 const emit = defineEmits<{
@@ -26,48 +26,13 @@ const emit = defineEmits<{
   (e: 'click', event: MouseEvent): void;
   (e: 'lifecycle', method: string): void;
   (e: 'blur', content: string): void;
+  (e: 'focused'): void;
 }>();
 
 const editorRef = ref<HTMLDivElement | null>(null);
 const editorInstance = ref<Vditor | null>(null);
-const graphInstances = ref<Graph[]>([]);
-
-// 光标位置相关状态
-const showBlockInsert = ref(false);
-const blockInsertPosition = ref({ x: 0, y: 0 });
-
-// 初始化G6图表
-const initGraphs = () => {
-  emit('lifecycle', 'initGraphs');
-  
-  // 清除现有的图表实例
-  graphInstances.value.forEach(graph => graph.destroy());
-  graphInstances.value = [];
-  
-  if (!editorRef.value) return;
-  
-  // 查找所有图表容器
-  const graphContainers = editorRef.value.querySelectorAll('.g6-graph-container');
-  graphContainers.forEach((container) => {
-    const htmlContainer = container as HTMLElement;
-    const graphDataStr = htmlContainer.getAttribute('data-graph-data');
-    if (graphDataStr) {
-      try {
-        const graphData = JSON.parse(graphDataStr);
-        const graph = new Graph({
-          container: htmlContainer,
-          width: htmlContainer.clientWidth,
-          height: 400,
-          data: graphData,
-        });
-        graph.render();
-        graphInstances.value.push(graph);
-      } catch (error) {
-        console.error('解析图表数据失败:', error);
-      }
-    }
-  });
-};
+const isUnmounted = ref(false);
+const isReady = ref(false);
 
 // 计算并更新编辑器高度
 const updateHeight = () => {
@@ -194,89 +159,6 @@ const extractSelection = () => {
   if (markdown) emit('extract-selection', markdown);
 };
 
-// 监听光标位置
-const handleCursorPosition = () => {
-  if (!editorInstance.value || !props.editable) return;
-  
-  // 使用 nextTick 避免在组件更新期间修改状态导致的渲染冲突
-  nextTick(() => {
-    try {
-      const selection = window.getSelection();
-      if (selection && selection.rangeCount > 0) {
-        const range = selection.getRangeAt(0);
-        
-        // 检查选区是否在编辑器内部
-        const editorElement = editorRef.value;
-        if (!editorElement) {
-          showBlockInsert.value = false;
-          return;
-        }
-        
-        const commonAncestor = range.commonAncestorContainer;
-        const isInEditor = editorElement.contains(commonAncestor as Node);
-        
-        if (isInEditor) {
-          // 显示BlockInsert组件的条件：
-          // 1. 有选区（range.collapsed为false）
-          // 2. 或者光标在编辑器的边界位置
-          if (!range.collapsed) {
-            const rect = range.getBoundingClientRect();
-            const editorRect = editorElement.getBoundingClientRect();
-            
-            // 计算准确的位置
-            const relativeTop = rect.top - editorRect.top;
-            
-            showBlockInsert.value = true;
-            blockInsertPosition.value = {
-              x: -45, // 紧贴左边框外侧，向左偏移45px以确保在边框外
-              y: relativeTop - 12 // 向上偏移12px，使按钮垂直居中于选中行
-            };
-          } else {
-            // 光标在编辑器边界位置时也显示BlockInsert组件
-            // 检查光标是否在编辑器的第一行或最后一行
-            const editorContent = editorElement.querySelector('.vditor-content');
-            if (editorContent) {
-              const isAtStart = range.startOffset === 0 && range.startContainer === editorContent.firstChild;
-              const isAtEnd = range.endOffset === (range.endContainer.textContent?.length || 0) && range.endContainer === editorContent.lastChild;
-              
-              if (isAtStart || isAtEnd) {
-                const rect = range.getBoundingClientRect();
-                const editorRect = editorElement.getBoundingClientRect();
-                
-                // 计算准确的位置
-                const relativeTop = rect.top - editorRect.top;
-                
-                showBlockInsert.value = true;
-                blockInsertPosition.value = {
-                  x: -45, // 紧贴左边框外侧，向左偏移45px以确保在边框外
-                  y: relativeTop - 12 // 向上偏移12px，使按钮垂直居中于选中行
-                };
-              } else {
-                showBlockInsert.value = false;
-              }
-            } else {
-              showBlockInsert.value = false;
-            }
-          }
-        } else {
-          showBlockInsert.value = false;
-        }
-      } else {
-        showBlockInsert.value = false;
-      }
-    } catch (error) {
-      console.error('获取光标位置失败:', error);
-      showBlockInsert.value = false;
-    }
-  });
-};
-
-// 处理插入块事件
-const handleInsertBlock = () => {
-  emit('insert-block', 0);
-  showBlockInsert.value = false;
-};
-
 defineExpose({
   getSelectionAsMarkdown
 });
@@ -301,12 +183,16 @@ onMounted(() => {
       customWysiwygToolbar: () => {},
       // 避免自定义工具栏函数问题
       after: () => {
-        // 延迟一下，确保DOM已经渲染完成
-        setTimeout(() => {
-          initGraphs();
-          // 初始化完成后更新高度
-          updateHeight();
-        }, 0);
+        if (isUnmounted.value) return;
+        isReady.value = true;
+        updateHeight();
+        if (props.autoFocus && editorInstance.value) {
+          nextTick(() => {
+            if (isUnmounted.value) return;
+            editorInstance.value?.focus();
+            emit('focused');
+          });
+        }
       },
       input: (value: string) => {
         emit('content-change', value);
@@ -316,9 +202,6 @@ onMounted(() => {
         }, 0);
       },
     });
-    
-    // 添加光标位置监听
-    document.addEventListener('selectionchange', handleCursorPosition);
     
     // 添加点击事件监听
     editorRef.value.addEventListener('click', (event: MouseEvent) => {
@@ -340,15 +223,12 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  isUnmounted.value = true;
   emit('lifecycle', 'onBeforeUnmount');
   if (editorRef.value && (editorRef.value as any)._blurHandler) {
     editorRef.value.removeEventListener('focusout', (editorRef.value as any)._blurHandler);
   }
-  // 移除光标位置监听
-  document.removeEventListener('selectionchange', handleCursorPosition);
   
-  // 销毁所有图表实例
-  graphInstances.value.forEach(graph => graph.destroy());
   // 销毁编辑器实例
   if (editorInstance.value) {
     editorInstance.value.destroy();
@@ -362,38 +242,73 @@ watch(
     
     if (editorInstance.value && newContent !== editorInstance.value.getValue()) {
       editorInstance.value.setValue(newContent);
-      // 重新初始化图表
-      setTimeout(() => {
-        initGraphs();
-      }, 0);
     }
   }
 );
 </script>
 
 <template>
-  <div ref="editorRef" class="rich-text-editor-container">
-    <!-- 在光标位置显示BlockInsert组件 -->
-    <div 
-      v-if="showBlockInsert && editable" 
-      class="block-insert-container"
-      :style="{
-        left: `${blockInsertPosition.x}px`,
-        top: `${blockInsertPosition.y}px`
-      }"
-    >
-      <BlockInsert @click="handleInsertBlock" />
+  <div class="rich-text-editor-wrapper">
+    <!-- 编辑器正常渲染（Vditor 需要在正常布局流中初始化以获取正确尺寸） -->
+    <div ref="editorRef" class="rich-text-editor-container">
     </div>
+
+    <!-- 骨架屏覆盖层：绝对定位覆盖在编辑器上方，ready 后消失 -->
+    <Transition name="skeleton-fade">
+      <div v-if="!isReady" class="editor-skeleton">
+        <div class="editor-skeleton__line" style="width: 60%" />
+        <div class="editor-skeleton__line" style="width: 85%" />
+        <div class="editor-skeleton__line" style="width: 40%" />
+      </div>
+    </Transition>
   </div>
 </template>
 
 <style scoped>
+.rich-text-editor-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+/* 骨架屏：绝对覆盖在编辑器上方，不影响 Vditor 尺寸计算 */
+.editor-skeleton {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  z-index: 2;
+  padding: 10px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  pointer-events: none;
+}
+
+.editor-skeleton__line {
+  height: 14px;
+  border-radius: 4px;
+  background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.skeleton-fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+.skeleton-fade-leave-to {
+  opacity: 0;
+}
+
 .rich-text-editor-container {
   border: none;
   border-radius: 0;
   overflow: visible;
   width: 100%;
-  min-height: 100px;
+  min-height: 44px;
   margin: 0;
   padding: 0;
   display: block;
@@ -415,7 +330,7 @@ watch(
   border: none;
   padding: 0;
   margin: 0;
-  min-height: 60px;
+  min-height: 44px;
   height: auto !important;
   width: 100% !important;
 }
@@ -444,13 +359,14 @@ watch(
   padding: 10px 15px !important;
   margin: 0;
   height: auto !important;
-  min-height: 20px;
+  /* 最小高度 = 上边距(10) + 一行文字(~24px) + 下边距(10)，防止光标被裁剪 */
+  min-height: 44px;
 }
 
 /* 确保编辑器内容占满整个区域 */
 .rich-text-editor-container :deep(.vditor-content) {
   height: auto !important;
-  min-height: 20px;
+  min-height: 44px;
   overflow-y: visible !important;
   margin: 0;
   padding: 0;
@@ -459,7 +375,7 @@ watch(
 
 /* 确保编辑器的body元素占满高度 */
 .rich-text-editor-container :deep(.vditor-wysiwyg .vditor-reset) {
-  min-height: 20px;
+  min-height: 44px;
   height: auto;
 }
 
@@ -498,21 +414,5 @@ watch(
   display: none !important;
 }
 
-/* BlockInsert容器样式 */
-.block-insert-container {
-  position: absolute;
-  z-index: 1000;
-  pointer-events: auto;
-}
 
-/* 调整BlockInsert组件的样式 */
-.block-insert-container :deep(.block-insert) {
-  margin: 0;
-  height: 24px;
-}
-
-.block-insert-container :deep(.insert-button) {
-  opacity: 1;
-  pointer-events: auto;
-}
 </style>
