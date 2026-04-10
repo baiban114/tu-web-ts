@@ -35,7 +35,7 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   /** 页面加载时批量注册该页所有原始块 */
   function registerBlocks(blocks: Block[], pageId: string, pageTitle: string) {
     for (const block of blocks) {
-      if (block.type === 'ref') continue;
+      if (block.type === 'ref' || block.type === 'spacer') continue;
       registry.set(block.id, { block: { ...block }, pageId, pageTitle });
     }
   }

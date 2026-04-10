@@ -134,7 +134,7 @@ export async function listAllBlocks(): Promise<BlockWithMeta[]> {
     const page = _pages.find((p) => p.id === pageId);
     const pageTitle = page?.title ?? pageId;
     for (const block of blocks) {
-      if (block.type !== 'ref') {
+      if (block.type !== 'ref' && block.type !== 'spacer') {
         result.push({ block: { ...block }, pageId, pageTitle });
       }
     }

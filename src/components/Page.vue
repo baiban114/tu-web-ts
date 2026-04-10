@@ -1,6 +1,7 @@
-<script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch, computed } from 'vue';
+﻿<script setup lang="ts">
+import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue';
 import RichTextEditor from './RichTextEditor.vue';
+import HoverHandle from './HoverHandle.vue';
 import BlockPicker from './BlockPicker.vue';
 import Line from './line.vue';
 import X6Component from './X6Component.vue';
@@ -10,13 +11,22 @@ import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 
 interface GraphData {
+  cells?: Array<Record<string, any>>;
   nodes: Array<{
     id: string;
+    x?: number;
+    y?: number;
+    width?: number;
+    height?: number;
+    label?: string;
+    shape?: string;
     style?: {
       x?: number;
       y?: number;
       [key: string]: any;
     };
+    attrs?: Record<string, any>;
+    ports?: Record<string, any>;
     data?: {
       label?: string;
       time?: string;
@@ -27,8 +37,12 @@ interface GraphData {
   }>;
   edges: Array<{
     id?: string;
-    source: string;
-    target: string;
+    source: string | Record<string, any>;
+    target: string | Record<string, any>;
+    attrs?: Record<string, any>;
+    router?: string | Record<string, any>;
+    connector?: string | Record<string, any>;
+    labels?: Array<Record<string, any>>;
     data?: {
       done?: boolean;
       [key: string]: any;
@@ -39,7 +53,7 @@ interface GraphData {
 
 export interface Block {
   id: string;
-  type: 'richtext' | 'richText' | 'graph' | 'line' | 'x6' | 'ref' | 'container' | string;
+  type: 'richtext' | 'richText' | 'graph' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | string;
   title?: string;
   content?: string;
   refId?: string; // type === 'ref' 时指向被引用块的 id
@@ -54,6 +68,7 @@ export interface Block {
     type: 'normal' | 'milestone';
   }>;
   blockHeight?: number;
+  spacerHeight?: number;
   layout?: 'horizontal' | 'vertical';
   children?: Block[];
   width?: string;
@@ -65,6 +80,13 @@ interface Props {
   editable?: boolean;
 }
 
+interface RichTextLineInsertPayload {
+  beforeContent: string;
+  afterContent: string;
+  blockType: 'richtext' | 'graph' | 'line' | 'x6' | 'ref' | 'container';
+  layout?: 'horizontal' | 'vertical';
+}
+
 const props = withDefaults(defineProps<Props>(), {
   editable: true
 });
@@ -74,34 +96,99 @@ const emit = defineEmits<{
 }>();
 
 const registryStore = useBlockRegistryStore();
+const blockDragHandle = '.handle-dot';
 
 // 本地列表：VueDraggable 使用 v-model 操作此 ref，避免直接 mutate prop
 const localBlocks = ref<Block[]>([]);
 
-// 当父组件切换页面时（props.contentList 引用变化），同步到本地
-watch(
-  () => props.contentList,
-  (newList) => { localBlocks.value = newList; },
-  { immediate: true }
-);
-
 // 引用块弹窗状态
 const showBlockPicker = ref(false);
 const pendingRefInsertPosition = ref(-1);
+const pendingRichTextSplitInsert = ref<{
+  position: number;
+  beforeContent: string;
+  afterContent: string;
+} | null>(null);
 
 const blockRefs = ref<HTMLElement[]>([]);
 /** 富文本编辑器实例（按块索引），用于提取时获取带格式的 Markdown */
-const richTextEditorRefs = ref<Record<number, { getSelectionAsMarkdown: () => string }>>({});
+const richTextEditorRefs = ref<Record<number, {
+  getSelectionAsMarkdown?: () => string;
+  focusEditor?: () => void;
+}>>({});
 const hasSelection = ref(false);
 const selectedText = ref('');
 const selectedBlockIndex = ref(-1);
+const contentContainerRef = ref<HTMLElement | null>(null);
+const blockHandleStyle = {
+  '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
+  '--hover-handle-top': 'calc(var(--block-shell-pad-y, 20px) + 6px)',
+  '--hover-handle-transform': 'translateX(-50%)',
+} as const;
+
+const blockHandleItems = [
+  { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
+  { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
+  { key: 'insert-graph', icon: '🎨', label: '插入画板' },
+  { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
+  { key: 'insert-x6', icon: '🧩', label: '插入 X6 图' },
+  { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
+  { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
+  { key: 'divider-danger', divider: true },
+  { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
+] as const;
+
+const childBlockHandleItems = [
+  { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
+  { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
+  { key: 'insert-graph', icon: '🎨', label: '插入画板' },
+  { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
+  { key: 'insert-x6', icon: '🧩', label: '插入 X6 图' },
+  { key: 'divider-danger', divider: true },
+  { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
+] as const;
 
 const setRichTextEditorRef = (el: unknown, index: number) => {
   if (el) {
-    richTextEditorRefs.value[index] = el as { getSelectionAsMarkdown: () => string };
+    richTextEditorRefs.value[index] = el as {
+      getSelectionAsMarkdown?: () => string;
+      focusEditor?: () => void;
+    };
   } else {
     delete richTextEditorRefs.value[index];
   }
+};
+
+const getBlockAtPosition = (position: number): Block | undefined => {
+  if (position >= 100) {
+    const containerIndex = Math.floor(position / 100);
+    const childIndex = position % 100;
+    const container = localBlocks.value[containerIndex];
+    if (container?.type === 'container' && container.children) {
+      return container.children[childIndex];
+    }
+    return undefined;
+  }
+
+  return localBlocks.value[position];
+};
+
+const replaceBlockAtPosition = (position: number, blocks: Block[]) => {
+  const normalizedBlocks = blocks.map((block) => normalizeBlockType(block));
+
+  if (position >= 100) {
+    const containerIndex = Math.floor(position / 100);
+    const childIndex = position % 100;
+    const container = localBlocks.value[containerIndex];
+    if (container?.type === 'container' && container.children) {
+      container.children.splice(childIndex, 1, ...normalizedBlocks);
+      emit('content-change', localBlocks.value);
+    }
+    return;
+  }
+
+  localBlocks.value.splice(position, 1, ...normalizedBlocks);
+  commitTopLevelBlocks();
 };
 
 // Toast相关状态
@@ -132,10 +219,46 @@ const generateId = (): string => {
 const autoFocusBlockId = ref<string | null>(null);
 
 // 创建新的富文本块
-const createNewRichTextBlock = (_position: number): Block => {
-  const block: Block = { id: generateId(), type: 'richtext', title: '', content: '' };
+const createEmptyRichTextBlock = (): Block => ({
+  id: generateId(),
+  type: 'richtext',
+  title: '',
+  content: '',
+});
+
+const createNewRichTextBlock = (): Block => {
+  const block: Block = createEmptyRichTextBlock();
   autoFocusBlockId.value = block.id;
   return block;
+};
+
+const createRichTextBlockWithContent = (content: string): Block => ({
+  ...createEmptyRichTextBlock(),
+  content,
+});
+
+const hasMeaningfulRichTextContent = (content?: string): boolean => {
+  return Boolean(content && content.trim());
+};
+
+const buildSplitReplacementBlocks = (
+  beforeContent: string,
+  insertedBlock: Block,
+  afterContent: string,
+): Block[] => {
+  const blocks: Block[] = [];
+
+  if (hasMeaningfulRichTextContent(beforeContent)) {
+    blocks.push(createRichTextBlockWithContent(beforeContent));
+  }
+
+  blocks.push(insertedBlock);
+
+  if (hasMeaningfulRichTextContent(afterContent)) {
+    blocks.push(createRichTextBlockWithContent(afterContent));
+  }
+
+  return blocks;
 };
 
 // 创建新的画板块
@@ -190,8 +313,8 @@ const createNewContainerBlock = (position: number, layout: 'horizontal' | 'verti
     title: `新的${layout === 'horizontal' ? '水平' : '垂直'}容器`,
     layout,
     children: [
-      createNewRichTextBlock(position),
-      createNewRichTextBlock(position)
+      createNewRichTextBlock(),
+      createNewRichTextBlock()
     ]
   };
 };
@@ -206,6 +329,7 @@ const createRefBlock = (refId: string): Block => ({
 // 打开引用块选择弹窗（记录插入位置）
 const openBlockPicker = (position: number) => {
   pendingRefInsertPosition.value = position;
+  pendingRichTextSplitInsert.value = null;
   showBlockPicker.value = true;
 };
 
@@ -213,9 +337,25 @@ const openBlockPicker = (position: number) => {
 const onRefBlockSelected = (refId: string) => {
   const position = pendingRefInsertPosition.value;
   if (position >= 0) {
-    insertBlock(position, createRefBlock(refId));
+    if (pendingRichTextSplitInsert.value) {
+      const { beforeContent, afterContent } = pendingRichTextSplitInsert.value;
+      const blocksToInsert = buildSplitReplacementBlocks(beforeContent, createRefBlock(refId), afterContent);
+
+      // Auto-focus trailing richtext block when cursor was at the end
+      if (!hasMeaningfulRichTextContent(afterContent)) {
+        const trailing = blocksToInsert[blocksToInsert.length - 1];
+        if (isRichTextBlock(trailing)) {
+          autoFocusBlockId.value = trailing.id;
+        }
+      }
+
+      replaceBlockAtPosition(position, blocksToInsert);
+    } else {
+      insertBlock(position, createRefBlock(refId));
+    }
   }
   pendingRefInsertPosition.value = -1;
+  pendingRichTextSplitInsert.value = null;
 };
 
 // 统一富文本类型为 'richtext'，避免 'richText' 导致未知类型显示
@@ -232,6 +372,87 @@ const isRichTextBlock = (block: Block): boolean => {
 };
 
 // 在指定位置插入新block
+const isSpacerBlock = (block: Block): boolean => {
+  return block?.type === 'spacer';
+};
+
+const normalizeTopLevelBlocks = (blocks: Block[]): Block[] => {
+  let changed = false;
+  const filteredBlocks: Block[] = [];
+
+  for (const sourceBlock of blocks) {
+    const normalizedBlock = normalizeBlockType(sourceBlock);
+    if (normalizedBlock !== sourceBlock) changed = true;
+    if (isSpacerBlock(normalizedBlock)) {
+      changed = true;
+      continue;
+    }
+    filteredBlocks.push(normalizedBlock);
+  }
+
+  if (filteredBlocks.length === 0) {
+    return [createEmptyRichTextBlock()];
+  }
+
+  const result: Block[] = [];
+
+  if (!isRichTextBlock(filteredBlocks[0])) {
+    result.push(createEmptyRichTextBlock());
+    changed = true;
+  }
+
+  for (const block of filteredBlocks) {
+    const previousBlock = result[result.length - 1];
+    if (previousBlock && !isRichTextBlock(previousBlock) && !isRichTextBlock(block)) {
+      result.push(createEmptyRichTextBlock());
+      changed = true;
+    }
+    result.push(block);
+  }
+
+  if (!isRichTextBlock(result[result.length - 1])) {
+    result.push(createEmptyRichTextBlock());
+    changed = true;
+  }
+
+  return changed ? result : blocks;
+};
+
+const syncLocalBlocksFromSource = (blocks: Block[]) => {
+  isNormalizing.value = true;
+  localBlocks.value = normalizeTopLevelBlocks(blocks);
+  void nextTick(() => {
+    isNormalizing.value = false;
+  });
+};
+
+const commitTopLevelBlocks = () => {
+  const normalizedBlocks = normalizeTopLevelBlocks(localBlocks.value);
+  if (normalizedBlocks !== localBlocks.value) {
+    syncLocalBlocksFromSource(normalizedBlocks);
+  }
+  emit('content-change', localBlocks.value);
+};
+
+const insertBlocks = (position: number, blocks: Block[]) => {
+  const normalizedBlocks = blocks.map((block) => normalizeBlockType(block));
+  if (normalizedBlocks.length === 0) return;
+
+  if (position >= 100) {
+    const containerIndex = Math.floor(position / 100);
+    const childIndex = position % 100;
+    const container = localBlocks.value[containerIndex];
+    if (container?.type === 'container' && container.children) {
+      container.children.splice(childIndex, 0, ...normalizedBlocks);
+      emit('content-change', localBlocks.value);
+      return;
+    }
+  }
+
+  localBlocks.value.splice(position, 0, ...normalizedBlocks);
+  commitTopLevelBlocks();
+};
+
 const insertBlock = (position: number, block: Block) => {
   const normalized = normalizeBlockType(block);
   console.log(`insertBlock函数被调用，位置: ${position}, 类型: ${normalized.type}`);
@@ -250,7 +471,7 @@ const insertBlock = (position: number, block: Block) => {
 
   // 普通块的插入
   localBlocks.value.splice(position, 0, normalized);
-  emit('content-change', localBlocks.value);
+  commitTopLevelBlocks();
 };
 
 // 删除指定位置的block
@@ -272,7 +493,41 @@ const removeBlock = (position: number) => {
   // 普通块的删除
   if (localBlocks.value.length > 0) {
     localBlocks.value.splice(position, 1);
-    emit('content-change', localBlocks.value);
+    commitTopLevelBlocks();
+  }
+};
+
+// 处理悬浮手柄菜单操作
+const handleBlockHandleSelect = (action: string, position: number) => {
+  const insertPosition = position + 1;
+
+  switch (action) {
+    case 'insert-richtext':
+      insertBlock(insertPosition, createNewRichTextBlock());
+      return;
+    case 'insert-ref':
+      openBlockPicker(insertPosition);
+      return;
+    case 'insert-graph':
+      insertBlock(insertPosition, createNewDrawingBlock(insertPosition));
+      return;
+    case 'insert-line':
+      insertBlock(insertPosition, createNewLineBlock(insertPosition));
+      return;
+    case 'insert-x6':
+      insertBlock(insertPosition, createNewX6Block(insertPosition));
+      return;
+    case 'insert-container-horizontal':
+      insertBlock(insertPosition, createNewContainerBlock(insertPosition, 'horizontal'));
+      return;
+    case 'insert-container-vertical':
+      insertBlock(insertPosition, createNewContainerBlock(insertPosition, 'vertical'));
+      return;
+    case 'delete':
+      removeBlock(position);
+      return;
+    default:
+      return;
   }
 };
 
@@ -304,7 +559,7 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
       
       // 计算插入位置
       const insertPosition = blockIndex + 1;
-      const newBlock = createNewRichTextBlock(insertPosition);
+      const newBlock = createNewRichTextBlock();
       insertBlock(insertPosition, newBlock);
     }
   }
@@ -318,13 +573,19 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
 // 为每个块添加点击事件，使其获得焦点
 const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
   if (!props.editable) return;
-  
+
   const blockElement = blockRefs.value[blockIndex];
+  const block = getBlockAtPosition(blockIndex);
   const target = event.target as HTMLElement | null;
   if (blockElement && target) {
     // 如果点击的是富文本编辑器内部，不获取焦点
     const isRichTextEditor = target.closest('.rich-text-editor-container, .vditor-container, .vditor-wysiwyg, .vditor-editor');
-    if (!isRichTextEditor) {
+    const isGraphEditor = target.closest('.x6-editor, .x6-stage, .x6-canvas');
+    if (block && isRichTextBlock(block) && !isRichTextEditor) {
+      richTextEditorRefs.value[blockIndex]?.focusEditor?.();
+      return;
+    }
+    if (!isRichTextEditor && !isGraphEditor) {
       blockElement.focus();
     }
   }
@@ -341,7 +602,61 @@ const handleRichTextEditorLifecycle = (method: string, blockIndex: number) => {
 };
 
 // 标记：是否正在规范化contentList，避免循环触发
+const handleRichTextLineInsert = (payload: RichTextLineInsertPayload, blockIndex: number) => {
+  if (!props.editable) return;
+
+  const { beforeContent, afterContent, blockType, layout } = payload;
+
+  if (blockType === 'ref') {
+    pendingRefInsertPosition.value = blockIndex;
+    pendingRichTextSplitInsert.value = {
+      position: blockIndex,
+      beforeContent,
+      afterContent,
+    };
+    showBlockPicker.value = true;
+    return;
+  }
+
+  let insertedBlock: Block;
+  switch (blockType) {
+    case 'richtext':
+      insertedBlock = createNewRichTextBlock();
+      break;
+    case 'graph':
+      insertedBlock = createNewDrawingBlock(blockIndex + 1);
+      break;
+    case 'line':
+      insertedBlock = createNewLineBlock(blockIndex + 1);
+      break;
+    case 'x6':
+      insertedBlock = createNewX6Block(blockIndex + 1);
+      break;
+    case 'container':
+      insertedBlock = createNewContainerBlock(blockIndex + 1, layout === 'vertical' ? 'vertical' : 'horizontal');
+      break;
+    default:
+      return;
+  }
+
+  const replacementBlocks = buildSplitReplacementBlocks(beforeContent, insertedBlock, afterContent);
+  replaceBlockAtPosition(blockIndex, replacementBlocks);
+};
+
 const isNormalizing = ref(false);
+
+watch(showBlockPicker, (visible) => {
+  if (visible) return;
+  pendingRichTextSplitInsert.value = null;
+});
+
+watch(
+  () => props.contentList,
+  (newList) => {
+    syncLocalBlocksFromSource(newList);
+  },
+  { immediate: true }
+);
 
 // 监听本地列表长度变化，重置 block DOM refs
 watch(
@@ -355,18 +670,21 @@ watch(
 watch(
   localBlocks,
   (newList) => {
+    if (isNormalizing.value) return;
+
     // 若存在 richText 类型，统一规范为 richtext
-    const hasRichText = newList.some(block => block?.type === 'richText');
-    if (hasRichText) {
-      localBlocks.value = newList.map(block => normalizeBlockType(block));
-      emit('content-change', localBlocks.value);
+    const normalizedBlocks = normalizeTopLevelBlocks(newList);
+    if (normalizedBlocks !== newList) {
+      syncLocalBlocksFromSource(normalizedBlocks);
+      emit('content-change', normalizedBlocks);
       return;
     }
 
-    blockSyncManager.updateBlocks(newList);
+    blockSyncManager.updateBlocks(normalizedBlocks);
 
-    const unknownBlocks = newList.filter(block =>
+    const unknownBlocks = normalizedBlocks.filter(block =>
       !isRichTextBlock(block) &&
+      !isSpacerBlock(block) &&
       block.type !== 'graph' &&
       block.type !== 'line' &&
       block.type !== 'x6' &&
@@ -439,7 +757,7 @@ const handleExtractSelection = (text: string, blockIndex: number) => {
 
   // 复用统一的创建方法，再覆盖 content（提取块有内容，无需 autoFocus）
   const insertPosition = blockIndex + 1;
-  const newBlock = createNewRichTextBlock(insertPosition);
+  const newBlock = createNewRichTextBlock();
   newBlock.content = text;
   autoFocusBlockId.value = null; // 提取块不需要自动聚焦
   insertBlock(insertPosition, newBlock);
@@ -462,8 +780,29 @@ const handleExtractSelectionButtonClick = () => {
 
 // 处理拖拽结束事件
 const handleDragEnd = () => {
-  emit('content-change', localBlocks.value);
+  commitTopLevelBlocks();
   showToast('块已成功移动');
+};
+
+const handleContentContainerClick = (event: MouseEvent) => {
+  if (!props.editable) return;
+
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  if (target.closest('.content-wrapper, .block-handle, .handle-menu')) return;
+
+  const blocks = localBlocks.value;
+  if (blocks.length === 0) {
+    insertBlock(0, createNewRichTextBlock());
+    return;
+  }
+
+  const lastBlock = blocks[blocks.length - 1];
+  if (isRichTextBlock(lastBlock)) {
+    richTextEditorRefs.value[blocks.length - 1]?.focusEditor?.();
+  } else {
+    insertBlock(blocks.length, createNewRichTextBlock());
+  }
 };
 
 // 获取block的属性，排除id和type
@@ -492,10 +831,16 @@ const getBlockProperties = (block: Block) => {
       </button>
     </div>
     
-    <div class="content-container">
+    <div
+      ref="contentContainerRef"
+      class="content-container"
+      @click="handleContentContainerClick"
+    >
       <VueDraggable
+        class="blocks-list"
         v-model="localBlocks"
-        animation="200"
+        :handle="blockDragHandle"
+        :animation="200"
         ghost-class="dragging-ghost"
         chosen-class="dragging-chosen"
         drag-class="dragging-drag"
@@ -508,44 +853,25 @@ const getBlockProperties = (block: Block) => {
           v-for="(block, index) in localBlocks"
           :key="block.id"
           class="content-wrapper"
-          :class="{ 'content-wrapper--richtext': isRichTextBlock(block) }"
+          :class="{
+            'content-wrapper--richtext': isRichTextBlock(block),
+          }"
+          :data-block-index="index"
+          :data-block-id="block.id"
           :ref="(el) => { if(el) blockRefs[index] = el as HTMLElement }"
           @keydown="handleKeyDown($event, index)"
           @click="handleBlockClick($event, index)"
           :tabindex="editable ? 0 : -1"
         >
           <!-- 左侧悬浮手柄 -->
-          <div class="block-handle" v-if="editable">
-            <div class="handle-dot"></div>
-            <div class="handle-menu">
-              <div class="handle-menu-item" @click="insertBlock(index, createNewRichTextBlock(index))">
-                <span>📝</span> 插入文本块
-              </div>
-              <div class="handle-menu-item" @click="openBlockPicker(index)">
-                <span>🔗</span> 插入引用块
-              </div>
-              <div class="handle-menu-item" @click="insertBlock(index, createNewDrawingBlock(index))">
-                <span>🎨</span> 插入画板
-              </div>
-              <div class="handle-menu-item" @click="insertBlock(index, createNewLineBlock(index))">
-                <span>📅</span> 插入时间轴
-              </div>
-              <div class="handle-menu-item" @click="insertBlock(index, createNewX6Block(index))">
-                <span>🖼️</span> 插入X6图
-              </div>
-              <div class="handle-menu-item" @click="insertBlock(index, createNewContainerBlock(index, 'horizontal'))">
-                <span>📋</span> 插入水平容器
-              </div>
-              <div class="handle-menu-item" @click="insertBlock(index, createNewContainerBlock(index, 'vertical'))">
-                <span>📋</span> 插入垂直容器
-              </div>
-              <div class="handle-menu-divider"></div>
-              <div class="handle-menu-item delete" @click="removeBlock(index)">
-                <span>🗑️</span> 删除块
-              </div>
-            </div>
-          </div>
-          <!-- 只对非富文本块显示标题 -->
+          <HoverHandle
+            v-if="editable && !isRichTextBlock(block)"
+            class="block-handle"
+            :style="blockHandleStyle"
+            :items="blockHandleItems"
+            :drag-cursor="true"
+            @select="(action) => handleBlockHandleSelect(action, index)"
+          />
           <div class="block-header" v-if="!isRichTextBlock(block)">
             <h3>{{ block.title || `${block.type === 'graph' ? '图表' : block.type} ${index + 1}` }}</h3>
             <div class="block-type-badge">{{ block.type }}</div>
@@ -556,7 +882,8 @@ const getBlockProperties = (block: Block) => {
             <div class="container-block" :class="`container-${block.layout || 'vertical'}`">
               <VueDraggable
                 v-model="block.children"
-                animation="200"
+                :handle="blockDragHandle"
+                :animation="200"
                 ghost-class="dragging-ghost"
                 chosen-class="dragging-chosen"
                 drag-class="dragging-drag"
@@ -575,37 +902,22 @@ const getBlockProperties = (block: Block) => {
                   <div
                     class="content-wrapper"
                     :class="{ 'content-wrapper--richtext': isRichTextBlock(childBlock) }"
+                    :data-block-index="index * 100 + childIndex"
+                    :data-block-id="childBlock.id"
                     :ref="(el) => { if(el) blockRefs[index * 100 + childIndex] = el as HTMLElement }"
                     @keydown="handleKeyDown($event, index * 100 + childIndex)"
                     @click="handleBlockClick($event, index * 100 + childIndex)"
                     :tabindex="editable ? 0 : -1"
                   >
                     <!-- 左侧悬浮手柄 -->
-                    <div class="block-handle" v-if="editable">
-                      <div class="handle-dot"></div>
-                      <div class="handle-menu">
-                        <div class="handle-menu-item" @click="insertBlock(index * 100 + childIndex, createNewRichTextBlock(index * 100 + childIndex))">
-                          <span>📝</span> 插入文本块
-                        </div>
-                        <div class="handle-menu-item" @click="openBlockPicker(index * 100 + childIndex)">
-                          <span>🔗</span> 插入引用块
-                        </div>
-                        <div class="handle-menu-item" @click="insertBlock(index * 100 + childIndex, createNewDrawingBlock(index * 100 + childIndex))">
-                          <span>🎨</span> 插入画板
-                        </div>
-                        <div class="handle-menu-item" @click="insertBlock(index * 100 + childIndex, createNewLineBlock(index * 100 + childIndex))">
-                          <span>📅</span> 插入时间轴
-                        </div>
-                        <div class="handle-menu-item" @click="insertBlock(index * 100 + childIndex, createNewX6Block(index * 100 + childIndex))">
-                          <span>🖼️</span> 插入X6图
-                        </div>
-                        <div class="handle-menu-divider"></div>
-                        <div class="handle-menu-item delete" @click="removeBlock(index * 100 + childIndex)">
-                          <span>🗑️</span> 删除块
-                        </div>
-                      </div>
-                    </div>
-                    <!-- 只对非富文本块显示标题 -->
+                    <HoverHandle
+                      v-if="editable && !isRichTextBlock(childBlock)"
+                      class="block-handle"
+                      :style="blockHandleStyle"
+                      :items="childBlockHandleItems"
+                      :drag-cursor="true"
+                      @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
+                    />
                     <div class="block-header" v-if="!isRichTextBlock(childBlock)">
                       <h3>{{ childBlock.title || `${childBlock.type === 'graph' ? '图表' : childBlock.type} ${childIndex + 1}` }}</h3>
                       <div class="block-type-badge">{{ childBlock.type }}</div>
@@ -620,10 +932,12 @@ const getBlockProperties = (block: Block) => {
                         :editable="editable"
                         :auto-focus="childBlock.id === autoFocusBlockId"
                         @focused="autoFocusBlockId = null"
-                        @content-change="(content: string) => { childBlock.content = content; emit('content-change', localBlocks.value); }"
+                        @content-change="(content: string) => { childBlock.content = content; emit('content-change', localBlocks); }"
                         @height-change="(height: number) => childBlock.blockHeight = height"
                         @extract-selection="(text: string) => handleExtractSelection(text, index * 100 + childIndex)"
-                        @insert-block="() => insertBlock(index * 100 + childIndex + 1, createNewRichTextBlock(index * 100 + childIndex + 1))"
+                        @insert-block="() => insertBlock(index * 100 + childIndex + 1, createNewRichTextBlock())"
+                        @line-insert="(payload: RichTextLineInsertPayload) => handleRichTextLineInsert(payload, index * 100 + childIndex)"
+                        @delete-block="removeBlock(index * 100 + childIndex)"
                         @click="(event: MouseEvent) => handleRichTextEditorClick(event, index * 100 + childIndex)"
                         @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index * 100 + childIndex)"
                         class="block-content"
@@ -631,7 +945,7 @@ const getBlockProperties = (block: Block) => {
                     </template>
                     <Line
                       v-else-if="childBlock.type === 'graph'"
-                      :graphData="childBlock.graphData"
+                      :graphData="childBlock.graphData as any"
                       class="block-content graph-content"
                     />
                     <Line
@@ -641,6 +955,9 @@ const getBlockProperties = (block: Block) => {
                     />
                     <X6Component
                       v-else-if="childBlock.type === 'x6'"
+                      :graphData="childBlock.graphData"
+                      :editable="editable"
+                      @graph-data-change="(graphData: any) => { childBlock.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
                       class="block-content graph-content"
                     />
                     <template v-else-if="childBlock.type === 'ref' && childBlock.refId">
@@ -652,6 +969,7 @@ const getBlockProperties = (block: Block) => {
                           :key="`ref-${childBlock.id}`"
                           :content="registryStore.getBlock(childBlock.refId)?.content ?? ''"
                           :editable="editable"
+                          :line-handle-enabled="false"
                           @content-change="(c: string) => registryStore.updateContent(childBlock.refId!, c)"
                           class="block-content"
                         />
@@ -683,10 +1001,12 @@ const getBlockProperties = (block: Block) => {
               :editable="editable"
               :auto-focus="block.id === autoFocusBlockId"
               @focused="autoFocusBlockId = null"
-              @content-change="(content: string) => { block.content = content; emit('content-change', localBlocks.value); }"
+              @content-change="(content: string) => { block.content = content; emit('content-change', localBlocks); }"
               @height-change="(height: number) => block.blockHeight = height"
               @extract-selection="(text: string) => handleExtractSelection(text, index)"
-              @insert-block="() => insertBlock(index + 1, createNewRichTextBlock(index + 1))"
+              @insert-block="() => insertBlock(index + 1, createNewRichTextBlock())"
+              @line-insert="(payload: RichTextLineInsertPayload) => handleRichTextLineInsert(payload, index)"
+              @delete-block="removeBlock(index)"
               @click="(event: MouseEvent) => handleRichTextEditorClick(event, index)"
               @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index)"
               class="block-content"
@@ -695,7 +1015,7 @@ const getBlockProperties = (block: Block) => {
           <!-- 图表块 -->
           <Line
             v-else-if="block.type === 'graph'"
-            :graphData="block.graphData"
+            :graphData="block.graphData as any"
             class="block-content graph-content"
           />
           <!-- 时间轴块 -->
@@ -707,6 +1027,9 @@ const getBlockProperties = (block: Block) => {
           <!-- X6图块 -->
           <X6Component
             v-else-if="block.type === 'x6'"
+            :graphData="block.graphData"
+            :editable="editable"
+            @graph-data-change="(graphData: any) => { block.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
             class="block-content graph-content"
           />
           <!-- 引用块 -->
@@ -719,6 +1042,7 @@ const getBlockProperties = (block: Block) => {
                 :key="`ref-${block.id}`"
                 :content="registryStore.getBlock(block.refId)?.content ?? ''"
                 :editable="editable"
+                :line-handle-enabled="false"
                 @content-change="(c: string) => registryStore.updateContent(block.refId!, c)"
                 class="block-content"
               />
@@ -762,6 +1086,9 @@ const getBlockProperties = (block: Block) => {
 <style scoped>
 .page-container {
   position: relative;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .page-toolbar {
@@ -797,18 +1124,32 @@ const getBlockProperties = (block: Block) => {
 
 .content-container {
   position: relative;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
 }
 
+.blocks-list {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 100%;
+}
+
+
 .content-wrapper {
+  --block-handle-gutter: 36px;
+  --block-shell-pad-x: 20px;
+  --block-shell-pad-y: 20px;
   margin-bottom: 8px;
-  padding: 20px;
+  padding: var(--block-shell-pad-y) var(--block-shell-pad-x) var(--block-shell-pad-y) calc(var(--block-shell-pad-x) + var(--block-handle-gutter));
   border: 1px solid #e0e0e0;
   border-radius: 8px;
   background: #fff;
   transition: all 0.2s ease;
   cursor: text;
   position: relative;
-  padding-left: 30px;
 }
 
 .content-wrapper:hover {
@@ -820,6 +1161,9 @@ const getBlockProperties = (block: Block) => {
 .content-wrapper--richtext {
   border: none;
   box-shadow: none;
+  --block-content-pad-y: 10px;
+  --block-content-pad-x: 15px;
+  padding: 0;
 }
 .content-wrapper--richtext:hover {
   border: none;
@@ -877,7 +1221,7 @@ const getBlockProperties = (block: Block) => {
 .block-content {
   border: none;
   border-radius: 0;
-  overflow: hidden;
+  overflow: visible;
   width: 100%;
   height: auto;
   min-height: 44px;
@@ -891,19 +1235,11 @@ const getBlockProperties = (block: Block) => {
   min-height: 44px;
 }
 
-/* 针对VDitor块的特殊处理 */
-.content-wrapper .block-content :deep(.rich-text-editor-container) {
-  height: auto !important;
-  min-height: 44px;
-  width: 100% !important;
-  margin: 0;
-  padding: 0;
-}
-
 .block-content.graph-content {
   min-height: 400px;
   background: #fafafa;
 }
+
 
 .unknown-block {
   min-height: 100px;
@@ -990,88 +1326,18 @@ const getBlockProperties = (block: Block) => {
 
 /* 左侧悬浮手柄样式 */
 .block-handle {
-  position: absolute;
-  left: 0;
-  top: 20px;
-  transform: translateX(-50%);
-  z-index: 100;
   opacity: 0;
-  transition: opacity 0.2s ease;
+}
+
+.block-handle--always {
+  opacity: 1;
 }
 
 .content-wrapper:hover .block-handle {
   opacity: 1;
 }
 
-.handle-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: #1890ff;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  box-shadow: 0 2px 4px rgba(24, 144, 255, 0.3);
-}
-
-.handle-dot:hover {
-  transform: scale(1.2);
-  background-color: #40a9ff;
-}
-
-.handle-menu {
-  position: absolute;
-  left: 100%;
-  top: 50%;
-  transform: translateY(-50%);
-  background: white;
-  border: 1px solid #e8e8e8;
-  border-radius: 4px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  padding: 4px 0;
-  min-width: 140px;
-  margin-left: 8px;
-  opacity: 0;
-  visibility: hidden;
-  transition: all 0.2s ease;
-  z-index: 101;
-}
-
-.block-handle:hover .handle-menu {
-  opacity: 1;
-  visibility: visible;
-}
-
-.handle-menu-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-  cursor: pointer;
-  transition: background-color 0.12s;
-  color: #333;
-}
-
-.handle-menu-item:hover {
-  background-color: #f0f7ff;
-  color: #1677ff;
-}
-
-.handle-menu-item.delete:hover {
-  background-color: #fff1f0;
-  color: #ff4d4f;
-}
-
-.handle-menu-divider {
-  height: 1px;
-  background-color: #e8e8e8;
-  margin: 4px 0;
-}
-
 /* 富文本块的特殊处理 */
-.content-wrapper--richtext {
-  padding-left: 30px;
-}
 
 /* 拖拽相关样式 */
 .dragging-ghost {

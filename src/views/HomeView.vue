@@ -120,6 +120,8 @@ function onContentChange(blocks: any[]) {
 
 .content-scroll {
   flex: 1;
+  display: flex;
+  flex-direction: column;
   overflow-y: auto;
   padding: 32px 48px;
 }
