@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import X6NodeOverlay from './X6NodeOverlay.vue';
 import {
   Clipboard,
   type Edge,
@@ -40,6 +41,8 @@ type SelectedCellState =
       stroke: string;
       width: number;
       height: number;
+      textMode: 'plain' | 'rich';
+      richContent: string;
     }
   | {
       kind: 'edge';
@@ -71,6 +74,23 @@ const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
 
+// Node overlay state — unified for plain and rich text editing
+const editingNodeId = ref<string | null>(null);
+const nodeOverlays = ref<Array<{
+  id: string;
+  style: Record<string, string>;
+  textMode: 'plain' | 'rich';
+  label: string;
+  richContent: string;
+}>>([]);
+
+// Edge inline editing state (kept here, edge editing not split into sub-component)
+const edgeInlineEditing = ref(false);
+const edgeInlineEditId = ref<string | null>(null);
+const edgeInlineEditStyle = ref<Record<string, string>>({});
+const edgeInlineEditText = ref('');
+const edgeInlineInputRef = ref<HTMLTextAreaElement | null>(null);
+
 const isEditable = computed(() => props.editable !== false);
 const selectionSummary = computed(() => {
   if (selectedCellsCount.value === 0) return '未选中对象';
@@ -88,6 +108,8 @@ let isApplyingExternalData = false;
 let isUserInteracting = false;
 let pendingSyncAfterInteraction = false;
 let lastSerializedSnapshot = '';
+let pendingNodeInternalClickId: string | null = null;
+let suppressNextNodeInternalClickId: string | null = null;
 
 const PORT_GROUPS = {
   top: {
@@ -450,6 +472,11 @@ function getNodeLabel(node: Node) {
   return typeof value === 'string' ? value : '';
 }
 
+function isNodeSoleSelected(node: Node) {
+  const cells = graph?.getSelectedCells() ?? [];
+  return cells.length === 1 && cells[0].id === node.id;
+}
+
 function getEdgeLabel(edge: Edge) {
   const labels = edge.getLabels();
   if (!labels.length) return '';
@@ -476,6 +503,171 @@ function setEdgeLabel(edge: Edge, text: string) {
   ]);
 }
 
+// --- Node overlay helpers ---
+
+function getNodeOverlayStyle(node: Node): Record<string, string> {
+  if (!graph || !stageRef.value) return {};
+  const bbox = node.getBBox();
+  const zoom = graph.zoom();
+  const { tx, ty } = graph.translate();
+  const left = bbox.x * zoom + tx;
+  const top = bbox.y * zoom + ty;
+  const width = bbox.width * zoom;
+  const height = bbox.height * zoom;
+  return {
+    position: 'absolute',
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${width}px`,
+    height: `${height}px`,
+    zIndex: '1000',
+    fontSize: `${Math.max(12, 14 * zoom)}px`,
+  };
+}
+
+function updateNodeOverlays() {
+  if (!graph) { nodeOverlays.value = []; return; }
+  nodeOverlays.value = graph.getNodes().map(node => {
+    const data = node.getData<Record<string, any>>() ?? {};
+    return {
+      id: node.id,
+      style: getNodeOverlayStyle(node),
+      textMode: (data.textMode ?? 'plain') as 'plain' | 'rich',
+      label: getNodeLabel(node),
+      richContent: data.richContent ?? '',
+    };
+  });
+}
+
+// Handlers called by X6NodeOverlay emit events
+
+function handleNodeOverlayCommit(nodeId: string, text: string) {
+  const node = graph?.getCellById(nodeId);
+  if (node && graph?.isNode(node)) {
+    node.attr('label/text', text);
+    node.attr('label/visibility', 'visible');
+  }
+  suppressNextNodeInternalClickId = nodeId;
+  editingNodeId.value = null;
+  graph?.enablePanning();
+  graph?.enableSelection();
+  updateNodeOverlays();
+  scheduleSync();
+}
+
+function handleNodeOverlayCancel(nodeId: string) {
+  const node = graph?.getCellById(nodeId);
+  if (node && graph?.isNode(node)) {
+    const data = node.getData<Record<string, any>>() ?? {};
+    if (data.textMode !== 'rich') {
+      node.attr('label/visibility', 'visible');
+    }
+  }
+  suppressNextNodeInternalClickId = nodeId;
+  editingNodeId.value = null;
+  pendingNodeInternalClickId = null;
+  graph?.enablePanning();
+  graph?.enableSelection();
+}
+
+function handleRichChange(nodeId: string, markdown: string) {
+  const node = graph?.getCellById(nodeId);
+  if (node && graph?.isNode(node)) {
+    node.updateData({ richContent: markdown });
+  }
+  scheduleSync();
+}
+
+// --- Edge inline editing helpers ---
+
+function getEdgeOverlayStyle(edge: Edge): Record<string, string> {
+  if (!graph || !stageRef.value) return {};
+  const zoom = graph.zoom();
+  const { tx, ty } = graph.translate();
+
+  const sourceNode = edge.getSourceNode();
+  const targetNode = edge.getTargetNode();
+  let midX = 0, midY = 0;
+
+  if (sourceNode && targetNode) {
+    const sBBox = sourceNode.getBBox();
+    const tBBox = targetNode.getBBox();
+    midX = (sBBox.x + sBBox.width / 2 + tBBox.x + tBBox.width / 2) / 2;
+    midY = (sBBox.y + sBBox.height / 2 + tBBox.y + tBBox.height / 2) / 2;
+  }
+
+  const edgeWidth = 160;
+  const edgeHeight = 40;
+  return {
+    position: 'absolute',
+    left: `${midX * zoom + tx - edgeWidth / 2}px`,
+    top: `${midY * zoom + ty - edgeHeight / 2}px`,
+    width: `${edgeWidth}px`,
+    height: `${edgeHeight}px`,
+    zIndex: '1000',
+    fontSize: `${Math.max(11, 12 * zoom)}px`,
+  };
+}
+
+function commitEdgeInlineEdit() {
+  if (!graph || !edgeInlineEditId.value) return;
+  const edge = graph.getCellById(edgeInlineEditId.value);
+  if (edge && graph.isEdge(edge)) {
+    setEdgeLabel(edge, edgeInlineEditText.value);
+  }
+  edgeInlineEditing.value = false;
+  edgeInlineEditId.value = null;
+  graph.enablePanning();
+  graph.enableSelection();
+  scheduleSync();
+}
+
+function cancelEdgeInlineEdit() {
+  edgeInlineEditing.value = false;
+  edgeInlineEditId.value = null;
+  if (graph) {
+    graph.enablePanning();
+    graph.enableSelection();
+  }
+}
+
+function handleEdgeEditKeydown(e: KeyboardEvent) {
+  e.stopPropagation();
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelEdgeInlineEdit();
+  } else if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+    e.preventDefault();
+    commitEdgeInlineEdit();
+  }
+}
+
+// --- Text mode toggle ---
+
+function toggleNodeTextMode(mode: 'plain' | 'rich') {
+  if (!graph || !selectedCell.value || selectedCell.value.kind !== 'node') return;
+  const node = graph.getCellById(selectedCell.value.id);
+  if (!node || !graph.isNode(node)) return;
+
+  const currentData = node.getData<Record<string, any>>() ?? {};
+
+  if (mode === 'rich' && currentData.textMode !== 'rich') {
+    const plainText = getNodeLabel(node);
+    node.updateData({
+      textMode: 'rich',
+      richContent: currentData.richContent || plainText,
+    });
+    node.attr('label/visibility', 'hidden');
+  } else if (mode === 'plain' && currentData.textMode !== 'plain') {
+    node.updateData({ textMode: 'plain' });
+    node.attr('label/visibility', 'visible');
+  }
+
+  refreshSelectedCellState();
+  scheduleSync();
+  updateNodeOverlays();
+}
+
 function refreshSelectedCellState() {
   if (!graph) return;
 
@@ -488,6 +680,7 @@ function refreshSelectedCellState() {
 
     if (graph.isNode(cell)) {
       const size = cell.getSize();
+      const nodeData = cell.getData<Record<string, any>>() ?? {};
       selectedCell.value = {
         kind: 'node',
         id: cell.id,
@@ -497,6 +690,8 @@ function refreshSelectedCellState() {
         stroke: (cell.attr('body/stroke') as string) || '#1677ff',
         width: size.width,
         height: size.height,
+        textMode: nodeData.textMode ?? 'plain',
+        richContent: nodeData.richContent ?? '',
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
@@ -585,7 +780,17 @@ function applyGraphData(data?: GraphData, fitView = false) {
   lastSerializedSnapshot = snapshot;
   graph.fromJSON({ cells: normalized.cells ?? [] });
   graph.cleanSelection();
+
+  // Hide SVG labels for rich-text nodes after loading
+  graph.getNodes().forEach(n => {
+    const d = n.getData<Record<string, any>>() ?? {};
+    if (d.textMode === 'rich') {
+      n.attr('label/visibility', 'hidden');
+    }
+  });
+
   refreshSelectedCellState();
+  updateNodeOverlays();
 
   nextTick(() => {
     if (!graph) return;
@@ -807,21 +1012,43 @@ function updateSelectedEdgeConnector(value: string) {
 }
 
 function editNodeLabel(node: Node) {
-  if (!isEditable.value) return;
-  const current = getNodeLabel(node);
-  const next = window.prompt('编辑节点文字', current);
-  if (next == null) return;
-  node.attr('label/text', next);
-  scheduleSync();
+  if (!isEditable.value || !graph) return;
+  if (editingNodeId.value === node.id) return;
+
+  const data = node.getData<Record<string, any>>() ?? {};
+  if (data.textMode !== 'rich') {
+    node.attr('label/visibility', 'hidden');
+  }
+  graph.disablePanning();
+  graph.disableSelection();
+  editingNodeId.value = node.id;
+  updateNodeOverlays();
+}
+
+function tryHandleNodeInternalClick(node: Node) {
+  if (!isEditable.value || editingNodeId.value != null) return;
+  if (suppressNextNodeInternalClickId === node.id) {
+    suppressNextNodeInternalClickId = null;
+    return;
+  }
+  editNodeLabel(node);
 }
 
 function editEdgeLabel(edge: Edge) {
-  if (!isEditable.value) return;
-  const current = getEdgeLabel(edge);
-  const next = window.prompt('编辑连线文字', current);
-  if (next == null) return;
-  setEdgeLabel(edge, next);
-  scheduleSync();
+  if (!isEditable.value || !graph) return;
+
+  edgeInlineEditId.value = edge.id;
+  edgeInlineEditText.value = getEdgeLabel(edge);
+  edgeInlineEditStyle.value = getEdgeOverlayStyle(edge);
+  edgeInlineEditing.value = true;
+
+  graph.disablePanning();
+  graph.disableSelection();
+
+  nextTick(() => {
+    edgeInlineInputRef.value?.focus();
+    edgeInlineInputRef.value?.select();
+  });
 }
 
 function resizeGraph() {
@@ -830,6 +1057,7 @@ function resizeGraph() {
   const height = stageRef.value.clientHeight || props.height;
   graph.resize(width, height);
   updateUndoRedoState();
+  updateNodeOverlays();
 }
 
 function bindKeyboardShortcuts() {
@@ -879,8 +1107,17 @@ function bindGraphEvents() {
     refreshSelectedCellState();
   });
 
-  graph.on('node:mousedown', () => {
+  graph.on('node:mousedown', ({ node }) => {
     startUserInteraction();
+    pendingNodeInternalClickId = null;
+
+    if (!isEditable.value || editingNodeId.value != null) {
+      return;
+    }
+
+    if (isNodeSoleSelected(node)) {
+      pendingNodeInternalClickId = node.id;
+    }
   });
 
   graph.on('node:mouseup', () => {
@@ -913,6 +1150,22 @@ function bindGraphEvents() {
 
   graph.on('blank:mouseup', () => {
     finishUserInteraction();
+    pendingNodeInternalClickId = null;
+  });
+
+  graph.on('blank:click', () => {
+    pendingNodeInternalClickId = null;
+  });
+
+  graph.on('node:click', ({ node }) => {
+    const shouldHandleInternalClick = pendingNodeInternalClickId === node.id;
+    pendingNodeInternalClickId = null;
+
+    if (!shouldHandleInternalClick) {
+      return;
+    }
+
+    tryHandleNodeInternalClick(node);
   });
 
   graph.on('blank:dblclick', ({ x, y }) => {
@@ -920,7 +1173,7 @@ function bindGraphEvents() {
   });
 
   graph.on('node:dblclick', ({ node }) => {
-    editNodeLabel(node);
+    tryHandleNodeInternalClick(node);
   });
 
   graph.on('edge:dblclick', ({ edge }) => {
@@ -955,6 +1208,16 @@ function bindGraphEvents() {
   graph.model.on('cell:change:source', () => scheduleSync());
   graph.model.on('cell:change:target', () => scheduleSync());
   graph.model.on('cell:change:vertices', () => scheduleSync());
+  graph.model.on('cell:change:data', () => scheduleSync());
+
+  // Update node overlays on graph transform / node changes
+  graph.on('translate', updateNodeOverlays);
+  graph.on('scale', updateNodeOverlays);
+  graph.model.on('node:change:position', updateNodeOverlays);
+  graph.model.on('node:change:size', updateNodeOverlays);
+  graph.model.on('cell:change:data', updateNodeOverlays);
+  graph.model.on('cell:added', updateNodeOverlays);
+  graph.model.on('cell:removed', updateNodeOverlays);
 }
 
 function initGraph() {
@@ -1171,6 +1434,42 @@ watch(
     <div class="x6-workspace">
       <div ref="stageRef" class="x6-stage" :style="{ minHeight: `${height}px` }">
         <div ref="containerRef" class="x6-canvas"></div>
+
+        <!-- Node overlays: plain text editing + rich text preview/editing -->
+        <X6NodeOverlay
+          v-for="overlay in nodeOverlays"
+          :key="overlay.id"
+          :node-id="overlay.id"
+          :style-props="overlay.style"
+          :text-mode="overlay.textMode"
+          :label="overlay.label"
+          :rich-content="overlay.richContent"
+          :is-editing="editingNodeId === overlay.id"
+          :is-editable="isEditable"
+          @commit-plain="(text) => handleNodeOverlayCommit(overlay.id, text)"
+          @cancel="() => handleNodeOverlayCancel(overlay.id)"
+          @rich-change="(md) => handleRichChange(overlay.id, md)"
+        />
+
+        <!-- Edge inline text editor -->
+        <div
+          v-if="edgeInlineEditing"
+          class="x6-inline-editor"
+          :style="edgeInlineEditStyle"
+          @mousedown.stop
+          @click.stop
+          @dblclick.stop
+          @keydown.stop
+        >
+          <textarea
+            ref="edgeInlineInputRef"
+            v-model="edgeInlineEditText"
+            class="x6-inline-editor__input"
+            @keydown="handleEdgeEditKeydown"
+            @blur="commitEdgeInlineEdit()"
+          />
+        </div>
+
         <div class="x6-stage-hint">
           <span>双击空白处快速新建节点</span>
           <span>拖拽节点四周锚点创建连线</span>
@@ -1198,14 +1497,31 @@ watch(
 
           <template v-else-if="selectedCell?.kind === 'node'">
             <label class="field">
-              <span>文字</span>
-              <input
-                type="text"
-                :value="selectedCell.label"
+              <span>文字模式</span>
+              <select
+                :value="selectedCell.textMode"
                 :disabled="!isEditable"
-                @input="updateSelectedNodeLabel(($event.target as HTMLInputElement).value)"
-              />
+                @change="toggleNodeTextMode(($event.target as HTMLSelectElement).value as 'plain' | 'rich')"
+              >
+                <option value="plain">纯文本</option>
+                <option value="rich">富文本</option>
+              </select>
             </label>
+
+            <template v-if="selectedCell.textMode === 'plain'">
+              <label class="field">
+                <span>文字</span>
+                <input
+                  type="text"
+                  :value="selectedCell.label"
+                  :disabled="!isEditable"
+                  @input="updateSelectedNodeLabel(($event.target as HTMLInputElement).value)"
+                />
+              </label>
+            </template>
+            <template v-else>
+              <p class="inspector-empty" style="font-size:12px;">双击节点可直接编辑富文本</p>
+            </template>
 
             <div class="field-row">
               <label class="field">
@@ -1399,6 +1715,30 @@ watch(
 .x6-canvas {
   width: 100%;
   height: 100%;
+}
+
+/* Inline text editor overlay */
+.x6-inline-editor {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+}
+
+.x6-inline-editor__input {
+  width: 100%;
+  height: 100%;
+  border: 2px solid #1677ff;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.96);
+  font-weight: 600;
+  text-align: center;
+  resize: none;
+  outline: none;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  font-family: inherit;
+  line-height: 1.4;
 }
 
 .x6-stage-hint {

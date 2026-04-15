@@ -136,7 +136,7 @@ const blockHandleItems = [
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
-] as const;
+];
 
 const childBlockHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
@@ -146,7 +146,7 @@ const childBlockHandleItems = [
   { key: 'insert-x6', icon: '🧩', label: '插入 X6 图' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
-] as const;
+];
 
 const setRichTextEditorRef = (el: unknown, index: number) => {
   if (el) {
@@ -926,7 +926,7 @@ const getBlockProperties = (block: Block) => {
                     <!-- 根据block类型动态渲染不同组件 -->
                     <template v-if="isRichTextBlock(childBlock)">
                       <RichTextEditor
-                        :ref="(el) => setRichTextEditorRef(el, index * 100 + childIndex)"
+                        :ref="(el: any) => setRichTextEditorRef(el, index * 100 + childIndex)"
                         :key="`richtext-${childBlock.id}`"
                         :content="childBlock.content || ''"
                         :editable="editable"
@@ -995,7 +995,7 @@ const getBlockProperties = (block: Block) => {
           <!-- 富文本块 -->
           <template v-else-if="isRichTextBlock(block)">
             <RichTextEditor
-              :ref="(el) => setRichTextEditorRef(el, index)"
+              :ref="(el: any) => setRichTextEditorRef(el, index)"
               :key="`richtext-${block.id}`"
               :content="block.content || ''"
               :editable="editable"

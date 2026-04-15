@@ -75,7 +75,7 @@ const lineHandleItems = [
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
   { key: 'delete', icon: '🗑️', label: '删除当前块', danger: true },
-] as const;
+] ;
 
 const LINE_BLOCK_SELECTOR = [
   '[data-block="0"]',
@@ -107,7 +107,7 @@ const previewHtml = ref('');
 const renderPreviewHtml = async () => {
   if (isReady.value) return;
   try {
-    previewHtml.value = await Vditor.md2html(props.content, { cdn: VDITOR_CDN });
+    previewHtml.value = await Vditor.md2html(props.content, { cdn: VDITOR_CDN, mode: 'light' });
   } catch {
     previewHtml.value = `<p>${escapeHtml(props.content)}</p>`;
   }

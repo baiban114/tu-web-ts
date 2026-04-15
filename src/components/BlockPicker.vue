@@ -41,7 +41,11 @@ function onSelect(item: BlockWithMeta) {
 }
 
 /** 截取 block 内容用于预览（去掉 markdown 符号，最多 80 字符） */
-function preview(content: string | undefined): string {
+function preview(block: any): string {
+  if (block.type === 'x6') {
+    return '📋 默认画板';
+  }
+  const content = block.content;
   if (!content) return '（空内容）';
   const plain = content.replace(/[#*`>\-_\[\]]/g, '').trim();
   return plain.length > 80 ? plain.slice(0, 80) + '…' : plain || '（空内容）';
@@ -74,9 +78,9 @@ function preview(content: string | undefined): string {
           class="picker-item"
           @click="onSelect(item)"
         >
-          <div class="picker-item__preview">{{ preview(item.block.content) }}</div>
+          <div class="picker-item__preview">{{ preview(item.block) }}</div>
           <div class="picker-item__meta">
-            <span class="picker-item__type">{{ item.block.type }}</span>
+            <span class="picker-item__type">{{ item.block.type === 'x6' ? '默认画板' : item.block.type }}</span>
             <span class="picker-item__page">来自：{{ item.pageTitle }}</span>
           </div>
         </div>
