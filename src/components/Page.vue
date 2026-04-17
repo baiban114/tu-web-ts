@@ -53,7 +53,7 @@ interface GraphData {
 
 export interface Block {
   id: string;
-  type: 'richtext' | 'richText' | 'graph' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | string;
+  type: 'richtext' | 'richText' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | string;
   title?: string;
   content?: string;
   refId?: string; // type === 'ref' 时指向被引用块的 id
@@ -83,7 +83,7 @@ interface Props {
 interface RichTextLineInsertPayload {
   beforeContent: string;
   afterContent: string;
-  blockType: 'richtext' | 'graph' | 'line' | 'x6' | 'ref' | 'container';
+  blockType: 'richtext' | 'line' | 'x6' | 'ref' | 'container';
   layout?: 'horizontal' | 'vertical';
 }
 
@@ -129,9 +129,8 @@ const blockHandleStyle = {
 const blockHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
-  { key: 'insert-graph', icon: '🎨', label: '插入画板' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
-  { key: 'insert-x6', icon: '🧩', label: '插入 X6 图' },
+  { key: 'insert-x6', icon: '🧩', label: '插入画板' },
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
   { key: 'divider-danger', divider: true },
@@ -141,9 +140,8 @@ const blockHandleItems = [
 const childBlockHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
-  { key: 'insert-graph', icon: '🎨', label: '插入画板' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
-  { key: 'insert-x6', icon: '🧩', label: '插入 X6 图' },
+  { key: 'insert-x6', icon: '🧩', label: '插入画板' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
 ];
@@ -261,22 +259,6 @@ const buildSplitReplacementBlocks = (
   return blocks;
 };
 
-// 创建新的画板块
-const createNewDrawingBlock = (position: number): Block => {
-  return {
-    id: generateId(),
-    type: 'graph',
-    title: '新的画板',
-    graphData: {
-      nodes: [
-        { id: `node-${Date.now()}-1`, style: { x: 100, y: 100 }, label: '节点 1' },
-        { id: `node-${Date.now()}-2`, style: { x: 300, y: 100 }, label: '节点 2' },
-      ],
-      edges: []
-    }
-  };
-};
-
 // 创建新的时间轴块
 const createNewLineBlock = (position: number): Block => {
   return {
@@ -292,7 +274,7 @@ const createNewX6Block = (position: number): Block => {
   return {
     id: generateId(),
     type: 'x6',
-    title: '新的X6图',
+    title: '新的画板',
     graphData: {
       nodes: [
         { id: `x6-node-${Date.now()}-1`, x: 100, y: 100, width: 80, height: 40, label: '节点 1' },
@@ -362,6 +344,13 @@ const onRefBlockSelected = (refId: string) => {
 const normalizeBlockType = (block: Block): Block => {
   if (block.type === 'richText') {
     return { ...block, type: 'richtext' };
+  }
+  if (block.type === 'graph') {
+    return {
+      ...block,
+      type: 'x6',
+      title: block.title || '画板',
+    };
   }
   return block;
 };
@@ -508,9 +497,6 @@ const handleBlockHandleSelect = (action: string, position: number) => {
     case 'insert-ref':
       openBlockPicker(insertPosition);
       return;
-    case 'insert-graph':
-      insertBlock(insertPosition, createNewDrawingBlock(insertPosition));
-      return;
     case 'insert-line':
       insertBlock(insertPosition, createNewLineBlock(insertPosition));
       return;
@@ -623,9 +609,6 @@ const handleRichTextLineInsert = (payload: RichTextLineInsertPayload, blockIndex
     case 'richtext':
       insertedBlock = createNewRichTextBlock();
       break;
-    case 'graph':
-      insertedBlock = createNewDrawingBlock(blockIndex + 1);
-      break;
     case 'line':
       insertedBlock = createNewLineBlock(blockIndex + 1);
       break;
@@ -685,7 +668,6 @@ watch(
     const unknownBlocks = normalizedBlocks.filter(block =>
       !isRichTextBlock(block) &&
       !isSpacerBlock(block) &&
-      block.type !== 'graph' &&
       block.type !== 'line' &&
       block.type !== 'x6' &&
       block.type !== 'ref' &&
@@ -873,7 +855,7 @@ const getBlockProperties = (block: Block) => {
             @select="(action) => handleBlockHandleSelect(action, index)"
           />
           <div class="block-header" v-if="!isRichTextBlock(block)">
-            <h3>{{ block.title || `${block.type === 'graph' ? '图表' : block.type} ${index + 1}` }}</h3>
+            <h3>{{ block.title || `${block.type === 'x6' ? '画板' : block.type} ${index + 1}` }}</h3>
             <div class="block-type-badge">{{ block.type }}</div>
           </div>
 
@@ -919,7 +901,7 @@ const getBlockProperties = (block: Block) => {
                       @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
                     />
                     <div class="block-header" v-if="!isRichTextBlock(childBlock)">
-                      <h3>{{ childBlock.title || `${childBlock.type === 'graph' ? '图表' : childBlock.type} ${childIndex + 1}` }}</h3>
+                      <h3>{{ childBlock.title || `${childBlock.type === 'x6' ? '画板' : childBlock.type} ${childIndex + 1}` }}</h3>
                       <div class="block-type-badge">{{ childBlock.type }}</div>
                     </div>
 
@@ -944,35 +926,41 @@ const getBlockProperties = (block: Block) => {
                       />
                     </template>
                     <Line
-                      v-else-if="childBlock.type === 'graph'"
-                      :graphData="childBlock.graphData as any"
-                      class="block-content graph-content"
-                    />
-                    <Line
                       v-else-if="childBlock.type === 'line'"
                       :timelineData="childBlock.timelineData"
-                      class="block-content graph-content"
+                      class="block-content board-content"
                     />
                     <X6Component
                       v-else-if="childBlock.type === 'x6'"
                       :graphData="childBlock.graphData"
                       :editable="editable"
                       @graph-data-change="(graphData: any) => { childBlock.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
-                      class="block-content graph-content"
+                      class="block-content board-content"
                     />
                     <template v-else-if="childBlock.type === 'ref' && childBlock.refId">
                       <div class="ref-block-wrap">
                         <div class="ref-block-badge">
                           🔗 引用自：{{ registryStore.getMeta(childBlock.refId)?.pageTitle ?? '未知页面' }}
                         </div>
-                        <RichTextEditor
-                          :key="`ref-${childBlock.id}`"
-                          :content="registryStore.getBlock(childBlock.refId)?.content ?? ''"
-                          :editable="editable"
-                          :line-handle-enabled="false"
-                          @content-change="(c: string) => registryStore.updateContent(childBlock.refId!, c)"
-                          class="block-content"
-                        />
+                        <template v-if="registryStore.getBlock(childBlock.refId)?.type === 'x6'">
+                          <X6Component
+                            :key="`ref-x6-${childBlock.id}`"
+                            :graphData="registryStore.getBlock(childBlock.refId)?.graphData"
+                            :editable="editable"
+                            @graph-data-change="(graphData: any) => registryStore.updateGraphData(childBlock.refId!, graphData as GraphData)"
+                            class="block-content board-content"
+                          />
+                        </template>
+                        <template v-else>
+                          <RichTextEditor
+                            :key="`ref-${childBlock.id}`"
+                            :content="registryStore.getBlock(childBlock.refId)?.content ?? ''"
+                            :editable="editable"
+                            :line-handle-enabled="false"
+                            @content-change="(c: string) => registryStore.updateContent(childBlock.refId!, c)"
+                            class="block-content"
+                          />
+                        </template>
                       </div>
                     </template>
                     <div v-else class="block-content unknown-block">
@@ -1012,17 +1000,11 @@ const getBlockProperties = (block: Block) => {
               class="block-content"
             />
           </template>
-          <!-- 图表块 -->
-          <Line
-            v-else-if="block.type === 'graph'"
-            :graphData="block.graphData as any"
-            class="block-content graph-content"
-          />
           <!-- 时间轴块 -->
           <Line
             v-else-if="block.type === 'line'"
             :timelineData="block.timelineData"
-            class="block-content graph-content"
+            class="block-content board-content"
           />
           <!-- X6图块 -->
           <X6Component
@@ -1030,7 +1012,7 @@ const getBlockProperties = (block: Block) => {
             :graphData="block.graphData"
             :editable="editable"
             @graph-data-change="(graphData: any) => { block.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
-            class="block-content graph-content"
+            class="block-content board-content"
           />
           <!-- 引用块 -->
           <template v-else-if="block.type === 'ref' && block.refId">
@@ -1038,14 +1020,25 @@ const getBlockProperties = (block: Block) => {
               <div class="ref-block-badge">
                 🔗 引用自：{{ registryStore.getMeta(block.refId)?.pageTitle ?? '未知页面' }}
               </div>
-              <RichTextEditor
-                :key="`ref-${block.id}`"
-                :content="registryStore.getBlock(block.refId)?.content ?? ''"
-                :editable="editable"
-                :line-handle-enabled="false"
-                @content-change="(c: string) => registryStore.updateContent(block.refId!, c)"
-                class="block-content"
-              />
+              <template v-if="registryStore.getBlock(block.refId)?.type === 'x6'">
+                <X6Component
+                  :key="`ref-x6-${block.id}`"
+                  :graphData="registryStore.getBlock(block.refId)?.graphData"
+                  :editable="editable"
+                  @graph-data-change="(graphData: any) => registryStore.updateGraphData(block.refId!, graphData as GraphData)"
+                  class="block-content board-content"
+                />
+              </template>
+              <template v-else>
+                <RichTextEditor
+                  :key="`ref-${block.id}`"
+                  :content="registryStore.getBlock(block.refId)?.content ?? ''"
+                  :editable="editable"
+                  :line-handle-enabled="false"
+                  @content-change="(c: string) => registryStore.updateContent(block.refId!, c)"
+                  class="block-content"
+                />
+              </template>
             </div>
           </template>
           <!-- 未知类型块 -->
@@ -1235,7 +1228,7 @@ const getBlockProperties = (block: Block) => {
   min-height: 44px;
 }
 
-.block-content.graph-content {
+.block-content.board-content {
   min-height: 400px;
   background: #fafafa;
 }

@@ -13,7 +13,7 @@ interface Props {
   lineHandleEnabled?: boolean;
 }
 
-type LineInsertBlockType = 'richtext' | 'graph' | 'line' | 'x6' | 'ref' | 'container';
+type LineInsertBlockType = 'richtext' | 'line' | 'x6' | 'ref' | 'container';
 
 interface LineInsertPayload {
   beforeContent: string;
@@ -69,9 +69,8 @@ let scheduledHandleSyncFrame = 0;
 const lineHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
-  { key: 'insert-graph', icon: '🎨', label: '插入画板' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
-  { key: 'insert-x6', icon: '🧩', label: '插入 X6 图' },
+  { key: 'insert-x6', icon: '🧩', label: '插入画板' },
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
   { key: 'delete', icon: '🗑️', label: '删除当前块', danger: true },
@@ -562,9 +561,6 @@ const handleLineHandleSelect = (action: string) => {
       return;
     case 'insert-ref':
       emitLineInsert('ref');
-      return;
-    case 'insert-graph':
-      emitLineInsert('graph');
       return;
     case 'insert-line':
       emitLineInsert('line');

@@ -44,6 +44,32 @@ const _contents: Record<string, Block[]> = {
   'p-2': [{ id: 'b-2', type: 'richtext', content: '# 基础概念\n\n本章介绍核心概念。' }],
 };
 
+_contents['p-1'].push({
+  id: 'b-x6-1',
+  type: 'x6',
+  title: '示例默认画板',
+  graphData: {
+    nodes: [
+      { id: 'demo-x6-node-1', x: 120, y: 100, width: 120, height: 56, label: '开始' },
+      { id: 'demo-x6-node-2', x: 340, y: 100, width: 140, height: 56, label: '被引用的画板' },
+    ],
+    edges: [
+      { id: 'demo-x6-edge-1', source: 'demo-x6-node-1', target: 'demo-x6-node-2' },
+    ],
+  },
+});
+
+function findBlockById(blocks: Block[], blockId: string): Block | undefined {
+  for (const block of blocks) {
+    if (block.id === blockId) return block;
+    if (block.children?.length) {
+      const nested = findBlockById(block.children, blockId);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
 function buildTree(items: Omit<PageItem, 'children'>[], parentId: string | null): PageItem[] {
   return items
     .filter((p) => p.parentId === parentId)
@@ -151,6 +177,18 @@ export async function updateBlockContent(
   await mockDelay(50);
   const blocks = _contents[pageId];
   if (!blocks) return;
-  const block = blocks.find((b) => b.id === blockId);
+  const block = findBlockById(blocks, blockId);
   if (block) block.content = content;
+}
+
+export async function updateBlockGraphData(
+  pageId: string,
+  blockId: string,
+  graphData: Block['graphData'],
+): Promise<void> {
+  await mockDelay(50);
+  const blocks = _contents[pageId];
+  if (!blocks) return;
+  const block = findBlockById(blocks, blockId);
+  if (block) block.graphData = graphData;
 }
