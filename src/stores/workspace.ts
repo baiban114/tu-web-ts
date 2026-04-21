@@ -18,6 +18,7 @@ import {
 } from '@/api/page';
 import type { Block } from '@/components/Page.vue';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
+import { blockSyncManager } from '@/utils/blockSyncManager';
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const kbList = ref<KnowledgeBase[]>([]);
@@ -42,19 +43,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function selectKb(kbId: string) {
     currentKbId.value = kbId;
     currentPageId.value = null;
+    blockSyncManager.setPageId(null);
     currentBlocks.value = [];
     pageTree.value = await getPageTree(kbId);
-    // 自动选中第一个页面
     const firstPage = findFirstPage(pageTree.value);
     if (firstPage) await selectPage(firstPage.id);
   }
 
   async function selectPage(pageId: string) {
     currentPageId.value = pageId;
+    blockSyncManager.setPageId(pageId);
     loading.value = true;
     try {
       currentBlocks.value = await getPageContent(pageId);
-      // 将本页 block 注册到全局 registry，以便其他页的引用块能实时读取
       const registryStore = useBlockRegistryStore();
       const pageTitle = findPageTitle(pageId);
       registryStore.registerBlocks(currentBlocks.value, pageId, pageTitle);
@@ -98,6 +99,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         currentKbId.value = null;
         pageTree.value = [];
         currentPageId.value = null;
+        blockSyncManager.setPageId(null);
         currentBlocks.value = [];
       }
     }
@@ -116,6 +118,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (currentPageId.value === id) {
       currentPageId.value = null;
+      blockSyncManager.setPageId(null);
       currentBlocks.value = [];
     }
   }
@@ -157,3 +160,4 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     renameCurrentPage,
   };
 });
+

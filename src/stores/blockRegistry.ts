@@ -13,10 +13,9 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
 
   async function loadAll() {
     const items = await listAllBlocks();
+    registry.clear();
     for (const item of items) {
-      if (!registry.has(item.block.id)) {
-        registry.set(item.block.id, { ...item, block: { ...item.block } });
-      }
+      registry.set(item.block.id, { ...item, block: { ...item.block } });
     }
   }
 
@@ -64,3 +63,4 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     getAllBlocks,
   };
 });
+

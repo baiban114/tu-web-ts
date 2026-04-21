@@ -1,11 +1,5 @@
-// 页面 mock API（开发阶段，可无缝切换到后端接口）
-// 后端建议：
-//   GET    /api/kbs/:kbId/pages/tree    获取树结构
-//   POST   /api/pages                   创建页面
-//   DELETE /api/pages/:id               删除页面（级联删除子页面）
-//   PATCH  /api/pages/:id               重命名或移动页面
-
 import type { Block } from '@/components/Page.vue';
+import { request } from './http';
 
 export interface PageItem {
   id: string;
@@ -21,77 +15,26 @@ export interface PageContent {
   blocks: Block[];
 }
 
-// 读操作不加延迟（内存数据，模拟后端时替换为真实请求）
-// 写操作保留小延迟以模拟网络 round-trip
-const mockDelay = (ms = 0) => ms > 0 ? new Promise<void>((r) => setTimeout(r, ms)) : Promise.resolve();
-
-// 页面扁平列表（所有知识库）
-let _pages: Omit<PageItem, 'children'>[] = [
-  { id: 'p-1', kbId: 'kb-1', parentId: null,  title: '快速入门',  order: 0 },
-  { id: 'p-2', kbId: 'kb-1', parentId: null,  title: '基础概念',  order: 1 },
-  { id: 'p-3', kbId: 'kb-1', parentId: 'p-2', title: '数据结构',  order: 0 },
-  { id: 'p-4', kbId: 'kb-1', parentId: 'p-2', title: '算法基础',  order: 1 },
-  { id: 'p-5', kbId: 'kb-2', parentId: null,  title: 'API 文档',  order: 0 },
-  { id: 'p-6', kbId: 'kb-2', parentId: null,  title: '架构设计',  order: 1 },
-  { id: 'p-7', kbId: 'kb-2', parentId: 'p-6', title: '前端架构',  order: 0 },
-  { id: 'p-8', kbId: 'kb-3', parentId: null,  title: '需求分析',  order: 0 },
-  { id: 'p-9', kbId: 'kb-3', parentId: null,  title: '里程碑',    order: 1 },
-];
-
-// 页面内容存储（pageId -> blocks）
-const _contents: Record<string, Block[]> = {
-  'p-1': [{ id: 'b-1', type: 'richtext', content: '# 快速入门\n\n欢迎使用本知识库！' }],
-  'p-2': [{ id: 'b-2', type: 'richtext', content: '# 基础概念\n\n本章介绍核心概念。' }],
-};
-
-_contents['p-1'].push({
-  id: 'b-x6-1',
-  type: 'x6',
-  title: '示例默认画板',
-  graphData: {
-    nodes: [
-      { id: 'demo-x6-node-1', x: 120, y: 100, width: 120, height: 56, label: '开始' },
-      { id: 'demo-x6-node-2', x: 340, y: 100, width: 140, height: 56, label: '被引用的画板' },
-    ],
-    edges: [
-      { id: 'demo-x6-edge-1', source: 'demo-x6-node-1', target: 'demo-x6-node-2' },
-    ],
-  },
-});
-
-function findBlockById(blocks: Block[], blockId: string): Block | undefined {
-  for (const block of blocks) {
-    if (block.id === blockId) return block;
-    if (block.children?.length) {
-      const nested = findBlockById(block.children, blockId);
-      if (nested) return nested;
-    }
-  }
-  return undefined;
-}
-
-function buildTree(items: Omit<PageItem, 'children'>[], parentId: string | null): PageItem[] {
-  return items
-    .filter((p) => p.parentId === parentId)
-    .sort((a, b) => a.order - b.order)
-    .map((p) => ({
-      ...p,
-      children: buildTree(items, p.id),
-    }));
+export interface BlockWithMeta {
+  block: Block;
+  pageId: string;
+  pageTitle: string;
 }
 
 export async function getPageTree(kbId: string): Promise<PageItem[]> {
-  const kbPages = _pages.filter((p) => p.kbId === kbId);
-  return buildTree(kbPages, null);
+  return request<PageItem[]>(`/api/kbs/${kbId}/pages/tree`);
 }
 
 export async function getPageContent(pageId: string): Promise<Block[]> {
-  return _contents[pageId] ? [..._contents[pageId]] : [];
+  const data = await request<PageContent>(`/api/pages/${pageId}/content`);
+  return data.blocks ?? [];
 }
 
 export async function savePageContent(pageId: string, blocks: Block[]): Promise<void> {
-  await mockDelay(100);
-  _contents[pageId] = blocks;
+  await request<PageContent>(`/api/pages/${pageId}/content`, {
+    method: 'PUT',
+    body: JSON.stringify({ blocks }),
+  });
 }
 
 export async function createPage(
@@ -99,29 +42,16 @@ export async function createPage(
   parentId: string | null,
   title = '新页面',
 ): Promise<PageItem> {
-  await mockDelay();
-  const siblings = _pages.filter((p) => p.kbId === kbId && p.parentId === parentId);
-  const page: Omit<PageItem, 'children'> = {
-    id: `p-${Date.now()}`,
-    kbId,
-    parentId,
-    title,
-    order: siblings.length,
-  };
-  _pages.push(page);
-  return { ...page, children: [] };
+  return request<PageItem>('/api/pages', {
+    method: 'POST',
+    body: JSON.stringify({ kbId, parentId, title }),
+  });
 }
 
 export async function deletePage(id: string): Promise<void> {
-  await mockDelay();
-  const toDelete = new Set<string>();
-  const collect = (pid: string) => {
-    toDelete.add(pid);
-    _pages.filter((p) => p.parentId === pid).forEach((p) => collect(p.id));
-  };
-  collect(id);
-  _pages = _pages.filter((p) => !toDelete.has(p.id));
-  toDelete.forEach((pid) => delete _contents[pid]);
+  await request<void>(`/api/pages/${id}`, {
+    method: 'DELETE',
+  });
 }
 
 export async function movePage(
@@ -129,56 +59,32 @@ export async function movePage(
   newParentId: string | null,
   newOrder: number,
 ): Promise<void> {
-  await mockDelay();
-  const page = _pages.find((p) => p.id === id);
-  if (!page) return;
-  page.parentId = newParentId;
-  page.order = newOrder;
+  await request<PageItem>(`/api/pages/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ parentId: newParentId, order: newOrder }),
+  });
 }
 
 export async function renamePage(id: string, title: string): Promise<void> {
-  await mockDelay();
-  const page = _pages.find((p) => p.id === id);
-  if (page) page.title = title;
+  await request<PageItem>(`/api/pages/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ title }),
+  });
 }
 
-// ─── 引用块相关 ───────────────────────────────────────────────────────────────
-// 后端建议：GET /api/blocks  返回全部可引用块（含来源页信息）
-//           PATCH /api/blocks/:id  更新块内容（影响所有引用方）
-
-export interface BlockWithMeta {
-  block: Block;
-  pageId: string;
-  pageTitle: string;
-}
-
-/** 列出所有可被引用的块（跨知识库、跨页面） */
 export async function listAllBlocks(): Promise<BlockWithMeta[]> {
-  await mockDelay();
-  const result: BlockWithMeta[] = [];
-  for (const [pageId, blocks] of Object.entries(_contents)) {
-    const page = _pages.find((p) => p.id === pageId);
-    const pageTitle = page?.title ?? pageId;
-    for (const block of blocks) {
-      if (block.type !== 'ref' && block.type !== 'spacer') {
-        result.push({ block: { ...block }, pageId, pageTitle });
-      }
-    }
-  }
-  return result;
+  return request<BlockWithMeta[]>('/api/blocks');
 }
 
-/** 更新某页面中指定块的内容（供引用块同步回写原始块） */
 export async function updateBlockContent(
   pageId: string,
   blockId: string,
   content: string,
 ): Promise<void> {
-  await mockDelay(50);
-  const blocks = _contents[pageId];
-  if (!blocks) return;
-  const block = findBlockById(blocks, blockId);
-  if (block) block.content = content;
+  await request<void>(`/api/blocks/${blockId}/content`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pageId, content }),
+  });
 }
 
 export async function updateBlockGraphData(
@@ -186,9 +92,9 @@ export async function updateBlockGraphData(
   blockId: string,
   graphData: Block['graphData'],
 ): Promise<void> {
-  await mockDelay(50);
-  const blocks = _contents[pageId];
-  if (!blocks) return;
-  const block = findBlockById(blocks, blockId);
-  if (block) block.graphData = graphData;
+  await request<void>(`/api/blocks/${blockId}/graph`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pageId, graphData }),
+  });
 }
+
