@@ -6,7 +6,7 @@ import {
   updateBlockGraphData,
   type BlockWithMeta,
 } from '@/api/page';
-import type { Block } from '@/components/Page.vue';
+import type { Block } from '@/api/types';
 
 export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   const registry = reactive(new Map<string, BlockWithMeta>());
@@ -52,6 +52,10 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     return Array.from(registry.values());
   }
 
+  function clear() {
+    registry.clear();
+  }
+
   return {
     registry,
     loadAll,
@@ -61,6 +65,6 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     updateContent,
     updateGraphData,
     getAllBlocks,
+    clear,
   };
 });
-

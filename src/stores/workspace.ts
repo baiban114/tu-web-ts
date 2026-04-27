@@ -16,9 +16,10 @@ import {
   renamePage,
   type PageItem,
 } from '@/api/page';
-import type { Block } from '@/components/Page.vue';
+import type { Block } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
+import { deriveMarkdownPageTitle, parseMarkdownToBlocks } from '@/utils/markdownImport';
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const kbList = ref<KnowledgeBase[]>([]);
@@ -27,11 +28,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const currentPageId = ref<string | null>(null);
   const currentBlocks = ref<Block[]>([]);
   const loading = ref(false);
+  const registryStore = useBlockRegistryStore();
+
+  function resetWorkspaceState() {
+    currentKbId.value = null;
+    currentPageId.value = null;
+    pageTree.value = [];
+    currentBlocks.value = [];
+    blockSyncManager.setPageId(null);
+    registryStore.clear();
+  }
 
   async function loadKbList() {
     kbList.value = await listKnowledgeBases();
-    if (kbList.value.length > 0 && !currentKbId.value) {
-      await selectKb(kbList.value[0].id);
+    if (kbList.value.length === 0) {
+      resetWorkspaceState();
+      return;
+    }
+
+    const nextKbId = currentKbId.value && kbList.value.some((kb) => kb.id === currentKbId.value)
+      ? currentKbId.value
+      : kbList.value[0].id;
+
+    if (nextKbId) {
+      await selectKb(nextKbId);
     }
   }
 
@@ -45,6 +65,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentPageId.value = null;
     blockSyncManager.setPageId(null);
     currentBlocks.value = [];
+    registryStore.clear();
     pageTree.value = await getPageTree(kbId);
     const firstPage = findFirstPage(pageTree.value);
     if (firstPage) await selectPage(firstPage.id);
@@ -56,7 +77,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     loading.value = true;
     try {
       currentBlocks.value = await getPageContent(pageId);
-      const registryStore = useBlockRegistryStore();
       const pageTitle = findPageTitle(pageId);
       registryStore.registerBlocks(currentBlocks.value, pageId, pageTitle);
     } finally {
@@ -83,6 +103,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await savePageContent(currentPageId.value, blocks);
   }
 
+  async function reloadWorkspace() {
+    resetWorkspaceState();
+    await loadKbList();
+  }
+
   async function addKb(name: string) {
     const kb = await createKnowledgeBase(name);
     kbList.value.push(kb);
@@ -96,11 +121,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (kbList.value.length > 0) {
         await selectKb(kbList.value[0].id);
       } else {
-        currentKbId.value = null;
-        pageTree.value = [];
-        currentPageId.value = null;
-        blockSyncManager.setPageId(null);
-        currentBlocks.value = [];
+        resetWorkspaceState();
       }
     }
   }
@@ -109,6 +130,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!currentKbId.value) return;
     await createPage(currentKbId.value, parentId, title);
     pageTree.value = await getPageTree(currentKbId.value);
+  }
+
+  async function importMarkdownFile(file: File) {
+    if (!currentKbId.value) {
+      throw new Error('请先选择知识库');
+    }
+
+    const markdown = await file.text();
+    const pageTitle = deriveMarkdownPageTitle(file.name);
+    const page = await createPage(currentKbId.value, null, pageTitle);
+    const blocks = parseMarkdownToBlocks(markdown, `${page.id}-${Date.now().toString(36)}`);
+    await savePageContent(page.id, blocks);
+    pageTree.value = await getPageTree(currentKbId.value);
+    await selectPage(page.id);
   }
 
   async function removePage(id: string) {
@@ -149,15 +184,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentBlocks,
     loading,
     loadKbList,
+    reloadWorkspace,
     selectKb,
     selectPage,
     saveCurrentPage,
     addKb,
     removeKb,
     addPage,
+    importMarkdownFile,
     removePage,
     reorderPage,
     renameCurrentPage,
   };
 });
-

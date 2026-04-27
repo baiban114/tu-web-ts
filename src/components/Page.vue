@@ -7,73 +7,9 @@ import Line from './line.vue';
 import X6Component from './X6Component.vue';
 import Toast from './Toast.vue';
 import { VueDraggable } from 'vue-draggable-plus';
+import type { Block, GraphData } from '@/api/types';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
-
-interface GraphData {
-  cells?: Array<Record<string, any>>;
-  nodes: Array<{
-    id: string;
-    x?: number;
-    y?: number;
-    width?: number;
-    height?: number;
-    label?: string;
-    shape?: string;
-    style?: {
-      x?: number;
-      y?: number;
-      [key: string]: any;
-    };
-    attrs?: Record<string, any>;
-    ports?: Record<string, any>;
-    data?: {
-      label?: string;
-      time?: string;
-      done?: boolean;
-      [key: string]: any;
-    };
-    [key: string]: any;
-  }>;
-  edges: Array<{
-    id?: string;
-    source: string | Record<string, any>;
-    target: string | Record<string, any>;
-    attrs?: Record<string, any>;
-    router?: string | Record<string, any>;
-    connector?: string | Record<string, any>;
-    labels?: Array<Record<string, any>>;
-    data?: {
-      done?: boolean;
-      [key: string]: any;
-    };
-    [key: string]: any;
-  }>;
-}
-
-export interface Block {
-  id: string;
-  type: 'richtext' | 'richText' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | string;
-  title?: string;
-  content?: string;
-  refId?: string; // type === 'ref' 时指向被引用块的 id
-  graphData?: GraphData;
-  timelineData?: Array<{
-    id: string;
-    title: string;
-    content: string;
-    date: string;
-    color: string;
-    lightColor: string;
-    type: 'normal' | 'milestone';
-  }>;
-  blockHeight?: number;
-  spacerHeight?: number;
-  layout?: 'horizontal' | 'vertical';
-  children?: Block[];
-  width?: string;
-  [key: string]: any;
-}
 
 interface Props {
   contentList: Block[];

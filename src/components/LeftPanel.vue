@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, nextTick } from 'vue';
+import { ref, nextTick } from 'vue';
 import {
   ElScrollbar,
   ElTree,
@@ -11,10 +11,10 @@ import {
 } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
+import MarkdownImportButton from './MarkdownImportButton.vue';
 
 const store = useWorkspaceStore();
 
-// ─── 知识库操作 ────────────────────────────────────────────────────────────────
 const showAddKbDialog = ref(false);
 const newKbName = ref('');
 
@@ -34,29 +34,30 @@ async function onAddKb() {
 
 async function onDeleteKb(id: string, name: string) {
   try {
-    await ElMessageBox.confirm(`确认删除知识库「${name}」？此操作不可撤销。`, '删除确认', {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-    });
+    await ElMessageBox.confirm(
+      `确认删除知识库“${name}”？此操作不可撤销。`,
+      '删除确认',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    );
     await store.removeKb(id);
     ElMessage.success('已删除');
   } catch {
-    // 用户取消
+    // ignore cancel
   }
 }
 
-// ─── 页面树操作 ────────────────────────────────────────────────────────────────
 const treeProps = {
   label: 'title',
   children: 'children',
 };
 
-// 右键菜单
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageItem | null });
 
-// el-tree 事件签名: (evt, data, node, instance)
-function onNodeContextMenu(event: Event, data: any) {
+function onNodeContextMenu(event: Event, data: unknown) {
   (event as MouseEvent).preventDefault();
   const e = event as MouseEvent;
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node: data as PageItem };
@@ -66,41 +67,40 @@ function closeContextMenu() {
   contextMenu.value.visible = false;
 }
 
-// 点击页面节点
 function onNodeClick(data: PageItem) {
   store.selectPage(data.id);
 }
 
-// 创建子页面
 async function onCreateChild(parentId: string) {
   closeContextMenu();
   await store.addPage(parentId);
   ElMessage.success('子页面已创建');
 }
 
-// 创建根页面
 async function onCreateRootPage() {
   await store.addPage(null);
   ElMessage.success('页面已创建');
 }
 
-// 删除页面
 async function onDeletePage(node: PageItem) {
   closeContextMenu();
   try {
     await ElMessageBox.confirm(
-      `确认删除「${node.title}」及其所有子页面？`,
+      `确认删除“${node.title}”及其所有子页面？`,
       '删除确认',
-      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
     );
     await store.removePage(node.id);
     ElMessage.success('已删除');
   } catch {
-    // 用户取消
+    // ignore cancel
   }
 }
 
-// 内联重命名
 const renamingId = ref<string | null>(null);
 const renameValue = ref('');
 const renameInputRef = ref<InstanceType<typeof ElInput> | null>(null);
@@ -123,12 +123,10 @@ async function onFinishRename(node: PageItem) {
   renamingId.value = null;
 }
 
-// 拖拽移动
 function allowDrop() {
   return true;
 }
 
-// el-tree 拖拽落下事件
 async function onNodeDrop(draggingNode: any, dropNode: any, dropType: 'before' | 'after' | 'inner') {
   const dragging = draggingNode.data as PageItem;
   const drop = dropNode.data as PageItem;
@@ -136,7 +134,6 @@ async function onNodeDrop(draggingNode: any, dropNode: any, dropType: 'before' |
   await store.reorderPage(dragging.id, newParentId, 0);
 }
 
-// 点击页面外部关闭右键菜单
 function onDocumentClick() {
   closeContextMenu();
 }
@@ -144,7 +141,6 @@ function onDocumentClick() {
 
 <template>
   <div class="left-panel" @click="onDocumentClick">
-    <!-- ── 知识库区域 ─────────────────────────── -->
     <div class="section">
       <div class="section-header">
         <span class="section-title">知识库</span>
@@ -166,7 +162,7 @@ function onDocumentClick() {
           :class="{ 'kb-item--active': store.currentKbId === kb.id }"
           @click.stop="onSelectKb(kb.id)"
         >
-          <span class="kb-icon">{{ kb.icon ?? '📄' }}</span>
+          <span class="kb-icon">{{ kb.icon ?? '📚' }}</span>
           <span class="kb-name">{{ kb.name }}</span>
           <el-button
             class="kb-delete"
@@ -187,19 +183,21 @@ function onDocumentClick() {
 
     <div class="divider" />
 
-    <!-- ── 页面树区域 ─────────────────────────── -->
     <div class="section section--grow">
       <div class="section-header">
         <span class="section-title">页面</span>
-        <el-button
-          link
-          size="small"
-          title="新建根页面"
-          :disabled="!store.currentKbId"
-          @click.stop="onCreateRootPage"
-        >
-          +
-        </el-button>
+        <div class="section-actions">
+          <MarkdownImportButton />
+          <el-button
+            link
+            size="small"
+            title="新建根页面"
+            :disabled="!store.currentKbId"
+            @click.stop="onCreateRootPage"
+          >
+            +
+          </el-button>
+        </div>
       </div>
 
       <el-scrollbar class="page-tree-scroll">
@@ -236,7 +234,7 @@ function onDocumentClick() {
         </el-tree>
 
         <div v-else-if="store.currentKbId" class="empty-hint">
-          暂无页面，点击 + 新建
+          暂无页面，点击上方按钮新建或导入 Markdown
         </div>
         <div v-else class="empty-hint">
           请先选择知识库
@@ -244,7 +242,6 @@ function onDocumentClick() {
       </el-scrollbar>
     </div>
 
-    <!-- ── 右键菜单 ───────────────────────────── -->
     <Teleport to="body">
       <div
         v-if="contextMenu.visible && contextMenu.node"
@@ -253,19 +250,18 @@ function onDocumentClick() {
         @click.stop
       >
         <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id)">
-          📄 新建子页面
+          新建子页面
         </div>
         <div class="context-menu-item" @click="onStartRename(contextMenu.node!)">
-          ✏️ 重命名
+          重命名
         </div>
         <div class="context-menu-divider" />
         <div class="context-menu-item context-menu-item--danger" @click="onDeletePage(contextMenu.node!)">
-          🗑 删除
+          删除
         </div>
       </div>
     </Teleport>
 
-    <!-- ── 新建知识库弹窗 ─────────────────────── -->
     <el-dialog v-model="showAddKbDialog" title="新建知识库" width="360px" @click.stop>
       <el-input
         v-model="newKbName"
@@ -293,7 +289,6 @@ function onDocumentClick() {
   user-select: none;
 }
 
-/* ── 区域 ── */
 .section {
   display: flex;
   flex-direction: column;
@@ -321,7 +316,12 @@ function onDocumentClick() {
   letter-spacing: 0.06em;
 }
 
-/* ── 知识库列表 ── */
+.section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .kb-list {
   max-height: 200px;
   padding: 0 8px 8px;
@@ -371,7 +371,6 @@ function onDocumentClick() {
   opacity: 1;
 }
 
-/* ── 分隔线 ── */
 .divider {
   height: 1px;
   background: #e4e4e4;
@@ -379,7 +378,6 @@ function onDocumentClick() {
   flex-shrink: 0;
 }
 
-/* ── 页面树 ── */
 .page-tree-scroll {
   flex: 1;
   padding: 0 4px 8px;
@@ -423,7 +421,6 @@ function onDocumentClick() {
   font-size: 13px;
 }
 
-/* ── 右键菜单 ── */
 .context-menu {
   position: fixed;
   z-index: 9999;
@@ -456,7 +453,6 @@ function onDocumentClick() {
   margin: 4px 0;
 }
 
-/* ── 空状态 ── */
 .empty-hint {
   padding: 16px 12px;
   font-size: 12px;
