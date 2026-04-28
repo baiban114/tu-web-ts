@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { defineStore } from 'pinia';
 import {
   listKnowledgeBases,
@@ -19,7 +19,34 @@ import {
 import type { Block } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
-import { deriveMarkdownPageTitle, parseMarkdownToBlocks } from '@/utils/markdownImport';
+import {
+  deriveMarkdownPageTitle,
+  parseMarkdownToBlocks,
+  serializeBlocksToMarkdown,
+} from '@/utils/markdownImport';
+
+type LocalFileSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'unsupported';
+
+interface LocalFileBinding {
+  fileName: string;
+  fileHandle: FileSystemFileHandle | null;
+  directSaveSupported: boolean;
+  status: LocalFileSaveStatus;
+  error: string | null;
+  lastSavedAt: number | null;
+  lastSavedContent: string;
+  pendingContent: string | null;
+  saveTimer: number | null;
+  isWriting: boolean;
+}
+
+interface ImportMarkdownFileOptions {
+  fileHandle?: FileSystemFileHandle | null;
+  directSaveSupported?: boolean;
+}
+
+const LOCAL_FILE_SAVE_DELAY = 800;
+const UNSUPPORTED_SAVE_MESSAGE = 'Current browser can import the file, but it cannot auto-save changes back to the original local file.';
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const kbList = ref<KnowledgeBase[]>([]);
@@ -28,7 +55,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const currentPageId = ref<string | null>(null);
   const currentBlocks = ref<Block[]>([]);
   const loading = ref(false);
+  const localFileBindings = ref<Record<string, LocalFileBinding>>({});
   const registryStore = useBlockRegistryStore();
+
+  const currentLocalFileBinding = computed(() => {
+    const pageId = currentPageId.value;
+    if (!pageId) return null;
+    return localFileBindings.value[pageId] ?? null;
+  });
+
+  function clearBindingTimer(binding: LocalFileBinding | undefined) {
+    if (!binding?.saveTimer) return;
+    window.clearTimeout(binding.saveTimer);
+    binding.saveTimer = null;
+  }
+
+  function clearLocalFileBinding(pageId: string) {
+    const binding = localFileBindings.value[pageId];
+    clearBindingTimer(binding);
+    if (!binding) return;
+
+    const nextBindings = { ...localFileBindings.value };
+    delete nextBindings[pageId];
+    localFileBindings.value = nextBindings;
+  }
 
   function resetWorkspaceState() {
     currentKbId.value = null;
@@ -97,10 +147,134 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return walk(pageTree.value) ?? pageId;
   }
 
+  function bindLocalFileToPage(
+    pageId: string,
+    fileName: string,
+    initialMarkdown: string,
+    options?: ImportMarkdownFileOptions,
+  ) {
+    const directSaveSupported = options?.directSaveSupported ?? Boolean(options?.fileHandle);
+
+    localFileBindings.value = {
+      ...localFileBindings.value,
+      [pageId]: {
+        fileName,
+        fileHandle: options?.fileHandle ?? null,
+        directSaveSupported,
+        status: directSaveSupported ? 'saved' : 'unsupported',
+        error: directSaveSupported ? null : UNSUPPORTED_SAVE_MESSAGE,
+        lastSavedAt: directSaveSupported ? Date.now() : null,
+        lastSavedContent: initialMarkdown,
+        pendingContent: null,
+        saveTimer: null,
+        isWriting: false,
+      },
+    };
+  }
+
+  async function ensureReadWritePermission(fileHandle: FileSystemFileHandle) {
+    const descriptor = { mode: 'readwrite' as const };
+    const currentPermission = await fileHandle.queryPermission?.(descriptor);
+    if (currentPermission === 'granted') return;
+
+    const requestedPermission = await fileHandle.requestPermission?.(descriptor);
+    if (requestedPermission === 'granted') return;
+
+    throw new Error('Local file write permission was not granted.');
+  }
+
+  async function flushLocalFileSave(pageId: string) {
+    const binding = localFileBindings.value[pageId];
+    if (!binding || binding.isWriting) return;
+
+    const nextContent = binding.pendingContent;
+    if (nextContent == null || nextContent === binding.lastSavedContent) {
+      binding.pendingContent = null;
+      if (binding.directSaveSupported) {
+        binding.status = binding.lastSavedAt ? 'saved' : 'idle';
+      }
+      return;
+    }
+
+    if (!binding.directSaveSupported || !binding.fileHandle) {
+      binding.status = 'unsupported';
+      binding.error = UNSUPPORTED_SAVE_MESSAGE;
+      return;
+    }
+
+    binding.isWriting = true;
+    binding.status = 'saving';
+    binding.error = null;
+
+    try {
+      await ensureReadWritePermission(binding.fileHandle);
+      const writable = await binding.fileHandle.createWritable();
+      await writable.write(nextContent);
+      await writable.close();
+
+      binding.lastSavedContent = nextContent;
+      binding.pendingContent = null;
+      binding.lastSavedAt = Date.now();
+      binding.status = 'saved';
+    } catch (error) {
+      binding.status = 'error';
+      binding.error = error instanceof Error ? error.message : 'Failed to save local file.';
+    } finally {
+      binding.isWriting = false;
+      if (binding.pendingContent && binding.pendingContent !== binding.lastSavedContent) {
+        clearBindingTimer(binding);
+        binding.status = 'pending';
+        binding.saveTimer = window.setTimeout(() => {
+          binding.saveTimer = null;
+          void flushLocalFileSave(pageId);
+        }, LOCAL_FILE_SAVE_DELAY);
+      }
+    }
+  }
+
+  function scheduleLocalFileSave(pageId: string, blocks: Block[]) {
+    const binding = localFileBindings.value[pageId];
+    if (!binding) return;
+
+    const markdown = serializeBlocksToMarkdown(blocks);
+    binding.pendingContent = markdown;
+
+    if (!binding.directSaveSupported || !binding.fileHandle) {
+      binding.status = 'unsupported';
+      binding.error = UNSUPPORTED_SAVE_MESSAGE;
+      return;
+    }
+
+    if (markdown === binding.lastSavedContent) {
+      binding.pendingContent = null;
+      binding.status = binding.lastSavedAt ? 'saved' : 'idle';
+      return;
+    }
+
+    if (binding.isWriting) {
+      binding.status = 'pending';
+      return;
+    }
+
+    clearBindingTimer(binding);
+    binding.status = 'pending';
+    binding.saveTimer = window.setTimeout(() => {
+      binding.saveTimer = null;
+      void flushLocalFileSave(pageId);
+    }, LOCAL_FILE_SAVE_DELAY);
+  }
+
   async function saveCurrentPage(blocks: Block[]) {
     if (!currentPageId.value) return;
+
+    const pageId = currentPageId.value;
     currentBlocks.value = blocks;
-    await savePageContent(currentPageId.value, blocks);
+
+    try {
+      await savePageContent(pageId, blocks);
+    } finally {
+      scheduleLocalFileSave(pageId, blocks);
+    }
   }
 
   async function reloadWorkspace() {
@@ -132,22 +306,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pageTree.value = await getPageTree(currentKbId.value);
   }
 
-  async function importMarkdownFile(file: File) {
+  async function importMarkdownFile(file: File, options?: ImportMarkdownFileOptions) {
     if (!currentKbId.value) {
-      throw new Error('请先选择知识库');
+      throw new Error('Please select a knowledge base first.');
     }
 
     const markdown = await file.text();
     const pageTitle = deriveMarkdownPageTitle(file.name);
     const page = await createPage(currentKbId.value, null, pageTitle);
     const blocks = parseMarkdownToBlocks(markdown, `${page.id}-${Date.now().toString(36)}`);
+
     await savePageContent(page.id, blocks);
+    bindLocalFileToPage(page.id, file.name, markdown, options);
     pageTree.value = await getPageTree(currentKbId.value);
     await selectPage(page.id);
   }
 
   async function removePage(id: string) {
     await deletePage(id);
+    clearLocalFileBinding(id);
     if (currentKbId.value) {
       pageTree.value = await getPageTree(currentKbId.value);
     }
@@ -183,6 +360,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentPageId,
     currentBlocks,
     loading,
+    currentLocalFileBinding,
     loadKbList,
     reloadWorkspace,
     selectKb,

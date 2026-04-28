@@ -2,7 +2,7 @@
 import HoverHandle from './HoverHandle.vue';
 import Vditor from 'vditor';
 import 'vditor/dist/index.css';
-import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
 interface Props {
   content: string;
@@ -22,6 +22,11 @@ interface LineInsertPayload {
   layout?: 'horizontal' | 'vertical';
 }
 
+interface TagEditorOpenPayload {
+  top?: number;
+  left?: number;
+}
+
 type LineHandleMode = 'editor-caret' | null;
 type SplitContent = { beforeContent: string; afterContent: string };
 
@@ -39,6 +44,7 @@ const emit = defineEmits<{
   (e: 'extract-selection', text: string): void;
   (e: 'insert-block', position: number): void;
   (e: 'line-insert', payload: LineInsertPayload): void;
+  (e: 'open-tag-editor', payload?: TagEditorOpenPayload): void;
   (e: 'delete-block'): void;
   (e: 'click', event: MouseEvent): void;
   (e: 'lifecycle', method: string): void;
@@ -65,6 +71,10 @@ const lineHandleTop = ref<number | null>(null);
 const lineHandleVisible = ref(false);
 const lineMenuVisible = ref(false);
 const lastEditorLineSplitContent = ref<SplitContent | null>(null);
+const slashMenuVisible = ref(false);
+const slashMenuTop = ref<number | null>(null);
+const slashMenuLeft = ref<number | null>(null);
+const slashQuery = ref('');
 let scheduledHandleSyncFrame = 0;
 const lineHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
@@ -73,8 +83,22 @@ const lineHandleItems = [
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
+  { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
   { key: 'delete', icon: '🗑️', label: '删除当前块', danger: true },
 ] ;
+const slashOptions = [
+  {
+    key: 'edit-tags',
+    label: '添加标签',
+    command: '/tag',
+    keywords: ['标签', 'tag', '/tag'],
+  },
+];
+const filteredSlashOptions = computed(() => {
+  const keyword = slashQuery.value.trim().toLowerCase();
+  if (!keyword) return slashOptions;
+  return slashOptions.filter((option) => option.keywords.some((item) => item.includes(keyword)));
+});
 
 const LINE_BLOCK_SELECTOR = [
   '[data-block="0"]',
@@ -120,6 +144,28 @@ const hideLineHandle = () => {
   lineHandleMode.value = null;
   lineHandleTop.value = null;
   lineHandleVisible.value = false;
+};
+
+const hideSlashMenu = () => {
+  slashMenuVisible.value = false;
+  slashMenuTop.value = null;
+  slashMenuLeft.value = null;
+  slashQuery.value = '';
+};
+
+const getTagEditorAnchorFromCaret = (): TagEditorOpenPayload | undefined => {
+  const contentRoot = getEditorContentRoot();
+  if (!contentRoot) return undefined;
+
+  const caretRange = getEditorCaretRange(contentRoot);
+  const lineHeight = getLineHeight(contentRoot);
+  const rect = caretRange ? pickCaretRect(caretRange, lineHeight) : null;
+  if (!rect) return undefined;
+
+  return {
+    top: rect.bottom + 8,
+    left: rect.left + 8,
+  };
 };
 
 const applyEditorContent = (content: string) => {
@@ -349,6 +395,35 @@ const getEditorCaretRange = (contentRoot: HTMLElement): Range | null => {
   return null;
 };
 
+const getEditorCaretSplitContent = (): SplitContent | null => {
+  const contentRoot = getEditorContentRoot();
+  if (!contentRoot) return null;
+
+  const caretRange = getEditorCaretRange(contentRoot);
+  if (!caretRange) return null;
+
+  return getRangeSplitContent(contentRoot, (beforeRange, afterRange) => {
+    beforeRange.setEnd(caretRange.startContainer, caretRange.startOffset);
+    afterRange.setStart(caretRange.startContainer, caretRange.startOffset);
+  });
+};
+
+const getLineTextBeforeCaret = (lineElement: HTMLElement, contentRoot: HTMLElement): string => {
+  const caretRange = getEditorCaretRange(contentRoot);
+  if (!caretRange) return '';
+
+  const lineRange = document.createRange();
+  lineRange.selectNodeContents(lineElement);
+
+  try {
+    lineRange.setEnd(caretRange.startContainer, caretRange.startOffset);
+  } catch (_) {
+    return '';
+  }
+
+  return lineRange.toString();
+};
+
 const resolveLineBlockFromNode = (
   node: Node | null | undefined,
   contentRoot: HTMLElement,
@@ -399,6 +474,20 @@ const resolveLineBlockFromSelection = (): HTMLElement | null => {
   const caretRange = getEditorCaretRange(editorContentRoot);
   if (!caretRange) return null;
   return resolveLineBlockFromCaretRange(caretRange, editorContentRoot);
+};
+
+const getSlashQueryFromSelection = (): string | null => {
+  const contentRoot = getEditorContentRoot();
+  const lineElement = activeLineElement.value ?? resolveLineBlockFromSelection();
+  if (!contentRoot || !lineElement) return null;
+
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.isCollapsed) return null;
+
+  const lineTextBeforeCaret = getLineTextBeforeCaret(lineElement, contentRoot);
+  const match = lineTextBeforeCaret.match(/(?:^|\s)\/([^\s/]*)$/);
+  if (!match) return null;
+  return match[1] ?? '';
 };
 
 const updateLineHandlePosition = (lineElement: HTMLElement) => {
@@ -455,6 +544,24 @@ const updateHandlePositionFromCaret = (contentRoot: HTMLElement) => {
   lineHandleVisible.value = true;
 };
 
+const updateSlashMenuFromCaret = (contentRoot: HTMLElement) => {
+  const query = getSlashQueryFromSelection();
+  if (query == null || !wrapperRef.value) {
+    hideSlashMenu();
+    return;
+  }
+
+  const caretRange = getEditorCaretRange(contentRoot);
+  const lineHeight = getLineHeight(contentRoot);
+  const rect = caretRange ? pickCaretRect(caretRange, lineHeight) : null;
+  const wrapperRect = wrapperRef.value.getBoundingClientRect();
+
+  slashQuery.value = query;
+  slashMenuTop.value = rect ? rect.bottom - wrapperRect.top + 8 : lineHeight + 8;
+  slashMenuLeft.value = rect ? rect.left - wrapperRect.left + 8 : 40;
+  slashMenuVisible.value = filteredSlashOptions.value.length > 0;
+};
+
 const cancelScheduledHandleSync = () => {
   if (!scheduledHandleSyncFrame) return;
   window.cancelAnimationFrame(scheduledHandleSyncFrame);
@@ -469,6 +576,7 @@ const syncEditorHandleToCaret = () => {
   const editorContentRoot = getEditorContentRoot();
   if (!editorContentRoot) {
     hideLineHandle();
+    hideSlashMenu();
     return;
   }
 
@@ -476,6 +584,7 @@ const syncEditorHandleToCaret = () => {
   lineHandleMode.value = 'editor-caret';
   lastEditorLineSplitContent.value = activeLineElement.value ? getActiveLineSplitContent() : null;
   updateHandlePositionFromCaret(editorContentRoot);
+  updateSlashMenuFromCaret(editorContentRoot);
 };
 
 const scheduleEditorHandleSync = (frames = 1) => {
@@ -554,6 +663,87 @@ const emitDeleteBlock = () => {
   hideLineHandle();
 };
 
+const requestTagEditor = (options?: {
+  removeSlashCommand?: boolean;
+  anchorFromCaret?: boolean;
+}) => {
+  const payload = options?.anchorFromCaret ? getTagEditorAnchorFromCaret() : undefined;
+
+  if (options?.removeSlashCommand) {
+    const splitContent = getEditorCaretSplitContent();
+    if (splitContent) {
+      const cleanedBeforeContent = splitContent.beforeContent.replace(/(^|[\s\u3000])\/[^\s/]*$/, '$1');
+      const updatedContent = `${cleanedBeforeContent}${splitContent.afterContent}`.replace(/^\n+/, '');
+      applyEditorContent(updatedContent);
+      emit('content-change', updatedContent);
+      updateHeight();
+    }
+  }
+
+  hideSlashMenu();
+  lineMenuVisible.value = false;
+  hideLineHandle();
+
+  void nextTick(() => {
+    emit('open-tag-editor', payload);
+  });
+};
+
+const openTagEditorFromSlash = () => {
+  requestTagEditor({
+    removeSlashCommand: true,
+    anchorFromCaret: true,
+  });
+};
+
+const openTagEditorFromAction = () => {
+  requestTagEditor({
+    anchorFromCaret: true,
+  });
+};
+
+const handleSlashOptionSelect = (action: string) => {
+  switch (action) {
+    case 'edit-tags':
+      openTagEditorFromSlash();
+      return;
+    default:
+      return;
+  }
+};
+
+const isExactSlashMatch = (option: typeof slashOptions[number]) => {
+  const keyword = slashQuery.value.trim().toLowerCase();
+  if (!keyword) return false;
+
+  return option.command.toLowerCase() === `/${keyword}`
+    || option.keywords.some((item) => item.replace(/^\//, '').toLowerCase() === keyword);
+};
+
+const handleSlashMenuKeyDown = (event: KeyboardEvent) => {
+  if (!slashMenuVisible.value || filteredSlashOptions.value.length === 0) return;
+
+  if (event.key === 'Enter' || event.key === 'Tab') {
+    event.preventDefault();
+    event.stopPropagation();
+    handleSlashOptionSelect(filteredSlashOptions.value[0].key);
+    return;
+  }
+
+  if (event.key === ' ' && filteredSlashOptions.value.length === 1 && isExactSlashMatch(filteredSlashOptions.value[0])) {
+    event.preventDefault();
+    event.stopPropagation();
+    handleSlashOptionSelect(filteredSlashOptions.value[0].key);
+    return;
+  }
+
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    event.stopPropagation();
+    hideSlashMenu();
+  }
+};
+
 const handleLineHandleSelect = (action: string) => {
   switch (action) {
     case 'insert-richtext':
@@ -573,6 +763,9 @@ const handleLineHandleSelect = (action: string) => {
       return;
     case 'insert-container-vertical':
       emitLineInsert('container', 'vertical');
+      return;
+    case 'edit-tags':
+      openTagEditorFromAction();
       return;
     case 'delete':
       emitDeleteBlock();
@@ -603,6 +796,7 @@ const removeEditorDomListeners = () => {
   const clickHandler = (editorRef.value as any)._clickHandler;
   const mouseUpHandler = (editorRef.value as any)._mouseUpHandler;
   const keyUpHandler = (editorRef.value as any)._keyUpHandler;
+  const keyDownHandler = (editorRef.value as any)._keyDownHandler;
   const selectionChangeHandler = (editorRef.value as any)._selectionChangeHandler;
   const wrapperLeaveHandler = (wrapperRef.value as any)?._wrapperLeaveHandler;
 
@@ -629,6 +823,11 @@ const removeEditorDomListeners = () => {
   if (keyUpHandler) {
     editorRef.value.removeEventListener('keyup', keyUpHandler);
     delete (editorRef.value as any)._keyUpHandler;
+  }
+
+  if (keyDownHandler) {
+    editorRef.value.removeEventListener('keydown', keyDownHandler, true);
+    delete (editorRef.value as any)._keyDownHandler;
   }
 
   if (selectionChangeHandler) {
@@ -667,6 +866,7 @@ const attachEditorDomListeners = () => {
         emit('blur', value);
         cancelScheduledHandleSync();
         hideLineHandle();
+        hideSlashMenu();
       }
     }, 0);
   };
@@ -685,6 +885,10 @@ const attachEditorDomListeners = () => {
     scheduleEditorHandleSync(1);
   };
 
+  const handleKeyDown = (event: KeyboardEvent) => {
+    handleSlashMenuKeyDown(event);
+  };
+
   const handleSelectionChange = () => {
     scheduleEditorHandleSync(1);
   };
@@ -692,6 +896,7 @@ const attachEditorDomListeners = () => {
   const handleWrapperMouseLeave = () => {
     if (isReady.value && isEditorFocused.value) return;
     hideLineHandle();
+    hideSlashMenu();
   };
 
   editorRef.value.addEventListener('click', handleClick);
@@ -699,6 +904,7 @@ const attachEditorDomListeners = () => {
   editorRef.value.addEventListener('focusout', handleFocusOut);
   editorRef.value.addEventListener('mouseup', handleMouseUp);
   editorRef.value.addEventListener('keyup', handleKeyUp);
+  editorRef.value.addEventListener('keydown', handleKeyDown, true);
   document.addEventListener('selectionchange', handleSelectionChange);
   wrapperRef.value?.addEventListener('mouseleave', handleWrapperMouseLeave);
   (editorRef.value as any)._clickHandler = handleClick;
@@ -706,6 +912,7 @@ const attachEditorDomListeners = () => {
   (editorRef.value as any)._blurHandler = handleFocusOut;
   (editorRef.value as any)._mouseUpHandler = handleMouseUp;
   (editorRef.value as any)._keyUpHandler = handleKeyUp;
+  (editorRef.value as any)._keyDownHandler = handleKeyDown;
   (editorRef.value as any)._selectionChangeHandler = handleSelectionChange;
   if (wrapperRef.value) {
     (wrapperRef.value as any)._wrapperLeaveHandler = handleWrapperMouseLeave;
@@ -893,6 +1100,27 @@ watch(
       @select="handleLineHandleSelect"
     />
 
+    <div
+      v-if="editable && slashMenuVisible && slashMenuTop != null && slashMenuLeft != null"
+      class="slash-menu"
+      :style="{
+        top: `${slashMenuTop}px`,
+        left: `${slashMenuLeft}px`,
+      }"
+    >
+      <button
+        v-for="option in filteredSlashOptions"
+        :key="option.key"
+        type="button"
+        class="slash-menu__item"
+        @mousedown.prevent
+        @click="handleSlashOptionSelect(option.key)"
+      >
+        <span class="slash-menu__item-main">{{ option.label }}</span>
+        <span class="slash-menu__item-command">{{ option.command }}</span>
+      </button>
+    </div>
+
 
     <Transition name="preview-fade">
       <div
@@ -971,6 +1199,47 @@ watch(
   position: relative;
   min-width: 0;
   box-sizing: border-box;
+}
+
+.slash-menu {
+  position: absolute;
+  z-index: 6;
+  min-width: 140px;
+  padding: 6px;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.slash-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.slash-menu__item:hover {
+  background: #f5f7fa;
+}
+
+.slash-menu__item-main {
+  color: #1f1f1f;
+}
+
+.slash-menu__item-command {
+  flex-shrink: 0;
+  color: #8c8c8c;
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
 }
 
 .rich-text-editor-container :deep(.vditor) {

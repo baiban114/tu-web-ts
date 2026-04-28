@@ -39,11 +39,23 @@ export interface GraphData {
   }>;
 }
 
+export interface BlockTag {
+  id: string;
+  label: string;
+  color?: string;
+}
+
+export interface BlockMetadata {
+  tags?: BlockTag[];
+  [key: string]: unknown;
+}
+
 export interface Block {
   id: string;
   type: 'richtext' | 'richText' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | string;
   title?: string;
   content?: string;
+  metadata?: BlockMetadata;
   refId?: string;
   graphData?: GraphData;
   timelineData?: Array<{

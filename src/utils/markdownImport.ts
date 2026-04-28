@@ -1,4 +1,7 @@
 import type { Block } from '@/api/types';
+import { blockHasTags } from '@/utils/blockMetadata';
+
+const CUSTOM_BLOCK_FENCE = 'tu-block';
 
 function sanitizeLineEndings(markdown: string): string {
   return markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -19,6 +22,36 @@ function createBlockId(sourceKey: string, chunk: string, index: number): string 
 
 function normalizeChunk(chunk: string): string {
   return chunk.trim().replace(/\n{3,}/g, '\n\n');
+}
+
+function stripTransientBlockFields(block: Block): Block {
+  const { blockHeight, source, sourceChunkIndex, ...rest } = block;
+  const normalizedChildren = Array.isArray(rest.children)
+    ? rest.children.map((child) => stripTransientBlockFields(child))
+    : rest.children;
+
+  return {
+    ...rest,
+    ...(normalizedChildren ? { children: normalizedChildren } : {}),
+  };
+}
+
+function parseCustomBlockChunk(chunk: string, sourceKey: string, index: number): Block | null {
+  const match = chunk.match(/^```tu-block\s*\n([\s\S]*?)\n```$/);
+  if (!match) return null;
+
+  try {
+    const parsed = JSON.parse(match[1]) as Block;
+    return {
+      ...parsed,
+      id: typeof parsed.id === 'string' && parsed.id.trim()
+        ? parsed.id
+        : createBlockId(sourceKey, chunk, index),
+      type: parsed.type === 'richText' ? 'richtext' : parsed.type,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function splitMarkdownIntoChunks(markdown: string): string[] {
@@ -75,7 +108,45 @@ function splitMarkdownIntoChunks(markdown: string): string[] {
 
 export function deriveMarkdownPageTitle(fileName: string): string {
   const title = fileName.replace(/\.(md|markdown)$/i, '').trim();
-  return title || '导入的 Markdown';
+  return title || 'Imported Markdown';
+}
+
+function serializeRichTextBlock(block: Block): string {
+  if (blockHasTags(block)) {
+    return serializeStructuredBlock({
+      ...block,
+      type: 'richtext',
+    });
+  }
+
+  return sanitizeLineEndings(String(block.content ?? '')).trim();
+}
+
+function serializeStructuredBlock(block: Block): string {
+  const normalizedBlock = stripTransientBlockFields(block);
+  return [
+    `\`\`\`${CUSTOM_BLOCK_FENCE}`,
+    JSON.stringify(normalizedBlock, null, 2),
+    '```',
+  ].join('\n');
+}
+
+export function serializeBlocksToMarkdown(blocks: Block[]): string {
+  const chunks = blocks
+    .map((block) => {
+      const normalizedType = block.type === 'richText' ? 'richtext' : block.type;
+      if (normalizedType === 'spacer') return '';
+      if (normalizedType === 'richtext') {
+        return serializeRichTextBlock(block);
+      }
+      return serializeStructuredBlock({
+        ...block,
+        type: normalizedType,
+      });
+    })
+    .filter((chunk) => chunk.trim().length > 0);
+
+  return chunks.join('\n\n');
 }
 
 export function parseMarkdownToBlocks(markdown: string, sourceKey = Date.now().toString(36)): Block[] {
@@ -90,12 +161,18 @@ export function parseMarkdownToBlocks(markdown: string, sourceKey = Date.now().t
     ];
   }
 
-  return chunks.map((chunk, index) => ({
-    id: createBlockId(sourceKey, chunk, index),
-    type: 'richtext',
-    content: chunk,
-    source: 'markdown-import',
-    sourceChunkIndex: index,
-  }));
-}
+  return chunks.map((chunk, index) => {
+    const customBlock = parseCustomBlockChunk(chunk, sourceKey, index);
+    if (customBlock) {
+      return customBlock;
+    }
 
+    return {
+      id: createBlockId(sourceKey, chunk, index),
+      type: 'richtext',
+      content: chunk,
+      source: 'markdown-import',
+      sourceChunkIndex: index,
+    };
+  });
+}

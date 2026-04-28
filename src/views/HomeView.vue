@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { ElEmpty } from 'element-plus';
 import type { Block } from '@/api/types';
 import DevModePanel from '@/components/DevModePanel.vue';
@@ -19,6 +19,28 @@ const MAX_WIDTH = 480;
 let dragging = false;
 let startX = 0;
 let startWidth = 0;
+
+const localFileStatusText = computed(() => {
+  const binding = store.currentLocalFileBinding;
+  if (!binding) return '';
+
+  switch (binding.status) {
+    case 'pending':
+      return '检测到改动，等待自动保存';
+    case 'saving':
+      return '正在保存到本地文件';
+    case 'saved':
+      return binding.lastSavedAt
+        ? `已保存到本地文件 ${new Date(binding.lastSavedAt).toLocaleTimeString()}`
+        : '已保存到本地文件';
+    case 'error':
+      return binding.error || '本地文件保存失败';
+    case 'unsupported':
+      return binding.error || '当前浏览器不支持自动保存回原文件';
+    default:
+      return '已绑定本地文件';
+  }
+});
 
 function onResizerMousedown(e: MouseEvent) {
   dragging = true;
@@ -60,6 +82,18 @@ function onContentChange(blocks: Block[]) {
 
     <div class="workspace__right">
       <div v-if="store.currentPageId" class="content-scroll">
+        <div
+          v-if="store.currentLocalFileBinding"
+          class="local-file-status"
+          :class="`local-file-status--${store.currentLocalFileBinding.status}`"
+        >
+          <div class="local-file-status__title">
+            <span class="local-file-status__name">{{ store.currentLocalFileBinding.fileName }}</span>
+            <span class="local-file-status__tag">LOCAL FILE</span>
+          </div>
+          <div class="local-file-status__message">{{ localFileStatusText }}</div>
+        </div>
+
         <Page
           :contentList="store.currentBlocks"
           :editable="true"
@@ -119,7 +153,75 @@ function onContentChange(blocks: Block[]) {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  padding: 32px 48px;
+  padding: 24px 48px 32px;
+}
+
+.local-file-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 16px;
+  margin-bottom: 20px;
+  border-radius: 10px;
+  border: 1px solid #d9e8ff;
+  background:
+    linear-gradient(135deg, rgba(9, 105, 218, 0.08), rgba(9, 105, 218, 0.02)),
+    #f8fbff;
+}
+
+.local-file-status--saving,
+.local-file-status--pending {
+  border-color: #91caff;
+  background:
+    linear-gradient(135deg, rgba(22, 119, 255, 0.12), rgba(22, 119, 255, 0.03)),
+    #f8fbff;
+}
+
+.local-file-status--saved {
+  border-color: #b7eb8f;
+  background:
+    linear-gradient(135deg, rgba(82, 196, 26, 0.12), rgba(82, 196, 26, 0.02)),
+    #fbfff8;
+}
+
+.local-file-status--error,
+.local-file-status--unsupported {
+  border-color: #ffccc7;
+  background:
+    linear-gradient(135deg, rgba(245, 34, 45, 0.1), rgba(245, 34, 45, 0.02)),
+    #fff8f8;
+}
+
+.local-file-status__title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.local-file-status__name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f1f1f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.local-file-status__tag {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #0958d9;
+}
+
+.local-file-status__message {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: #595959;
+  text-align: right;
 }
 
 .content-placeholder {
@@ -129,5 +231,20 @@ function onContentChange(blocks: Block[]) {
   justify-content: center;
   color: #bbb;
   font-size: 14px;
+}
+
+@media (max-width: 960px) {
+  .content-scroll {
+    padding: 16px 18px 24px;
+  }
+
+  .local-file-status {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .local-file-status__message {
+    text-align: left;
+  }
 }
 </style>

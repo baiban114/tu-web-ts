@@ -3,13 +3,15 @@ import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue'
 import RichTextEditor from './RichTextEditor.vue';
 import HoverHandle from './HoverHandle.vue';
 import BlockPicker from './BlockPicker.vue';
+import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue';
 import Line from './line.vue';
 import X6Component from './X6Component.vue';
 import Toast from './Toast.vue';
 import { VueDraggable } from 'vue-draggable-plus';
-import type { Block, GraphData } from '@/api/types';
+import type { Block, BlockTag, GraphData } from '@/api/types';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
+import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata';
 
 interface Props {
   contentList: Block[];
@@ -21,6 +23,18 @@ interface RichTextLineInsertPayload {
   afterContent: string;
   blockType: 'richtext' | 'line' | 'x6' | 'ref' | 'container';
   layout?: 'horizontal' | 'vertical';
+}
+
+interface TagEditorState {
+  visible: boolean;
+  position: number;
+  top: number;
+  left: number;
+}
+
+interface TagEditorOpenRequest {
+  top?: number;
+  left?: number;
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -69,6 +83,7 @@ const blockHandleItems = [
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
+  { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
 ];
@@ -78,9 +93,22 @@ const childBlockHandleItems = [
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
+  { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
 ];
+const tagEditorState = ref<TagEditorState>({
+  visible: false,
+  position: -1,
+  top: 0,
+  left: 0,
+});
+const availableTags = computed(() => collectBlockTags(localBlocks.value));
+const activeEditorTags = computed(() => {
+  if (tagEditorState.value.position < 0) return [];
+  const block = getBlockAtPosition(tagEditorState.value.position);
+  return block ? getBlockTagsForRender(block) : [];
+});
 
 const setRichTextEditorRef = (el: unknown, index: number) => {
   if (el) {
@@ -124,6 +152,72 @@ const replaceBlockAtPosition = (position: number, blocks: Block[]) => {
   localBlocks.value.splice(position, 1, ...normalizedBlocks);
   commitTopLevelBlocks();
 };
+
+const updateBlockAtPosition = (position: number, updater: (block: Block) => Block) => {
+  const targetBlock = getBlockAtPosition(position);
+  if (!targetBlock) return;
+
+  replaceBlockAtPosition(position, [updater(targetBlock)]);
+};
+
+const closeTagEditor = () => {
+  tagEditorState.value = {
+    visible: false,
+    position: -1,
+    top: 0,
+    left: 0,
+  };
+};
+
+const clampTagEditorPosition = (top: number, left: number) => {
+  const panelWidth = 320;
+  const panelHeight = 320;
+  const viewportPadding = 12;
+
+  return {
+    top: Math.max(12, Math.min(top, window.innerHeight - panelHeight - viewportPadding)),
+    left: Math.max(12, Math.min(left, window.innerWidth - panelWidth - viewportPadding)),
+  };
+};
+
+const getTagEditorPosition = (position: number, request?: TagEditorOpenRequest) => {
+  if (typeof request?.top === 'number' && typeof request?.left === 'number') {
+    return clampTagEditorPosition(request.top, request.left);
+  }
+
+  const blockElement = blockRefs.value[position];
+  if (!blockElement) {
+    return clampTagEditorPosition(window.innerHeight / 2 - 140, window.innerWidth / 2 - 160);
+  }
+
+  const rect = blockElement.getBoundingClientRect();
+  const desiredTop = rect.top + 12;
+  const desiredLeft = rect.right + 12;
+  return clampTagEditorPosition(desiredTop, desiredLeft);
+};
+
+const openTagEditor = (position: number, request?: TagEditorOpenRequest) => {
+  const targetBlock = getBlockAtPosition(position);
+  if (!targetBlock) return;
+
+  const coords = getTagEditorPosition(position, request);
+  tagEditorState.value = {
+    visible: true,
+    position,
+    top: coords.top,
+    left: coords.left,
+  };
+};
+
+const handleTagEditorRequest = (position: number, request?: TagEditorOpenRequest) => {
+  openTagEditor(position, request);
+};
+
+const updateBlockTags = (position: number, tags: BlockTag[]) => {
+  updateBlockAtPosition(position, (block) => setBlockTags(block, tags));
+};
+
+const getBlockTagsForRender = (block: Block): BlockTag[] => getBlockTags(block);
 
 // Toast相关状态
 const toastMessages = ref<Array<{ id: string; message: string }>>([]);
@@ -401,6 +495,10 @@ const insertBlock = (position: number, block: Block) => {
 
 // 删除指定位置的block
 const removeBlock = (position: number) => {
+  if (tagEditorState.value.position === position) {
+    closeTagEditor();
+  }
+
   // 处理容器块内的删除
   if (position >= 100) {
     const containerIndex = Math.floor(position / 100);
@@ -444,6 +542,9 @@ const handleBlockHandleSelect = (action: string, position: number) => {
       return;
     case 'insert-container-vertical':
       insertBlock(insertPosition, createNewContainerBlock(insertPosition, 'vertical'));
+      return;
+    case 'edit-tags':
+      handleTagEditorRequest(position);
       return;
     case 'delete':
       removeBlock(position);
@@ -705,6 +806,8 @@ const handleDragEnd = () => {
 const handleContentContainerClick = (event: MouseEvent) => {
   if (!props.editable) return;
 
+  closeTagEditor();
+
   const target = event.target as HTMLElement | null;
   if (!target) return;
   if (target.closest('.content-wrapper, .block-handle, .handle-menu')) return;
@@ -794,6 +897,21 @@ const getBlockProperties = (block: Block) => {
             <h3>{{ block.title || `${block.type === 'x6' ? '画板' : block.type} ${index + 1}` }}</h3>
             <div class="block-type-badge">{{ block.type }}</div>
           </div>
+          <button
+            v-if="getBlockTagsForRender(block).length > 0"
+            type="button"
+            class="block-tag-list"
+            @click.stop="handleTagEditorRequest(index)"
+          >
+            <span
+              v-for="tag in getBlockTagsForRender(block)"
+              :key="tag.id"
+              class="block-tag-chip"
+              :style="{ '--block-tag-color': tag.color || '#1677ff' }"
+            >
+              {{ tag.label }}
+            </span>
+          </button>
 
           <!-- 容器块 -->
           <template v-if="block.type === 'container' && block.children">
@@ -840,6 +958,21 @@ const getBlockProperties = (block: Block) => {
                       <h3>{{ childBlock.title || `${childBlock.type === 'x6' ? '画板' : childBlock.type} ${childIndex + 1}` }}</h3>
                       <div class="block-type-badge">{{ childBlock.type }}</div>
                     </div>
+                    <button
+                      v-if="getBlockTagsForRender(childBlock).length > 0"
+                      type="button"
+                      class="block-tag-list"
+                      @click.stop="handleTagEditorRequest(index * 100 + childIndex)"
+                    >
+                      <span
+                        v-for="tag in getBlockTagsForRender(childBlock)"
+                        :key="tag.id"
+                        class="block-tag-chip"
+                        :style="{ '--block-tag-color': tag.color || '#1677ff' }"
+                      >
+                        {{ tag.label }}
+                      </span>
+                    </button>
 
                     <!-- 根据block类型动态渲染不同组件 -->
                     <template v-if="isRichTextBlock(childBlock)">
@@ -855,6 +988,7 @@ const getBlockProperties = (block: Block) => {
                         @extract-selection="(text: string) => handleExtractSelection(text, index * 100 + childIndex)"
                         @insert-block="() => insertBlock(index * 100 + childIndex + 1, createNewRichTextBlock())"
                         @line-insert="(payload: RichTextLineInsertPayload) => handleRichTextLineInsert(payload, index * 100 + childIndex)"
+                        @open-tag-editor="(request?: TagEditorOpenRequest) => handleTagEditorRequest(index * 100 + childIndex, request)"
                         @delete-block="removeBlock(index * 100 + childIndex)"
                         @click="(event: MouseEvent) => handleRichTextEditorClick(event, index * 100 + childIndex)"
                         @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index * 100 + childIndex)"
@@ -930,6 +1064,7 @@ const getBlockProperties = (block: Block) => {
               @extract-selection="(text: string) => handleExtractSelection(text, index)"
               @insert-block="() => insertBlock(index + 1, createNewRichTextBlock())"
               @line-insert="(payload: RichTextLineInsertPayload) => handleRichTextLineInsert(payload, index)"
+              @open-tag-editor="(request?: TagEditorOpenRequest) => handleTagEditorRequest(index, request)"
               @delete-block="removeBlock(index)"
               @click="(event: MouseEvent) => handleRichTextEditorClick(event, index)"
               @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index)"
@@ -998,6 +1133,16 @@ const getBlockProperties = (block: Block) => {
     <BlockPicker
       v-model:visible="showBlockPicker"
       @select="onRefBlockSelected"
+    />
+
+    <BlockMetadataTagEditor
+      :visible="tagEditorState.visible"
+      :selected-tags="activeEditorTags"
+      :available-tags="availableTags"
+      :top="tagEditorState.top"
+      :left="tagEditorState.left"
+      @close="closeTagEditor"
+      @update:selected-tags="(tags) => { if (tagEditorState.position >= 0) updateBlockTags(tagEditorState.position, tags); }"
     />
 
     <!-- Toast消息容器 -->
@@ -1137,6 +1282,32 @@ const getBlockProperties = (block: Block) => {
   margin: 0;
   color: #333;
   font-size: 16px;
+}
+
+.block-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  margin: 0 0 12px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.block-tag-chip {
+  --block-tag-color: #1677ff;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--block-tag-color);
+  background: rgba(22, 119, 255, 0.1);
+  border: 1px solid rgba(22, 119, 255, 0.2);
 }
 
 .block-type-badge {
