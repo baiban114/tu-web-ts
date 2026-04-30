@@ -14,11 +14,12 @@ import {
 } from '@antv/x6';
 
 type CellData = Record<string, any>;
+const BLUEPRINT_ANCHOR = { x: 480, y: 280 } as const;
 
 interface GraphData {
   cells?: CellData[];
-  nodes?: CellData[];
-  edges?: CellData[];
+  nodes: CellData[];
+  edges: CellData[];
   [key: string]: any;
 }
 
@@ -27,6 +28,7 @@ interface Props {
   editable?: boolean;
   width?: number;
   height?: number;
+  blockActionsEnabled?: boolean;
 }
 
 type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond';
@@ -58,10 +60,23 @@ const props = withDefaults(defineProps<Props>(), {
   editable: true,
   width: 960,
   height: 540,
+  blockActionsEnabled: true,
 });
+
+interface ExtractedGraphSelectionPayload {
+  graphData: GraphData;
+  count: number;
+}
+
+interface InsertRefRequestPayload {
+  x: number;
+  y: number;
+}
 
 const emit = defineEmits<{
   (e: 'graph-data-change', graphData: GraphData): void;
+  (e: 'extract-selection', payload: ExtractedGraphSelectionPayload): void;
+  (e: 'request-insert-ref', payload: InsertRefRequestPayload): void;
 }>();
 
 const stageRef = ref<HTMLDivElement | null>(null);
@@ -195,6 +210,43 @@ function mergeDeep<T extends Record<string, any>>(base: T, extra: Record<string,
     result[key] = value;
   });
   return result as T;
+}
+
+function getCellPosition(cell: CellData, fallback = { x: 120, y: 120 }) {
+  const position = isPlainObject(cell.position) ? cell.position : undefined;
+  const style = isPlainObject(cell.style) ? cell.style : undefined;
+  return {
+    x: typeof position?.x === 'number'
+      ? position.x
+      : typeof cell.x === 'number'
+        ? cell.x
+        : typeof style?.x === 'number'
+          ? style.x
+          : fallback.x,
+    y: typeof position?.y === 'number'
+      ? position.y
+      : typeof cell.y === 'number'
+        ? cell.y
+        : typeof style?.y === 'number'
+          ? style.y
+          : fallback.y,
+  };
+}
+
+function getCellSize(cell: CellData) {
+  const size = isPlainObject(cell.size) ? cell.size : undefined;
+  return {
+    width: typeof size?.width === 'number'
+      ? size.width
+      : typeof cell.width === 'number'
+        ? cell.width
+        : undefined,
+    height: typeof size?.height === 'number'
+      ? size.height
+      : typeof cell.height === 'number'
+        ? cell.height
+        : undefined,
+  };
 }
 
 function createEdgeMetadata(edge: Partial<CellData> = {}): CellData {
@@ -373,15 +425,17 @@ function normalizeNode(node: CellData): CellData {
       : node.shape === 'polygon'
         ? 'diamond'
         : node.attrs?.body?.rx
-          ? 'round'
-          : 'rect');
+        ? 'round'
+        : 'rect');
+  const position = getCellPosition(node);
+  const nodeSize = getCellSize(node);
 
   const base = createNodeMetadata(preset, {
     id: node.id,
-    x: node.x ?? node.style?.x ?? 120,
-    y: node.y ?? node.style?.y ?? 120,
-    width: node.width,
-    height: node.height,
+    x: position.x,
+    y: position.y,
+    width: nodeSize.width,
+    height: nodeSize.height,
     label: extractNodeLabel(node),
     data: node.data,
   });
@@ -389,6 +443,20 @@ function normalizeNode(node: CellData): CellData {
   return {
     ...base,
     ...node,
+    x: position.x,
+    y: position.y,
+    width: nodeSize.width ?? base.width,
+    height: nodeSize.height ?? base.height,
+    position: {
+      ...(isPlainObject(node.position) ? node.position : {}),
+      x: position.x,
+      y: position.y,
+    },
+    size: {
+      ...(isPlainObject(node.size) ? node.size : {}),
+      width: nodeSize.width ?? base.width,
+      height: nodeSize.height ?? base.height,
+    },
     attrs: mergeDeep(base.attrs, node.attrs ?? {}),
     ports: node.ports ?? base.ports,
   };
@@ -816,6 +884,210 @@ function getCanvasCenter() {
   };
 }
 
+function getSelectionBounds(cells: Array<Node | Edge>) {
+  if (!cells.length) return null;
+
+  const boxes: Array<{ x: number; y: number; width: number; height: number }> = [];
+
+  cells.forEach((cell) => {
+    try {
+      const box = cell.getBBox();
+      boxes.push({
+        x: box.x,
+        y: box.y,
+        width: box.width,
+        height: box.height,
+      });
+    } catch {
+      // ignore cells that cannot provide a usable bounding box
+    }
+  });
+
+  if (!boxes.length) return null;
+
+  const minX = Math.min(...boxes.map((box) => box.x));
+  const minY = Math.min(...boxes.map((box) => box.y));
+  const maxX = Math.max(...boxes.map((box) => box.x + box.width));
+  const maxY = Math.max(...boxes.map((box) => box.y + box.height));
+
+  return {
+    minX,
+    minY,
+    maxX,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  };
+}
+
+function offsetCellPosition(cell: CellData, offsetX: number, offsetY: number): CellData {
+  const nextCell = JSON.parse(JSON.stringify(cell)) as CellData;
+
+  if (typeof nextCell.x === 'number') {
+    nextCell.x += offsetX;
+  }
+  if (isPlainObject(nextCell.position)) {
+    nextCell.position = {
+      ...nextCell.position,
+      ...(typeof nextCell.position.x === 'number' ? { x: nextCell.position.x + offsetX } : {}),
+      ...(typeof nextCell.position.y === 'number' ? { y: nextCell.position.y + offsetY } : {}),
+    };
+  }
+  if (typeof nextCell.style?.x === 'number') {
+    nextCell.style.x += offsetX;
+  }
+
+  if (typeof nextCell.y === 'number') {
+    nextCell.y += offsetY;
+  }
+  if (typeof nextCell.style?.y === 'number') {
+    nextCell.style.y += offsetY;
+  }
+
+  if (Array.isArray(nextCell.vertices)) {
+    nextCell.vertices = nextCell.vertices.map((vertex: Record<string, any>) => ({
+      ...vertex,
+      ...(typeof vertex.x === 'number' ? { x: vertex.x + offsetX } : {}),
+      ...(typeof vertex.y === 'number' ? { y: vertex.y + offsetY } : {}),
+    }));
+  }
+
+  if (Array.isArray(nextCell.labels)) {
+    nextCell.labels = nextCell.labels.map((label: Record<string, any>) => {
+      if (!label || typeof label !== 'object') return label;
+      const nextLabel = { ...label };
+      if (typeof nextLabel.offset === 'object' && nextLabel.offset) {
+        nextLabel.offset = {
+          ...nextLabel.offset,
+          ...(typeof nextLabel.offset.x === 'number' ? { x: nextLabel.offset.x + offsetX } : {}),
+          ...(typeof nextLabel.offset.y === 'number' ? { y: nextLabel.offset.y + offsetY } : {}),
+        };
+      }
+      return nextLabel;
+    });
+  }
+
+  const translateTerminal = (terminal: unknown) => {
+    if (!terminal || typeof terminal !== 'object') return terminal;
+    const nextTerminal = terminal as Record<string, any>;
+    if (typeof nextTerminal.cell === 'string') return nextTerminal;
+
+    return {
+      ...nextTerminal,
+      ...(typeof nextTerminal.x === 'number' ? { x: nextTerminal.x + offsetX } : {}),
+      ...(typeof nextTerminal.y === 'number' ? { y: nextTerminal.y + offsetY } : {}),
+    };
+  };
+
+  if (nextCell.source) {
+    nextCell.source = translateTerminal(nextCell.source);
+  }
+
+  if (nextCell.target) {
+    nextCell.target = translateTerminal(nextCell.target);
+  }
+
+  return nextCell;
+}
+
+function buildExtractedSelectionGraphData(): ExtractedGraphSelectionPayload | null {
+  if (!graph) return null;
+
+  const selectedCells = graph.getSelectedCells();
+  if (!selectedCells.length) return null;
+
+  const selectedNodesMap = new Map<string, Node>();
+  const selectedEdgesMap = new Map<string, Edge>();
+
+  selectedCells.forEach((cell) => {
+    if (graph?.isNode(cell)) {
+      selectedNodesMap.set(cell.id, cell);
+      return;
+    }
+
+    if (graph?.isEdge(cell)) {
+      selectedEdgesMap.set(cell.id, cell);
+      const sourceNode = cell.getSourceNode();
+      const targetNode = cell.getTargetNode();
+      if (sourceNode) selectedNodesMap.set(sourceNode.id, sourceNode);
+      if (targetNode) selectedNodesMap.set(targetNode.id, targetNode);
+    }
+  });
+
+  const selectedNodeIds = new Set(selectedNodesMap.keys());
+
+  graph.getEdges().forEach((edge) => {
+    const sourceNode = edge.getSourceNode();
+    const targetNode = edge.getTargetNode();
+    if (!sourceNode || !targetNode) return;
+    if (!selectedNodeIds.has(sourceNode.id) || !selectedNodeIds.has(targetNode.id)) return;
+    selectedEdgesMap.set(edge.id, edge);
+  });
+
+  const selectedNodes = Array.from(selectedNodesMap.values());
+  const selectedEdges = Array.from(selectedEdgesMap.values()).filter((edge) => {
+    const sourceNode = edge.getSourceNode();
+    const targetNode = edge.getTargetNode();
+    if (!sourceNode || !targetNode) return false;
+    return selectedNodeIds.has(sourceNode.id) && selectedNodeIds.has(targetNode.id);
+  });
+
+  if (!selectedNodes.length) return null;
+
+  const bounds = getSelectionBounds(selectedNodes);
+  const anchorX = bounds ? bounds.minX : BLUEPRINT_ANCHOR.x;
+  const anchorY = bounds ? bounds.minY : BLUEPRINT_ANCHOR.y;
+  const offsetX = BLUEPRINT_ANCHOR.x - anchorX;
+  const offsetY = BLUEPRINT_ANCHOR.y - anchorY;
+
+  const nodes = selectedNodes.map((node) => offsetCellPosition(node.toJSON() as CellData, offsetX, offsetY));
+  const edges = selectedEdges.map((edge) => offsetCellPosition(edge.toJSON() as CellData, offsetX, offsetY));
+
+  const offsetBounds = {
+    minX: (bounds?.minX ?? BLUEPRINT_ANCHOR.x) + offsetX,
+    minY: (bounds?.minY ?? BLUEPRINT_ANCHOR.y) + offsetY,
+    maxX: (bounds?.maxX ?? BLUEPRINT_ANCHOR.x) + offsetX,
+    maxY: (bounds?.maxY ?? BLUEPRINT_ANCHOR.y) + offsetY,
+    width: bounds?.width ?? 0,
+    height: bounds?.height ?? 0,
+  };
+
+  return {
+    count: selectedCells.length,
+    graphData: normalizeGraphData({
+      cells: [...nodes, ...edges],
+      nodes,
+      edges,
+      blueprintMeta: {
+        anchor: {
+          x: BLUEPRINT_ANCHOR.x,
+          y: BLUEPRINT_ANCHOR.y,
+        },
+        extractedCenter: {
+          x: offsetBounds.minX + offsetBounds.width / 2,
+          y: offsetBounds.minY + offsetBounds.height / 2,
+        },
+        extractedCount: selectedCells.length,
+        kind: 'blueprint',
+      },
+    }),
+  };
+}
+
+function getRefInsertPosition() {
+  if (!graph) return getCanvasCenter();
+
+  const currentGraph = graph;
+  const selectedCells = currentGraph.getSelectedCells();
+  const bounds = getSelectionBounds(selectedCells.filter((cell): cell is Node | Edge => currentGraph.isNode(cell) || currentGraph.isEdge(cell)));
+  if (!bounds) return getCanvasCenter();
+
+  return {
+    x: bounds.maxX + 48,
+    y: bounds.minY + Math.max(0, bounds.height / 2 - 32),
+  };
+}
+
 function addNode(preset: NodePreset, position?: { x: number; y: number }) {
   if (!graph || !isEditable.value) return;
   const center = position ?? getCanvasCenter();
@@ -872,6 +1144,19 @@ function pasteSelection() {
   graph.resetSelection(pasted);
   refreshSelectedCellState();
   scheduleSync();
+}
+
+function extractSelectionAsBlock() {
+  if (!graph || !props.blockActionsEnabled) return;
+  const payload = buildExtractedSelectionGraphData();
+  if (!payload) return;
+  emit('extract-selection', payload);
+}
+
+function requestInsertRefBlock() {
+  if (!graph || !isEditable.value || !props.blockActionsEnabled) return;
+  const position = getRefInsertPosition();
+  emit('request-insert-ref', position);
 }
 
 function clearCanvas() {
@@ -1082,6 +1367,13 @@ function bindKeyboardShortcuts() {
     duplicateSelection();
     return false;
   });
+
+  if (props.blockActionsEnabled) {
+    graph.bindKey(['ctrl+shift+e', 'meta+shift+e'], () => {
+      extractSelectionAsBlock();
+      return false;
+    });
+  }
 
   graph.bindKey(['ctrl+z', 'meta+z'], () => {
     undo();
@@ -1422,6 +1714,15 @@ watch(
         </button>
       </div>
 
+      <div v-if="blockActionsEnabled" class="toolbar-group">
+        <button type="button" class="tool-button" :disabled="selectedCellsCount === 0" @click="extractSelectionAsBlock">
+          提取为块（蓝图）
+        </button>
+        <button type="button" class="tool-button" :disabled="!isEditable" @click="requestInsertRefBlock">
+          插入引用块
+        </button>
+      </div>
+
       <div class="toolbar-group toolbar-group--summary">
         <span class="toolbar-summary">{{ selectionSummary }}</span>
         <span class="toolbar-summary">{{ zoomPercent }}%</span>
@@ -1468,9 +1769,11 @@ watch(
             @keydown="handleEdgeEditKeydown"
             @blur="commitEdgeInlineEdit()"
           />
+          <span v-if="blockActionsEnabled">多选后可直接提取为新蓝图块（蓝图）</span>
         </div>
 
         <div class="x6-stage-hint">
+          <span v-if="blockActionsEnabled">多选后可直接提取为新蓝图块（蓝图）</span>
           <span>双击空白处快速新建节点</span>
           <span>拖拽节点四周锚点创建连线</span>
           <span>双击节点或连线直接改文字</span>
@@ -1739,6 +2042,10 @@ watch(
   box-sizing: border-box;
   font-family: inherit;
   line-height: 1.4;
+}
+
+.x6-inline-editor > span {
+  display: none;
 }
 
 .x6-stage-hint {

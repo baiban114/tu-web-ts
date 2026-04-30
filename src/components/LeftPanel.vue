@@ -11,6 +11,7 @@ import {
 } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
+import AuthPanel from './AuthPanel.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
 
 const store = useWorkspaceStore();
@@ -141,6 +142,8 @@ function onDocumentClick() {
 
 <template>
   <div class="left-panel" @click="onDocumentClick">
+    <AuthPanel />
+
     <div class="section">
       <div class="section-header">
         <span class="section-title">知识库</span>
@@ -323,7 +326,7 @@ function onDocumentClick() {
 }
 
 .kb-list {
-  max-height: 200px;
+  max-height: 180px;
   padding: 0 8px 8px;
 }
 

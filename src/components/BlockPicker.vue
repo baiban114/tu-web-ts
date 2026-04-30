@@ -1,10 +1,18 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
-import { ElDialog, ElInput, ElScrollbar, ElEmpty } from 'element-plus';
+import { computed, ref, watch } from 'vue';
+import { ElDialog, ElEmpty, ElInput, ElScrollbar } from 'element-plus';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import type { BlockWithMeta } from '@/api/page';
 
-const props = defineProps<{ visible: boolean }>();
+type BlockFilterType = 'all' | 'text' | 'x6';
+
+const props = withDefaults(defineProps<{
+  visible: boolean;
+  initialTypeFilter?: BlockFilterType;
+}>(), {
+  initialTypeFilter: 'all',
+});
+
 const emit = defineEmits<{
   (e: 'update:visible', val: boolean): void;
   (e: 'select', blockId: string): void;
@@ -12,27 +20,53 @@ const emit = defineEmits<{
 
 const registryStore = useBlockRegistryStore();
 const searchText = ref('');
+const typeFilter = ref<BlockFilterType>(props.initialTypeFilter);
 
-// 打开时拉取全量 block
+const filterOptions: Array<{ key: BlockFilterType; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'text', label: '文本' },
+  { key: 'x6', label: '默认画板' },
+];
+
+const isTextBlock = (item: BlockWithMeta) => {
+  return item.block.type === 'richtext' || item.block.type === 'richText';
+};
+
+const getTypeLabel = (item: BlockWithMeta) => {
+  if (item.block.type === 'x6') return '默认画板';
+  if (isTextBlock(item)) return '文本';
+  return item.block.type;
+};
+
+const matchesTypeFilter = (item: BlockWithMeta) => {
+  if (typeFilter.value === 'all') return true;
+  if (typeFilter.value === 'text') return isTextBlock(item);
+  if (typeFilter.value === 'x6') return item.block.type === 'x6';
+  return true;
+};
+
 watch(
   () => props.visible,
-  async (val) => {
-    if (val) {
-      searchText.value = '';
-      await registryStore.loadAll();
-    }
+  async (visible) => {
+    if (!visible) return;
+    searchText.value = '';
+    typeFilter.value = props.initialTypeFilter;
+    await registryStore.loadAll();
   },
 );
 
 const filteredBlocks = computed<BlockWithMeta[]>(() => {
-  const q = searchText.value.trim().toLowerCase();
-  const all = registryStore.getAllBlocks();
-  if (!q) return all;
-  return all.filter(
-    ({ block, pageTitle }) =>
-      block.content?.toLowerCase().includes(q) ||
-      pageTitle.toLowerCase().includes(q),
-  );
+  const keyword = searchText.value.trim().toLowerCase();
+  const items = registryStore.getAllBlocks().filter(matchesTypeFilter);
+
+  if (!keyword) return items;
+
+  return items.filter(({ block, pageTitle }) => {
+    return (block.content?.toLowerCase().includes(keyword) ?? false)
+      || (block.title?.toLowerCase().includes(keyword) ?? false)
+      || pageTitle.toLowerCase().includes(keyword)
+      || getTypeLabel({ block, pageId: '', pageTitle }).toLowerCase().includes(keyword);
+  });
 });
 
 function onSelect(item: BlockWithMeta) {
@@ -40,15 +74,17 @@ function onSelect(item: BlockWithMeta) {
   emit('update:visible', false);
 }
 
-/** 截取 block 内容用于预览（去掉 markdown 符号，最多 80 字符） */
-function preview(block: any): string {
-  if (block.type === 'x6') {
-    return '📋 默认画板';
+function preview(item: BlockWithMeta): string {
+  if (item.block.type === 'x6') {
+    return item.block.title?.trim() || '默认画板';
   }
-  const content = block.content;
-  if (!content) return '（空内容）';
+
+  const content = item.block.content;
+  if (!content) return '空内容';
+
   const plain = content.replace(/[#*`>\-_\[\]]/g, '').trim();
-  return plain.length > 80 ? plain.slice(0, 80) + '…' : plain || '（空内容）';
+  if (!plain) return '空内容';
+  return plain.length > 80 ? `${plain.slice(0, 80)}…` : plain;
 }
 </script>
 
@@ -62,10 +98,23 @@ function preview(block: any): string {
     <div class="picker-body">
       <el-input
         v-model="searchText"
-        placeholder="搜索块内容或页面名称…"
+        placeholder="搜索块内容、标题或页面名"
         clearable
         class="picker-search"
       />
+
+      <div class="picker-filters">
+        <button
+          v-for="option in filterOptions"
+          :key="option.key"
+          type="button"
+          class="picker-filter"
+          :class="{ 'picker-filter--active': typeFilter === option.key }"
+          @click="typeFilter = option.key"
+        >
+          {{ option.label }}
+        </button>
+      </div>
 
       <el-scrollbar height="340px" class="picker-list-wrap">
         <div v-if="filteredBlocks.length === 0" class="picker-empty">
@@ -78,9 +127,9 @@ function preview(block: any): string {
           class="picker-item"
           @click="onSelect(item)"
         >
-          <div class="picker-item__preview">{{ preview(item.block) }}</div>
+          <div class="picker-item__preview">{{ preview(item) }}</div>
           <div class="picker-item__meta">
-            <span class="picker-item__type">{{ item.block.type === 'x6' ? '默认画板' : item.block.type }}</span>
+            <span class="picker-item__type">{{ getTypeLabel(item) }}</span>
             <span class="picker-item__page">来自：{{ item.pageTitle }}</span>
           </div>
         </div>
@@ -98,6 +147,34 @@ function preview(block: any): string {
 
 .picker-search {
   width: 100%;
+}
+
+.picker-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.picker-filter {
+  border: 1px solid #d9d9d9;
+  background: #fff;
+  color: #595959;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.picker-filter:hover {
+  border-color: #91caff;
+  color: #1677ff;
+}
+
+.picker-filter--active {
+  border-color: #1677ff;
+  background: #e6f4ff;
+  color: #1677ff;
 }
 
 .picker-list-wrap {

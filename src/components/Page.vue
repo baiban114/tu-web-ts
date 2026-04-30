@@ -7,6 +7,7 @@ import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue';
 import Line from './line.vue';
 import X6Component from './X6Component.vue';
 import Toast from './Toast.vue';
+import { ElMessageBox } from 'element-plus';
 import { VueDraggable } from 'vue-draggable-plus';
 import type { Block, BlockTag, GraphData } from '@/api/types';
 import { blockSyncManager } from '@/utils/blockSyncManager';
@@ -37,6 +38,22 @@ interface TagEditorOpenRequest {
   left?: number;
 }
 
+interface X6ExtractSelectionPayload {
+  graphData: {
+    cells?: Array<Record<string, unknown>>;
+    nodes: Array<Record<string, unknown>>;
+    edges: Array<Record<string, unknown>>;
+  };
+  count: number;
+}
+
+interface X6InsertRefRequestPayload {
+  x: number;
+  y: number;
+}
+
+type BlockPickerTypeFilter = 'all' | 'text' | 'x6';
+
 const props = withDefaults(defineProps<Props>(), {
   editable: true
 });
@@ -53,11 +70,17 @@ const localBlocks = ref<Block[]>([]);
 
 // 引用块弹窗状态
 const showBlockPicker = ref(false);
+const blockPickerInitialTypeFilter = ref<BlockPickerTypeFilter>('all');
 const pendingRefInsertPosition = ref(-1);
 const pendingRichTextSplitInsert = ref<{
   position: number;
   beforeContent: string;
   afterContent: string;
+} | null>(null);
+const pendingX6RefInsert = ref<{
+  position: number;
+  x: number;
+  y: number;
 } | null>(null);
 
 const blockRefs = ref<HTMLElement[]>([]);
@@ -317,6 +340,15 @@ const createNewX6Block = (position: number): Block => {
   };
 };
 
+const createX6BlockFromGraphData = (graphData: GraphData, title = '提取的蓝图片段（蓝图）'): Block => {
+  return {
+    id: generateId(),
+    type: 'x6',
+    title,
+    graphData,
+  };
+};
+
 // 创建新的容器块
 const createNewContainerBlock = (position: number, layout: 'horizontal' | 'vertical' = 'horizontal'): Block => {
   return {
@@ -338,15 +370,377 @@ const createRefBlock = (refId: string): Block => ({
   refId,
 });
 
+const truncateText = (value: string, maxLength = 24): string => {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return '';
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
+};
+
+const getRefPreviewText = (refId: string): string => {
+  const sourceBlock = registryStore.getBlock(refId);
+  const meta = registryStore.getMeta(refId);
+
+  if (!sourceBlock) {
+    return '🔗 引用块';
+  }
+
+  if (sourceBlock.type === 'x6') {
+    return `🔗 引用画板\n${truncateText(meta?.pageTitle ?? '未命名页面', 18)}`;
+  }
+
+  const contentPreview = truncateText(sourceBlock.content ?? '', 28);
+  return contentPreview
+    ? `🔗 ${contentPreview}`
+    : `🔗 ${truncateText(meta?.pageTitle ?? '引用块', 18)}`;
+};
+
+const cloneGraphPayload = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+const asGraphObject = (value: unknown): Record<string, unknown> | null => {
+  return typeof value === 'object' && value ? value as Record<string, unknown> : null;
+};
+
+const getGraphNodePosition = (node: GraphData['nodes'][number]) => ({
+  x: typeof asGraphObject(node.position)?.x === 'number'
+    ? asGraphObject(node.position)!.x as number
+    : typeof node.x === 'number'
+      ? node.x
+      : typeof node.style?.x === 'number'
+        ? node.style.x
+        : 0,
+  y: typeof asGraphObject(node.position)?.y === 'number'
+    ? asGraphObject(node.position)!.y as number
+    : typeof node.y === 'number'
+      ? node.y
+      : typeof node.style?.y === 'number'
+        ? node.style.y
+        : 0,
+});
+
+const getGraphNodeSize = (node: GraphData['nodes'][number]) => ({
+  width: typeof asGraphObject(node.size)?.width === 'number'
+    ? asGraphObject(node.size)!.width as number
+    : typeof node.width === 'number'
+      ? node.width
+      : 0,
+  height: typeof asGraphObject(node.size)?.height === 'number'
+    ? asGraphObject(node.size)!.height as number
+    : typeof node.height === 'number'
+      ? node.height
+      : 0,
+});
+
+const getGraphDataBounds = (graphData: GraphData) => {
+  const points: Array<{ x: number; y: number }> = [];
+
+  const collectPoint = (x: unknown, y: unknown) => {
+    if (typeof x === 'number' && typeof y === 'number') {
+      points.push({ x, y });
+    }
+  };
+
+  const sourceCells = Array.isArray(graphData.cells)
+    ? graphData.cells
+    : [...(graphData.nodes ?? []), ...(graphData.edges ?? [])];
+
+  sourceCells.forEach((cell) => {
+    if (typeof cell !== 'object' || !cell) return;
+    const graphCell = cell as Record<string, unknown>;
+
+    collectPoint(graphCell.x, graphCell.y);
+
+    const position = asGraphObject(graphCell.position);
+    if (position) {
+      collectPoint(position.x, position.y);
+    }
+
+    const style = graphCell.style;
+    if (typeof style === 'object' && style) {
+      collectPoint((style as { x?: unknown }).x, (style as { y?: unknown }).y);
+    }
+
+    const size = asGraphObject(graphCell.size);
+    const width = typeof size?.width === 'number' ? size.width : graphCell.width;
+    const height = typeof size?.height === 'number' ? size.height : graphCell.height;
+    const x = typeof position?.x === 'number' ? position.x : graphCell.x;
+    const y = typeof position?.y === 'number' ? position.y : graphCell.y;
+    if (typeof x === 'number' && typeof y === 'number' && typeof width === 'number' && typeof height === 'number') {
+      collectPoint(x + width, y + height);
+    }
+
+    const vertices = graphCell.vertices;
+    if (Array.isArray(vertices)) {
+      vertices.forEach((vertex) => {
+        if (typeof vertex !== 'object' || !vertex) return;
+        collectPoint((vertex as { x?: unknown }).x, (vertex as { y?: unknown }).y);
+      });
+    }
+
+    const source = graphCell.source;
+    const target = graphCell.target;
+    [source, target].forEach((terminal) => {
+      if (typeof terminal !== 'object' || !terminal || typeof (terminal as { cell?: unknown }).cell === 'string') return;
+      collectPoint((terminal as { x?: unknown }).x, (terminal as { y?: unknown }).y);
+    });
+  });
+
+  if (!points.length) return null;
+
+  return {
+    minX: Math.min(...points.map((point) => point.x)),
+    minY: Math.min(...points.map((point) => point.y)),
+    maxX: Math.max(...points.map((point) => point.x)),
+    maxY: Math.max(...points.map((point) => point.y)),
+  };
+};
+
+const offsetGraphCellPosition = (cell: Record<string, unknown>, offsetX: number, offsetY: number) => {
+  const nextCell = cloneGraphPayload(cell);
+  const position = asGraphObject(nextCell.position);
+  const style =
+    typeof nextCell.style === 'object' && nextCell.style
+      ? (nextCell.style as Record<string, unknown> & { x?: number; y?: number })
+      : null;
+
+  if (typeof nextCell.x === 'number') {
+    nextCell.x += offsetX;
+  }
+  if (typeof position?.x === 'number' || typeof position?.y === 'number') {
+    nextCell.position = {
+      ...position,
+      ...(typeof position.x === 'number' ? { x: position.x + offsetX } : {}),
+      ...(typeof position.y === 'number' ? { y: position.y + offsetY } : {}),
+    };
+  }
+  if (typeof style?.x === 'number') {
+    nextCell.style = {
+      ...style,
+      x: style.x + offsetX,
+    };
+  }
+
+  if (typeof nextCell.y === 'number') {
+    nextCell.y += offsetY;
+  }
+  if (typeof style?.y === 'number') {
+    nextCell.style = {
+      ...style,
+      y: style.y + offsetY,
+    };
+  }
+
+  if (Array.isArray(nextCell.vertices)) {
+    nextCell.vertices = nextCell.vertices.map((vertex) => {
+      if (typeof vertex !== 'object' || !vertex) return vertex;
+      return {
+        ...vertex,
+        ...(typeof vertex.x === 'number' ? { x: vertex.x + offsetX } : {}),
+        ...(typeof vertex.y === 'number' ? { y: vertex.y + offsetY } : {}),
+      };
+    });
+  }
+
+  const translateTerminal = (terminal: unknown) => {
+    if (typeof terminal !== 'object' || !terminal) return terminal;
+    if (typeof (terminal as { cell?: unknown }).cell === 'string') return terminal;
+
+    return {
+      ...terminal,
+      ...(typeof (terminal as { x?: unknown }).x === 'number' ? { x: (terminal as { x: number }).x + offsetX } : {}),
+      ...(typeof (terminal as { y?: unknown }).y === 'number' ? { y: (terminal as { y: number }).y + offsetY } : {}),
+    };
+  };
+
+  if ('source' in nextCell) {
+    nextCell.source = translateTerminal(nextCell.source);
+  }
+
+  if ('target' in nextCell) {
+    nextCell.target = translateTerminal(nextCell.target);
+  }
+
+  return nextCell;
+};
+
+const remapGraphTerminal = (
+  terminal: string | Record<string, unknown>,
+  nodeIdMap: Map<string, string>,
+) => {
+  if (typeof terminal === 'string') {
+    return nodeIdMap.get(terminal) ?? terminal;
+  }
+
+  const nextTerminal = cloneGraphPayload(terminal);
+  if (typeof nextTerminal.cell === 'string') {
+    nextTerminal.cell = nodeIdMap.get(nextTerminal.cell) ?? nextTerminal.cell;
+  }
+  return nextTerminal;
+};
+
+const mergeReferencedGraphData = (
+  targetGraphData: GraphData | undefined,
+  sourceGraphData: GraphData,
+  refId: string,
+  x: number,
+  y: number,
+): GraphData => {
+  const sourceNodes = Array.isArray(sourceGraphData.nodes) ? sourceGraphData.nodes : [];
+  const sourceEdges = Array.isArray(sourceGraphData.edges) ? sourceGraphData.edges : [];
+
+  if (sourceNodes.length === 0) {
+    return appendNodeToGraphData(targetGraphData, createX6RefNode(refId, x, y));
+  }
+
+  const nodePositions = sourceNodes.map((node) => {
+    const position = getGraphNodePosition(node);
+    const size = getGraphNodeSize(node);
+    return {
+      x: position.x,
+      y: position.y,
+      width: size.width,
+      height: size.height,
+    };
+  });
+
+  const blueprintAnchor = sourceGraphData.blueprintMeta?.anchor;
+  const graphBounds = getGraphDataBounds(sourceGraphData);
+  const anchorX = blueprintAnchor?.x ?? graphBounds?.minX ?? Math.min(...nodePositions.map((item) => item.x));
+  const anchorY = blueprintAnchor?.y ?? graphBounds?.minY ?? Math.min(...nodePositions.map((item) => item.y));
+  const offsetX = x - anchorX;
+  const offsetY = y - anchorY;
+
+  const nodeIdMap = new Map<string, string>();
+  const nextNodes = sourceNodes.map((node) => {
+    const nextNode = offsetGraphCellPosition(node, offsetX, offsetY) as GraphData['nodes'][number];
+    const nextId = generateId();
+    nodeIdMap.set(node.id, nextId);
+    nextNode.id = nextId;
+
+    nextNode.data = {
+      ...(nextNode.data ?? {}),
+      refBlockId: refId,
+      refSourceCellId: node.id,
+      refKind: 'graph-selection',
+    };
+
+    return nextNode;
+  });
+
+  const nextEdges = sourceEdges.map((edge) => {
+    const nextEdge = offsetGraphCellPosition(edge, offsetX, offsetY) as GraphData['edges'][number];
+    nextEdge.id = generateId();
+    nextEdge.source = remapGraphTerminal(nextEdge.source, nodeIdMap);
+    nextEdge.target = remapGraphTerminal(nextEdge.target, nodeIdMap);
+    nextEdge.data = {
+      ...(nextEdge.data ?? {}),
+      refBlockId: refId,
+      refSourceCellId: edge.id,
+      refKind: 'graph-selection',
+    };
+    return nextEdge;
+  });
+
+  return {
+    ...(targetGraphData ?? {}),
+    nodes: [...(targetGraphData?.nodes ?? []), ...nextNodes],
+    edges: [...(targetGraphData?.edges ?? []), ...nextEdges],
+    cells: [
+      ...(targetGraphData?.cells ?? [
+        ...(targetGraphData?.nodes ?? []),
+        ...(targetGraphData?.edges ?? []),
+      ]),
+      ...nextNodes,
+      ...nextEdges,
+    ],
+  };
+};
+
+const createX6RefNode = (refId: string, x: number, y: number): GraphData['nodes'][number] => ({
+  id: generateId(),
+  shape: 'rect',
+  x,
+  y,
+  width: 220,
+  height: 72,
+  attrs: {
+    body: {
+      fill: '#f5f9ff',
+      stroke: '#1677ff',
+      strokeWidth: 1.6,
+      rx: 14,
+      ry: 14,
+    },
+    label: {
+      text: getRefPreviewText(refId),
+      fill: '#0958d9',
+      fontSize: 13,
+      fontWeight: 600,
+    },
+  },
+  data: {
+    preset: 'round',
+    refBlockId: refId,
+    refKind: 'block',
+  },
+});
+
+const appendNodeToGraphData = (graphData: GraphData | undefined, node: GraphData['nodes'][number]): GraphData => {
+  const nodes = Array.isArray(graphData?.nodes) ? [...graphData!.nodes] : [];
+  const edges = Array.isArray(graphData?.edges) ? [...graphData!.edges] : [];
+  const cells = Array.isArray(graphData?.cells) ? [...graphData!.cells] : [...nodes, ...edges];
+
+  nodes.push(node);
+  cells.push(node);
+
+  return {
+    ...(graphData ?? {}),
+    nodes,
+    edges,
+    cells,
+  };
+};
+
 // 打开引用块选择弹窗（记录插入位置）
 const openBlockPicker = (position: number) => {
+  blockPickerInitialTypeFilter.value = 'all';
   pendingRefInsertPosition.value = position;
   pendingRichTextSplitInsert.value = null;
+  pendingX6RefInsert.value = null;
+  showBlockPicker.value = true;
+};
+
+const requestX6RefInsert = (position: number, payload: X6InsertRefRequestPayload) => {
+  blockPickerInitialTypeFilter.value = 'x6';
+  pendingRefInsertPosition.value = -1;
+  pendingRichTextSplitInsert.value = null;
+  pendingX6RefInsert.value = {
+    position,
+    x: payload.x,
+    y: payload.y,
+  };
   showBlockPicker.value = true;
 };
 
 // 选中引用源后插入 ref 块
 const onRefBlockSelected = (refId: string) => {
+  if (pendingX6RefInsert.value) {
+    const { position, x, y } = pendingX6RefInsert.value;
+    const sourceBlock = registryStore.getBlock(refId);
+    updateBlockAtPosition(position, (block) => {
+      if (block.type !== 'x6') return block;
+      return {
+        ...block,
+        graphData: sourceBlock?.type === 'x6' && sourceBlock.graphData
+          ? mergeReferencedGraphData(block.graphData, sourceBlock.graphData, refId, x, y)
+          : appendNodeToGraphData(block.graphData, createX6RefNode(refId, x, y)),
+      };
+    });
+    pendingX6RefInsert.value = null;
+    pendingRefInsertPosition.value = -1;
+    pendingRichTextSplitInsert.value = null;
+    return;
+  }
+
   const position = pendingRefInsertPosition.value;
   if (position >= 0) {
     if (pendingRichTextSplitInsert.value) {
@@ -368,6 +762,7 @@ const onRefBlockSelected = (refId: string) => {
   }
   pendingRefInsertPosition.value = -1;
   pendingRichTextSplitInsert.value = null;
+  pendingX6RefInsert.value = null;
 };
 
 // 统一富文本类型为 'richtext'，避免 'richText' 导致未知类型显示
@@ -667,7 +1062,9 @@ const isNormalizing = ref(false);
 
 watch(showBlockPicker, (visible) => {
   if (visible) return;
+  blockPickerInitialTypeFilter.value = 'all';
   pendingRichTextSplitInsert.value = null;
+  pendingX6RefInsert.value = null;
 });
 
 watch(
@@ -783,6 +1180,43 @@ const handleExtractSelection = (text: string, blockIndex: number) => {
   
   // TODO: 从原块中移除选中的文本
   // 注意：这需要更复杂的DOM操作，因为我们需要知道选中的具体位置
+};
+
+const promptX6ExtractTitle = async (count: number) => {
+  const defaultTitle = count > 1 ? `提取的蓝图片段（蓝图）(${count} 项)` : '提取的蓝图片段（蓝图）';
+
+  try {
+    const { value } = await ElMessageBox.prompt(
+      '请输入新蓝图块名称（蓝图）',
+      '提取为块（蓝图）',
+      {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        inputValue: defaultTitle,
+        inputPlaceholder: '蓝图块名称（蓝图）',
+        inputValidator: (input) => {
+          return input.trim() ? true : '名称不能为空';
+        },
+      },
+    );
+
+    return value.trim();
+  } catch {
+    return null;
+  }
+};
+
+const handleExtractX6Selection = async (payload: X6ExtractSelectionPayload, blockIndex: number) => {
+  if (!props.editable) return;
+  if (!payload?.graphData || payload.count <= 0) return;
+
+  const title = await promptX6ExtractTitle(payload.count);
+  if (!title) return;
+
+  const insertPosition = blockIndex + 1;
+  const newBlock = createX6BlockFromGraphData(payload.graphData as GraphData, title);
+  autoFocusBlockId.value = null;
+  insertBlock(insertPosition, newBlock);
 };
 
 // 处理工具栏提取成块按钮点击
@@ -1005,6 +1439,8 @@ const getBlockProperties = (block: Block) => {
                       :graphData="childBlock.graphData"
                       :editable="editable"
                       @graph-data-change="(graphData: any) => { childBlock.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
+                      @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index * 100 + childIndex)"
+                      @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index * 100 + childIndex, payload)"
                       class="block-content board-content"
                     />
                     <template v-else-if="childBlock.type === 'ref' && childBlock.refId">
@@ -1017,6 +1453,7 @@ const getBlockProperties = (block: Block) => {
                             :key="`ref-x6-${childBlock.id}`"
                             :graphData="registryStore.getBlock(childBlock.refId)?.graphData"
                             :editable="editable"
+                            :block-actions-enabled="false"
                             @graph-data-change="(graphData: any) => registryStore.updateGraphData(childBlock.refId!, graphData as GraphData)"
                             class="block-content board-content"
                           />
@@ -1083,6 +1520,8 @@ const getBlockProperties = (block: Block) => {
             :graphData="block.graphData"
             :editable="editable"
             @graph-data-change="(graphData: any) => { block.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
+            @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index)"
+            @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index, payload)"
             class="block-content board-content"
           />
           <!-- 引用块 -->
@@ -1096,6 +1535,7 @@ const getBlockProperties = (block: Block) => {
                   :key="`ref-x6-${block.id}`"
                   :graphData="registryStore.getBlock(block.refId)?.graphData"
                   :editable="editable"
+                  :block-actions-enabled="false"
                   @graph-data-change="(graphData: any) => registryStore.updateGraphData(block.refId!, graphData as GraphData)"
                   class="block-content board-content"
                 />
@@ -1132,6 +1572,7 @@ const getBlockProperties = (block: Block) => {
     <!-- 引用块选择弹窗 -->
     <BlockPicker
       v-model:visible="showBlockPicker"
+      :initial-type-filter="blockPickerInitialTypeFilter"
       @select="onRefBlockSelected"
     />
 

@@ -4,8 +4,18 @@ export interface GraphData {
     id: string;
     x?: number;
     y?: number;
+    position?: {
+      x?: number;
+      y?: number;
+      [key: string]: unknown;
+    };
     width?: number;
     height?: number;
+    size?: {
+      width?: number;
+      height?: number;
+      [key: string]: unknown;
+    };
     label?: string;
     shape?: string;
     style?: {
@@ -37,6 +47,18 @@ export interface GraphData {
     };
     [key: string]: unknown;
   }>;
+  blueprintMeta?: {
+    anchor: {
+      x: number;
+      y: number;
+    };
+    extractedCenter?: {
+      x: number;
+      y: number;
+    };
+    extractedCount?: number;
+    kind?: string;
+  };
 }
 
 export interface BlockTag {
