@@ -196,7 +196,7 @@ function initRichEditor() {
     mode: 'wysiwyg',
     cache: { enable: false },
     toolbarConfig: { hide: true, pin: false },
-    toolbar: [],
+    toolbar: ['image'],
     after: () => {
       bindRichEditorResizeObserver();
       scheduleRichEditorLayoutSync();
