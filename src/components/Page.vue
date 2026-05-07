@@ -5,6 +5,7 @@ import HoverHandle from './HoverHandle.vue';
 import BlockPicker from './BlockPicker.vue';
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue';
 import Line from './line.vue';
+import TableBlock from './TableBlock.vue';
 import X6Component from './X6Component.vue';
 import Toast from './Toast.vue';
 import { ElMessageBox } from 'element-plus';
@@ -22,7 +23,7 @@ interface Props {
 interface RichTextLineInsertPayload {
   beforeContent: string;
   afterContent: string;
-  blockType: 'richtext' | 'line' | 'x6' | 'ref' | 'container';
+  blockType: 'richtext' | 'line' | 'x6' | 'ref' | 'container' | 'table';
   layout?: 'horizontal' | 'vertical';
 }
 
@@ -104,6 +105,7 @@ const blockHandleItems = [
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
+  { key: 'insert-table', icon: '▦', label: '插入表格' },
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
   { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
@@ -116,6 +118,7 @@ const childBlockHandleItems = [
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
+  { key: 'insert-table', icon: '▦', label: '插入表格' },
   { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
@@ -348,6 +351,19 @@ const createX6BlockFromGraphData = (graphData: GraphData, title = '提取的蓝�
     graphData,
   };
 };
+
+const createNewTableBlock = (): Block => ({
+  id: generateId(),
+  type: 'table',
+  title: '新的表格',
+  tableData: {
+    headers: ['列 1', '列 2', '列 3'],
+    rows: [
+      ['', '', ''],
+      ['', '', ''],
+    ],
+  },
+});
 
 // 创建新的容器块
 const createNewContainerBlock = (position: number, layout: 'horizontal' | 'vertical' = 'horizontal'): Block => {
@@ -785,6 +801,30 @@ const isRichTextBlock = (block: Block): boolean => {
   return block != null && (block.type === 'richtext' || block.type === 'richText');
 };
 
+const isEmptyRichTextBlock = (block: Block | undefined): boolean => {
+  if (!block || !isRichTextBlock(block)) return false;
+  const hasTitle = Boolean(block.title?.trim());
+  const hasContent = Boolean(block.content?.trim());
+  const hasTags = getBlockTags(block).length > 0;
+  return !hasTitle && !hasContent && !hasTags;
+};
+
+const isEditableTitleBlock = (block: Block): boolean => {
+  return block.type === 'x6' || block.type === 'table';
+};
+
+const getBlockDisplayTitle = (block: Block, index: number): string => {
+  if (block.title) return block.title;
+  if (block.type === 'x6') return '画板';
+  if (block.type === 'table') return '表格';
+  return `${block.type} ${index + 1}`;
+};
+
+const updateBlockTitle = (block: Block, title: string) => {
+  block.title = title;
+  emit('content-change', localBlocks.value);
+};
+
 // 在指定位置插入新block
 const isSpacerBlock = (block: Block): boolean => {
   return block?.type === 'spacer';
@@ -804,32 +844,7 @@ const normalizeTopLevelBlocks = (blocks: Block[]): Block[] => {
     filteredBlocks.push(normalizedBlock);
   }
 
-  if (filteredBlocks.length === 0) {
-    return [createEmptyRichTextBlock()];
-  }
-
-  const result: Block[] = [];
-
-  if (!isRichTextBlock(filteredBlocks[0])) {
-    result.push(createEmptyRichTextBlock());
-    changed = true;
-  }
-
-  for (const block of filteredBlocks) {
-    const previousBlock = result[result.length - 1];
-    if (previousBlock && !isRichTextBlock(previousBlock) && !isRichTextBlock(block)) {
-      result.push(createEmptyRichTextBlock());
-      changed = true;
-    }
-    result.push(block);
-  }
-
-  if (!isRichTextBlock(result[result.length - 1])) {
-    result.push(createEmptyRichTextBlock());
-    changed = true;
-  }
-
-  return changed ? result : blocks;
+  return changed ? filteredBlocks : blocks;
 };
 
 const syncLocalBlocksFromSource = (blocks: Block[]) => {
@@ -888,6 +903,17 @@ const insertBlock = (position: number, block: Block) => {
   commitTopLevelBlocks();
 };
 
+const cleanupEmptyRichTextAroundDeletion = (blocks: Block[], position: number) => {
+  if (isEmptyRichTextBlock(blocks[position])) {
+    blocks.splice(position, 1);
+  }
+
+  const previousIndex = position - 1;
+  if (isEmptyRichTextBlock(blocks[previousIndex])) {
+    blocks.splice(previousIndex, 1);
+  }
+};
+
 // 删除指定位置的block
 const removeBlock = (position: number) => {
   if (tagEditorState.value.position === position) {
@@ -901,7 +927,11 @@ const removeBlock = (position: number) => {
     const container = localBlocks.value[containerIndex];
     if (container && container.type === 'container' && container.children) {
       if (container.children.length > 0) {
+        const removedBlock = container.children[childIndex];
         container.children.splice(childIndex, 1);
+        if (removedBlock && !isRichTextBlock(removedBlock)) {
+          cleanupEmptyRichTextAroundDeletion(container.children, childIndex);
+        }
         emit('content-change', localBlocks.value);
       }
       return;
@@ -910,7 +940,11 @@ const removeBlock = (position: number) => {
 
   // 普通块的删除
   if (localBlocks.value.length > 0) {
+    const removedBlock = localBlocks.value[position];
     localBlocks.value.splice(position, 1);
+    if (removedBlock && !isRichTextBlock(removedBlock)) {
+      cleanupEmptyRichTextAroundDeletion(localBlocks.value, position);
+    }
     commitTopLevelBlocks();
   }
 };
@@ -931,6 +965,9 @@ const handleBlockHandleSelect = (action: string, position: number) => {
       return;
     case 'insert-x6':
       insertBlock(insertPosition, createNewX6Block(insertPosition));
+      return;
+    case 'insert-table':
+      insertBlock(insertPosition, createNewTableBlock());
       return;
     case 'insert-container-horizontal':
       insertBlock(insertPosition, createNewContainerBlock(insertPosition, 'horizontal'));
@@ -953,8 +990,10 @@ const handleBlockHandleSelect = (action: string, position: number) => {
 const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
   if (!props.editable) return;
   
+  const target = event.target as HTMLElement;
   // 检查事件目标是否在富文本编辑器内部
-  const isRichTextEditor = (event.target as HTMLElement).closest('.rich-text-editor-container, .vditor-container, .vditor-wysiwyg, .vditor-editor');
+  const isRichTextEditor = target.closest('.rich-text-editor-container, .vditor-container, .vditor-wysiwyg, .vditor-editor');
+  const isInteractiveEditor = target.closest('.table-block, input, textarea, select, button, [contenteditable="true"]');
   
   // 检查是否是提取选中文本的快捷键 (Ctrl+Shift+E 或 Cmd+Shift+E)
   if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key === 'E') {
@@ -972,7 +1011,7 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
   
   // 检查是否是普通Enter键（不是Shift+Enter等组合键）
   if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && !event.shiftKey) {
-    if (!isRichTextEditor) {
+    if (!isRichTextEditor && !isInteractiveEditor) {
       event.preventDefault();
       
       // 计算插入位置
@@ -982,7 +1021,7 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
     }
   }
   // 检查是否是Delete或Backspace键
-  else if ((event.key === 'Delete' || event.key === 'Backspace') && !isRichTextEditor) {
+  else if ((event.key === 'Delete' || event.key === 'Backspace') && !isRichTextEditor && !isInteractiveEditor) {
     event.preventDefault();
     removeBlock(blockIndex);
   }
@@ -999,11 +1038,12 @@ const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
     // 如果点击的是富文本编辑器内部，不获取焦点
     const isRichTextEditor = target.closest('.rich-text-editor-container, .vditor-container, .vditor-wysiwyg, .vditor-editor');
     const isGraphEditor = target.closest('.x6-editor, .x6-stage, .x6-canvas');
+    const isInteractiveEditor = target.closest('.table-block, input, textarea, select, button, [contenteditable="true"]');
     if (block && isRichTextBlock(block) && !isRichTextEditor) {
       richTextEditorRefs.value[blockIndex]?.focusEditor?.();
       return;
     }
-    if (!isRichTextEditor && !isGraphEditor) {
+    if (!isRichTextEditor && !isGraphEditor && !isInteractiveEditor) {
       blockElement.focus();
     }
   }
@@ -1046,6 +1086,9 @@ const handleRichTextLineInsert = (payload: RichTextLineInsertPayload, blockIndex
       break;
     case 'x6':
       insertedBlock = createNewX6Block(blockIndex + 1);
+      break;
+    case 'table':
+      insertedBlock = createNewTableBlock();
       break;
     case 'container':
       insertedBlock = createNewContainerBlock(blockIndex + 1, layout === 'vertical' ? 'vertical' : 'horizontal');
@@ -1328,7 +1371,15 @@ const getBlockProperties = (block: Block) => {
             @select="(action) => handleBlockHandleSelect(action, index)"
           />
           <div class="block-header" v-if="!isRichTextBlock(block)">
-            <h3>{{ block.title || `${block.type === 'x6' ? '画板' : block.type} ${index + 1}` }}</h3>
+            <input
+              v-if="editable && isEditableTitleBlock(block)"
+              class="block-title-input"
+              :value="getBlockDisplayTitle(block, index)"
+              @input="updateBlockTitle(block, ($event.target as HTMLInputElement).value)"
+              @click.stop
+              @keydown.stop
+            />
+            <h3 v-else>{{ getBlockDisplayTitle(block, index) }}</h3>
             <div class="block-type-badge">{{ block.type }}</div>
           </div>
           <button
@@ -1389,7 +1440,15 @@ const getBlockProperties = (block: Block) => {
                       @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
                     />
                     <div class="block-header" v-if="!isRichTextBlock(childBlock)">
-                      <h3>{{ childBlock.title || `${childBlock.type === 'x6' ? '画板' : childBlock.type} ${childIndex + 1}` }}</h3>
+                      <input
+                        v-if="editable && isEditableTitleBlock(childBlock)"
+                        class="block-title-input"
+                        :value="getBlockDisplayTitle(childBlock, childIndex)"
+                        @input="updateBlockTitle(childBlock, ($event.target as HTMLInputElement).value)"
+                        @click.stop
+                        @keydown.stop
+                      />
+                      <h3 v-else>{{ getBlockDisplayTitle(childBlock, childIndex) }}</h3>
                       <div class="block-type-badge">{{ childBlock.type }}</div>
                     </div>
                     <button
@@ -1442,6 +1501,13 @@ const getBlockProperties = (block: Block) => {
                       @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index * 100 + childIndex)"
                       @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index * 100 + childIndex, payload)"
                       class="block-content board-content"
+                    />
+                    <TableBlock
+                      v-else-if="childBlock.type === 'table'"
+                      :data="childBlock.tableData"
+                      :editable="editable"
+                      class="block-content"
+                      @change="(tableData) => { childBlock.tableData = tableData; emit('content-change', localBlocks); }"
                     />
                     <template v-else-if="childBlock.type === 'ref' && childBlock.refId">
                       <div class="ref-block-wrap">
@@ -1523,6 +1589,13 @@ const getBlockProperties = (block: Block) => {
             @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index)"
             @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index, payload)"
             class="block-content board-content"
+          />
+          <TableBlock
+            v-else-if="block.type === 'table'"
+            :data="block.tableData"
+            :editable="editable"
+            class="block-content"
+            @change="(tableData) => { block.tableData = tableData; emit('content-change', localBlocks); }"
           />
           <!-- 引用块 -->
           <template v-else-if="block.type === 'ref' && block.refId">
@@ -1716,6 +1789,7 @@ const getBlockProperties = (block: Block) => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   margin-bottom: 15px;
 }
 
@@ -1723,6 +1797,26 @@ const getBlockProperties = (block: Block) => {
   margin: 0;
   color: #333;
   font-size: 16px;
+}
+
+.block-title-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 5px 8px;
+  color: #333;
+  background: transparent;
+  font: inherit;
+  font-size: 16px;
+  font-weight: 600;
+  outline: none;
+}
+
+.block-title-input:hover,
+.block-title-input:focus {
+  border-color: #91caff;
+  background: #fff;
 }
 
 .block-tag-list {

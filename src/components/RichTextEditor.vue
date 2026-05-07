@@ -13,7 +13,7 @@ interface Props {
   lineHandleEnabled?: boolean;
 }
 
-type LineInsertBlockType = 'richtext' | 'line' | 'x6' | 'ref' | 'container';
+type LineInsertBlockType = 'richtext' | 'line' | 'x6' | 'ref' | 'container' | 'table';
 
 interface LineInsertPayload {
   beforeContent: string;
@@ -81,6 +81,7 @@ const lineHandleItems = [
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
+  { key: 'insert-table', icon: '▦', label: '插入表格' },
   { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
   { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
   { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
@@ -758,6 +759,9 @@ const handleLineHandleSelect = (action: string) => {
     case 'insert-x6':
       emitLineInsert('x6');
       return;
+    case 'insert-table':
+      emitLineInsert('table');
+      return;
     case 'insert-container-horizontal':
       emitLineInsert('container', 'horizontal');
       return;
@@ -933,7 +937,7 @@ const initEditor = () => {
     toolbarConfig: {
       hide: true,
     },
-    toolbar: [],
+    toolbar: ['image'],
     customWysiwygToolbar: () => {},
     after: () => {
       isInitializing.value = false;

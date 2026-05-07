@@ -72,14 +72,20 @@ export interface BlockMetadata {
   [key: string]: unknown;
 }
 
+export interface TableBlockData {
+  headers: string[];
+  rows: string[][];
+}
+
 export interface Block {
   id: string;
-  type: 'richtext' | 'richText' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | string;
+  type: 'richtext' | 'richText' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | 'table' | string;
   title?: string;
   content?: string;
   metadata?: BlockMetadata;
   refId?: string;
   graphData?: GraphData;
+  tableData?: TableBlockData;
   timelineData?: Array<{
     id: string;
     title: string;
