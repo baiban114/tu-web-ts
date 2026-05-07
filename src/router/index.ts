@@ -14,6 +14,11 @@ const router = createRouter({
       name: 'vditor-test',
       component: () => import('../components/VditorTest.vue'),
     },
+    {
+      path: '/resources',
+      name: 'resources',
+      component: () => import('../views/ResourceManagerView.vue'),
+    },
   ],
 })
 

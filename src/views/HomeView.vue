@@ -81,6 +81,9 @@ function onContentChange(blocks: Block[]) {
     <div class="workspace__resizer" @mousedown.prevent="onResizerMousedown" />
 
     <div class="workspace__right">
+      <div class="workspace-topbar">
+        <RouterLink class="workspace-topbar__link" to="/resources">外部资源</RouterLink>
+      </div>
       <div v-if="store.currentPageId" class="content-scroll">
         <div
           v-if="store.currentLocalFileBinding"
@@ -146,6 +149,24 @@ function onContentChange(blocks: Block[]) {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.workspace-topbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding: 10px 18px;
+  border-bottom: 1px solid #edf0f5;
+  background: #fff;
+}
+
+.workspace-topbar__link {
+  padding: 6px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  color: #1f2933;
+  text-decoration: none;
+  font-size: 13px;
 }
 
 .content-scroll {
