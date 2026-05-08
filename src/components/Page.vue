@@ -357,6 +357,7 @@ const createNewTableBlock = (): Block => ({
   type: 'table',
   title: '新的表格',
   tableData: {
+    textMode: 'plain',
     headers: ['列 1', '列 2', '列 3'],
     rows: [
       ['', '', ''],
