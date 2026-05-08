@@ -73,6 +73,7 @@ export interface BlockMetadata {
 }
 
 export interface TableBlockData {
+  textMode?: 'plain' | 'rich';
   headers: string[];
   rows: string[][];
 }
