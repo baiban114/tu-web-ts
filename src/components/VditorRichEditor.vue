@@ -136,14 +136,22 @@ function selectInsertedResourceLink(url: string) {
   window.setTimeout(() => {
     const contentRoot = getEditorContentRoot();
     if (!contentRoot) return;
-    const target = Array.from(contentRoot.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img[src]'))
+
+    const img = Array.from(contentRoot.querySelectorAll<HTMLImageElement>('img[data-tu-resource-image]'))
       .reverse()
-      .find((element) => element.getAttribute(element instanceof HTMLImageElement ? 'src' : 'href') === url);
-    if (!target) return;
+      .find((el) => el.getAttribute('src') === url);
+    if (img) {
+      return;
+    }
+
+    const anchor = Array.from(contentRoot.querySelectorAll<HTMLAnchorElement>('a[href]'))
+      .reverse()
+      .find((el) => el.getAttribute('href') === url);
+    if (!anchor) return;
 
     const selection = window.getSelection();
     const range = document.createRange();
-    range.selectNode(target);
+    range.selectNode(anchor);
     selection?.removeAllRanges();
     selection?.addRange(range);
   }, 120);

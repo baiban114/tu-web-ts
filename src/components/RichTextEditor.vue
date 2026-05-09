@@ -87,6 +87,20 @@ const slashMenuTop = ref<number | null>(null);
 const slashMenuLeft = ref<number | null>(null);
 const slashQuery = ref('');
 let scheduledHandleSyncFrame = 0;
+
+// Image edit overlay (click image to enter; no browser Selection on the node)
+const activeImageElement = ref<HTMLImageElement | null>(null);
+const activeImageWidth = ref(100);
+const imageEditActive = ref(false);
+const isDragging = ref(false);
+const dragStartX = ref(0);
+const dragStartY = ref(0);
+const dragStartWidthPx = ref(0);
+const dragStartHeightPx = ref(0);
+const dragHandlePosition = ref<string | null>(null);
+const editorContentWidth = ref(0);
+const imageRect = ref({ top: 0, left: 0, width: 0, height: 0 });
+let imageResizeCleanup: (() => void) | null = null;
 const lineHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
@@ -315,6 +329,63 @@ const escapeHtmlAttribute = (value: string): string => {
     .replace(/>/g, '&gt;');
 };
 
+/** 与 Markdown 中 URL 写法（含 %29 等）对比，避免 getValue 为 ![](url) 时无法匹配 DOM 的 src */
+const resourceUrlsMatch = (a: string, b: string): boolean => {
+  const na = a.trim();
+  const nb = b.trim();
+  if (!na || !nb) return false;
+  if (na === nb) return true;
+  const variants = (u: string) => [u, escapeMarkdownLinkUrl(u)];
+  for (const x of variants(na)) {
+    for (const y of variants(nb)) {
+      if (x === y) return true;
+    }
+  }
+  try {
+    return decodeURIComponent(na) === decodeURIComponent(nb);
+  } catch {
+    return false;
+  }
+};
+
+const extractSrcFromImgTag = (tag: string): string | null => {
+  const m = tag.match(/\bsrc\s*=\s*(["'])([\s\S]*?)\1/i);
+  if (!m) return null;
+  return m[2].replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+};
+
+const replaceImageInMarkdown = (
+  markdown: string,
+  domSrc: string,
+  alt: string,
+  widthPercent: number,
+): string | null => {
+  const newTag = createResourceLinkMarkdown(alt, domSrc, 'image', widthPercent);
+
+  const htmlIter = markdown.matchAll(/<img\b[^>]*?>/gi);
+  for (const m of htmlIter) {
+    const full = m[0];
+    const idx = m.index ?? 0;
+    const src = extractSrcFromImgTag(full);
+    if (src && resourceUrlsMatch(src, domSrc)) {
+      return markdown.slice(0, idx) + newTag + markdown.slice(idx + full.length);
+    }
+  }
+
+  const mdRe = /!\[([^\]]*)]\(([^)]+)\)/g;
+  let mm: RegExpExecArray | null;
+  while ((mm = mdRe.exec(markdown)) !== null) {
+    const urlInMd = mm[2];
+    if (resourceUrlsMatch(urlInMd, domSrc)) {
+      const idx = mm.index;
+      const full = mm[0];
+      return markdown.slice(0, idx) + newTag + markdown.slice(idx + full.length);
+    }
+  }
+
+  return null;
+};
+
 const clampImageWidth = (widthPercent: number): number => {
   return Math.max(10, Math.min(100, Math.round(widthPercent)));
 };
@@ -334,19 +405,27 @@ const createResourceLinkMarkdown = (
   return `[${safeLabel}](${safeUrl})`;
 };
 
-const selectInsertedResourceLink = (url: string) => {
+const focusInsertedResourceElement = (url: string) => {
   window.setTimeout(() => {
     const contentRoot = getEditorContentRoot();
     if (!contentRoot) return;
 
-    const target = Array.from(contentRoot.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img[src]'))
+    const img = Array.from(contentRoot.querySelectorAll<HTMLImageElement>('img'))
       .reverse()
-      .find((element) => element.getAttribute(element instanceof HTMLImageElement ? 'src' : 'href') === url);
-    if (!target) return;
+      .find((el) => el.getAttribute('src') === url && !el.closest('.vditor-wysiwyg__preview'));
+    if (img) {
+      selectImage(img);
+      return;
+    }
+
+    const anchor = Array.from(contentRoot.querySelectorAll<HTMLAnchorElement>('a[href]'))
+      .reverse()
+      .find((el) => el.getAttribute('href') === url);
+    if (!anchor) return;
 
     const selection = window.getSelection();
     const range = document.createRange();
-    range.selectNode(target);
+    range.selectNode(anchor);
     selection?.removeAllRanges();
     selection?.addRange(range);
   }, 120);
@@ -880,11 +959,80 @@ const extractSelection = () => {
   if (markdown) emit('extract-selection', markdown);
 };
 
+const updateEditorContentWidth = () => {
+  const contentRoot = getEditorContentRoot();
+  if (contentRoot) {
+    editorContentWidth.value = contentRoot.getBoundingClientRect().width;
+  }
+};
+
+const updateImageRect = () => {
+  if (!activeImageElement.value || !wrapperRef.value) return;
+  const imgRect = activeImageElement.value.getBoundingClientRect();
+  const wrapperRect = wrapperRef.value.getBoundingClientRect();
+  imageRect.value = {
+    top: imgRect.top - wrapperRect.top,
+    left: imgRect.left - wrapperRect.left,
+    width: imgRect.width,
+    height: imgRect.height,
+  };
+};
+
+const startOverlayTracking = () => {
+  stopOverlayTracking();
+  const update = () => {
+    if (!activeImageElement.value || !wrapperRef.value) return;
+    updateImageRect();
+  };
+  update();
+  document.addEventListener('scroll', update, true);
+  window.addEventListener('resize', update);
+  imageResizeCleanup = () => {
+    document.removeEventListener('scroll', update, true);
+    window.removeEventListener('resize', update);
+  };
+};
+
+const stopOverlayTracking = () => {
+  imageResizeCleanup?.();
+  imageResizeCleanup = null;
+};
+
+const selectImage = (img: HTMLImageElement) => {
+  window.getSelection()?.removeAllRanges();
+  activeImageElement.value = img;
+  const styleWidth = img.style.width;
+  const match = styleWidth.match(/^(\d+(?:\.\d+)?)\s*%/);
+  activeImageWidth.value = match ? clampImageWidth(parseFloat(match[1])) : 100;
+  imageEditActive.value = true;
+  hideLineHandle();
+  updateEditorContentWidth();
+  startOverlayTracking();
+};
+
+const clearImageSelection = () => {
+  activeImageElement.value = null;
+  activeImageWidth.value = 100;
+  imageEditActive.value = false;
+  isDragging.value = false;
+  dragHandlePosition.value = null;
+  imageRect.value = { top: 0, left: 0, width: 0, height: 0 };
+  stopOverlayTracking();
+  cleanupImageResizeListeners();
+};
+
+/** 与 Vditor 一致：正文区图片可点；排除 plantuml 等预览块内的 img */
+const isWysiwygBodyImage = (img: HTMLImageElement): boolean => {
+  if (!editorRef.value?.contains(img)) return false;
+  return !img.closest('.vditor-wysiwyg__preview');
+};
+
 const removeEditorDomListeners = () => {
   if (!editorRef.value) return;
 
   const focusHandler = (editorRef.value as any)._focusHandler;
   const blurHandler = (editorRef.value as any)._blurHandler;
+  const imageClickCaptureHandler = (editorRef.value as any)._imageClickCaptureHandler;
   const clickHandler = (editorRef.value as any)._clickHandler;
   const mouseUpHandler = (editorRef.value as any)._mouseUpHandler;
   const keyUpHandler = (editorRef.value as any)._keyUpHandler;
@@ -900,6 +1048,11 @@ const removeEditorDomListeners = () => {
   if (blurHandler) {
     editorRef.value.removeEventListener('focusout', blurHandler);
     delete (editorRef.value as any)._blurHandler;
+  }
+
+  if (imageClickCaptureHandler) {
+    editorRef.value.removeEventListener('click', imageClickCaptureHandler, true);
+    delete (editorRef.value as any)._imageClickCaptureHandler;
   }
 
   if (clickHandler) {
@@ -938,8 +1091,36 @@ const attachEditorDomListeners = () => {
 
   removeEditorDomListeners();
 
+  /** 捕获阶段先于 Vditor 在 .vditor-reset 上的冒泡处理，避免只弹出内置图片面板而不走我们的叠加层 */
+  const handleImageClickCapture = (event: MouseEvent) => {
+    if (!props.editable) return;
+    const raw = event.target;
+    if (!raw || (raw as Node).nodeType !== Node.ELEMENT_NODE) return;
+    const el = raw as HTMLElement;
+    const img = el.tagName === 'IMG' ? (el as HTMLImageElement) : el.closest('img');
+    if (!img || !isWysiwygBodyImage(img)) return;
+
+    emit('click', event);
+    event.preventDefault();
+    event.stopPropagation();
+    selectImage(img);
+  };
+
   const handleClick = (event: MouseEvent) => {
     emit('click', event);
+
+    const target = event.target as HTMLElement;
+    const img = target.closest('img');
+    if (img && isWysiwygBodyImage(img)) {
+      event.preventDefault();
+      selectImage(img);
+      return;
+    }
+
+    if (activeImageElement.value) {
+      clearImageSelection();
+    }
+
     scheduleEditorHandleSync(1);
   };
 
@@ -959,6 +1140,7 @@ const attachEditorDomListeners = () => {
         cancelScheduledHandleSync();
         hideLineHandle();
         hideSlashMenu();
+        clearImageSelection();
       }
     }, 0);
   };
@@ -978,6 +1160,12 @@ const attachEditorDomListeners = () => {
   };
 
   const handleKeyDown = (event: KeyboardEvent) => {
+    if (activeImageElement.value && event.key === 'Escape') {
+      clearImageSelection();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     handleSlashMenuKeyDown(event);
   };
 
@@ -991,6 +1179,7 @@ const attachEditorDomListeners = () => {
     hideSlashMenu();
   };
 
+  editorRef.value.addEventListener('click', handleImageClickCapture, true);
   editorRef.value.addEventListener('click', handleClick);
   editorRef.value.addEventListener('focusin', handleFocusIn);
   editorRef.value.addEventListener('focusout', handleFocusOut);
@@ -999,6 +1188,7 @@ const attachEditorDomListeners = () => {
   editorRef.value.addEventListener('keydown', handleKeyDown, true);
   document.addEventListener('selectionchange', handleSelectionChange);
   wrapperRef.value?.addEventListener('mouseleave', handleWrapperMouseLeave);
+  (editorRef.value as any)._imageClickCaptureHandler = handleImageClickCapture;
   (editorRef.value as any)._clickHandler = handleClick;
   (editorRef.value as any)._focusHandler = handleFocusIn;
   (editorRef.value as any)._blurHandler = handleFocusOut;
@@ -1009,6 +1199,126 @@ const attachEditorDomListeners = () => {
   if (wrapperRef.value) {
     (wrapperRef.value as any)._wrapperLeaveHandler = handleWrapperMouseLeave;
   }
+};
+
+const cleanupImageResizeListeners = () => {
+  document.removeEventListener('mousemove', onResizeMouseMove);
+  document.removeEventListener('mouseup', onResizeMouseUp);
+};
+
+const onResizeMouseMove = (event: MouseEvent) => {
+  if (!isDragging.value || !activeImageElement.value) return;
+  const pos = dragHandlePosition.value;
+  const deltaX = event.clientX - dragStartX.value;
+  const deltaY = event.clientY - dragStartY.value;
+  const startW = dragStartWidthPx.value;
+  const startH = Math.max(1, dragStartHeightPx.value);
+  const aspect = startW / startH;
+
+  let newWidthPx = startW;
+  if (pos === 'e') {
+    newWidthPx = startW + deltaX;
+  } else if (pos === 'w') {
+    newWidthPx = startW - deltaX;
+  } else if (pos === 's') {
+    newWidthPx = (startH + deltaY) * aspect;
+  } else if (pos === 'n') {
+    newWidthPx = (startH - deltaY) * aspect;
+  } else if (pos === 'se') {
+    newWidthPx = Math.max(startW + deltaX, (startH + deltaY) * aspect);
+  } else if (pos === 'sw') {
+    newWidthPx = Math.max(startW - deltaX, (startH + deltaY) * aspect);
+  } else if (pos === 'ne') {
+    newWidthPx = Math.max(startW + deltaX, (startH - deltaY) * aspect);
+  } else if (pos === 'nw') {
+    newWidthPx = Math.max(startW - deltaX, (startH - deltaY) * aspect);
+  }
+
+  newWidthPx = Math.max(20, newWidthPx);
+  const contentW = editorContentWidth.value || 1;
+  const newPercent = clampImageWidth((newWidthPx / contentW) * 100);
+  activeImageWidth.value = newPercent;
+  const imgEl = activeImageElement.value;
+  imgEl.style.width = `${newPercent}%`;
+  void imgEl.offsetWidth;
+  // 宽度变化后立刻同步边框/手柄/工具栏位置（否则只有图片 reflow，叠加层仍用旧 rect）
+  updateImageRect();
+};
+
+const onResizeMouseUp = () => {
+  isDragging.value = false;
+  dragHandlePosition.value = null;
+  cleanupImageResizeListeners();
+  updateImageRect();
+  commitImageWidth();
+  nextTick(() => updateImageRect());
+};
+
+const onResizeHandleMouseDown = (event: MouseEvent, position: string) => {
+  if (!activeImageElement.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const img = activeImageElement.value;
+  const rect = img.getBoundingClientRect();
+  isDragging.value = true;
+  dragHandlePosition.value = position;
+  dragStartX.value = event.clientX;
+  dragStartY.value = event.clientY;
+  dragStartWidthPx.value = rect.width;
+  dragStartHeightPx.value = rect.height;
+  document.addEventListener('mousemove', onResizeMouseMove);
+  document.addEventListener('mouseup', onResizeMouseUp);
+};
+
+const commitImageWidth = () => {
+  if (!editorInstance.value) return;
+  const imgEl = activeImageElement.value;
+  if (!imgEl) return;
+  const imgSrc = imgEl.getAttribute('src');
+  if (!imgSrc) return;
+
+  const current = editorInstance.value.getValue();
+  const alt = imgEl.getAttribute('alt') ?? '';
+  const next = replaceImageInMarkdown(current, imgSrc, alt, activeImageWidth.value);
+  if (next == null) return;
+
+  applyEditorContent(next);
+  emit('content-change', next);
+};
+
+const HANDLE_SIZE = 12;
+
+const getHandleStyle = (position: string) => {
+  const { top, left, width, height } = imageRect.value;
+  const half = HANDLE_SIZE / 2;
+  let x = left;
+  let y = top;
+  switch (position) {
+    case 'nw': break;
+    case 'n': x = left + width / 2; break;
+    case 'ne': x = left + width; break;
+    case 'e': x = left + width; y = top + height / 2; break;
+    case 'se': x = left + width; y = top + height; break;
+    case 's': x = left + width / 2; y = top + height; break;
+    case 'sw': x = left; y = top + height; break;
+    case 'w': x = left; y = top + height / 2; break;
+  }
+  return {
+    left: `${x - half}px`,
+    top: `${y - half}px`,
+  };
+};
+
+const getToolbarStyle = () => {
+  const { top, left, width } = imageRect.value;
+  const gap = 8;
+  const minToolbarW = 120;
+  return {
+    top: `${top - gap}px`,
+    left: `${left}px`,
+    width: `${Math.max(width, minToolbarW)}px`,
+    transform: 'translateY(-100%)',
+  };
 };
 
 const initEditor = () => {
@@ -1119,7 +1429,7 @@ const insertMarkdownLink = (label: string, url: string, display: LinkDisplayMode
   const markdown = createResourceLinkMarkdown(label, url, display);
   lastInsertedResourceLink = { url: safeUrl, label: label || safeUrl, display, markdown, widthPercent: 100 };
   insertMarkdown(markdown);
-  selectInsertedResourceLink(safeUrl);
+  focusInsertedResourceElement(safeUrl);
 };
 
 const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
@@ -1141,7 +1451,7 @@ const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
     display,
     markdown: nextMarkdown,
   };
-  selectInsertedResourceLink(lastInsertedResourceLink.url);
+  focusInsertedResourceElement(lastInsertedResourceLink.url);
   return true;
 };
 
@@ -1165,7 +1475,7 @@ const updateInsertedImageWidth = (widthPercent: number) => {
     widthPercent: nextWidth,
     markdown: nextMarkdown,
   };
-  selectInsertedResourceLink(lastInsertedResourceLink.url);
+  focusInsertedResourceElement(lastInsertedResourceLink.url);
   return true;
 };
 
@@ -1300,6 +1610,31 @@ watch(
         <span class="slash-menu__item-command">{{ option.command }}</span>
       </button>
     </div>
+
+    <!-- Image edit overlay: border + 8-point resize (width % in markdown; height follows aspect) -->
+    <template v-if="editable && imageEditActive && activeImageElement">
+      <div
+        class="image-edit-frame"
+        :style="{
+          top: `${imageRect.top}px`,
+          left: `${imageRect.left}px`,
+          width: `${imageRect.width}px`,
+          height: `${imageRect.height}px`,
+        }"
+        aria-hidden="true"
+      />
+      <div
+        v-for="pos in (['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'] as const)"
+        :key="pos"
+        class="image-resize-handle"
+        :class="`image-resize-handle--${pos}`"
+        :style="getHandleStyle(pos)"
+        @mousedown.prevent.stop="onResizeHandleMouseDown($event, pos)"
+      />
+      <div class="image-floating-toolbar" :style="getToolbarStyle()">
+        <span class="image-toolbar__hint">宽度 {{ activeImageWidth }}% · 拖拽边角调整</span>
+      </div>
+    </template>
 
 
     <Transition name="preview-fade">
@@ -1514,5 +1849,66 @@ watch(
 
 .rich-text-editor-container :deep(.vditor-panel) {
   display: none !important;
+}
+
+.image-edit-frame {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid #1890ff;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 8;
+}
+
+/* Image resize handles */
+.image-resize-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border: 2px solid #1890ff;
+  border-radius: 2px;
+  z-index: 10;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.image-resize-handle--nw,
+.image-resize-handle--se {
+  cursor: nwse-resize;
+}
+.image-resize-handle--ne,
+.image-resize-handle--sw {
+  cursor: nesw-resize;
+}
+.image-resize-handle--n,
+.image-resize-handle--s {
+  cursor: ns-resize;
+}
+.image-resize-handle--e,
+.image-resize-handle--w {
+  cursor: ew-resize;
+}
+
+/* Image floating toolbar (above the image) */
+.image-floating-toolbar {
+  position: absolute;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  box-sizing: border-box;
+  min-width: 120px;
+}
+.image-toolbar__hint {
+  font-size: 12px;
+  color: #595959;
+  user-select: none;
+  text-align: center;
+  line-height: 1.35;
 }
 </style>
