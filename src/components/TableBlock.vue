@@ -30,6 +30,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (e: 'change', data: TableBlockData): void;
+  (e: 'active'): void;
 }>();
 
 const activeCell = ref<ActiveCell | null>(null);
@@ -40,6 +41,11 @@ const selectedColumn = ref<number | null>(null);
 const hoverBorder = ref<HoverBorder | null>(null);
 const tableBlockRef = ref<HTMLElement | null>(null);
 const cellRefs = ref<Record<string, HTMLTextAreaElement>>({});
+const richCellRefs = ref<Record<string, {
+  getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+  insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
+  updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+}>>({});
 
 const normalizedData = computed<TableBlockData>(() => {
   const headers = props.data?.headers?.length ? props.data.headers : ['列 1', '列 2', '列 3'];
@@ -66,6 +72,19 @@ function setCellRef(el: Element | null, row: number, column: number) {
     cellRefs.value[key] = el;
   } else {
     delete cellRefs.value[key];
+  }
+}
+
+function setRichCellRef(el: unknown, row: number, column: number) {
+  const key = cellKey(row, column);
+  if (el) {
+    richCellRefs.value[key] = el as {
+      getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+      insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
+      updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+    };
+  } else {
+    delete richCellRefs.value[key];
   }
 }
 
@@ -157,6 +176,7 @@ function addColumn() {
 }
 
 function selectRow(rowIndex: number) {
+  emit('active');
   selectedRow.value = rowIndex;
   selectedColumn.value = null;
   hoveredRow.value = rowIndex;
@@ -165,6 +185,7 @@ function selectRow(rowIndex: number) {
 }
 
 function selectColumn(columnIndex: number) {
+  emit('active');
   selectedColumn.value = columnIndex;
   selectedRow.value = null;
   hoveredColumn.value = columnIndex;
@@ -191,6 +212,7 @@ function clearHoverState() {
 }
 
 function handleCellFocus(row: number, column: number) {
+  emit('active');
   activeCell.value = { row, column };
   selectedRow.value = null;
   selectedColumn.value = null;
@@ -377,15 +399,41 @@ function handleCellPaste(event: ClipboardEvent, row: number, column: number) {
 
 function activateCell(row: number, column: number) {
   if (!props.editable) return;
+  emit('active');
   activeCell.value = { row, column };
   selectedRow.value = null;
   selectedColumn.value = null;
   focusCell(row, column);
 }
+
+function insertMarkdownLink(label: string, url: string, display: 'link' | 'image' = 'link'): boolean {
+  if (!props.editable || !isRichMode.value || !activeCell.value) return false;
+  const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
+  editor?.insertMarkdownLink?.(label, url, display);
+  return Boolean(editor?.insertMarkdownLink);
+}
+
+function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
+  if (!isRichMode.value || !activeCell.value) return undefined;
+  const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
+  return editor?.getMarkdownLinkAnchor?.();
+}
+
+function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
+  if (!isRichMode.value || !activeCell.value) return false;
+  const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
+  return editor?.updateInsertedLinkDisplay?.(display) ?? false;
+}
+
+defineExpose({
+  getMarkdownLinkAnchor,
+  insertMarkdownLink,
+  updateInsertedLinkDisplay,
+});
 </script>
 
 <template>
-  <div ref="tableBlockRef" class="table-block" tabindex="0" @keydown="handleTableKeydown" @mouseleave="clearHoverState">
+  <div ref="tableBlockRef" class="table-block" tabindex="0" @mousedown="emit('active')" @keydown="handleTableKeydown" @mouseleave="clearHoverState">
     <div class="table-block__scroll">
       <table>
         <thead>
@@ -479,6 +527,7 @@ function activateCell(row: number, column: number) {
               <div class="table-block__cell-wrap" :class="borderClass(rowIndex, columnIndex)">
                 <VditorRichEditor
                   v-if="isRichMode"
+                  :ref="(el) => setRichCellRef(el, rowIndex, columnIndex)"
                   :model-value="cell"
                   :editing="isCellActive(rowIndex, columnIndex)"
                   :editable="editable"

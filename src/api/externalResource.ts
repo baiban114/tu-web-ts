@@ -119,3 +119,61 @@ export function updateResourceItem(id: string, payload: UpdateResourceItemPayloa
 export function deleteResourceItem(id: string): Promise<void> {
   return request<void>(`/api/resource-items/${id}`, { method: 'DELETE' });
 }
+
+const LINK_RESOURCE_TYPE_CODE = 'web-link';
+
+function getLinkTitle(label: string, url: string): string {
+  const title = label.trim();
+  if (title) return title.slice(0, 255);
+  try {
+    return new URL(url).hostname.slice(0, 255) || url.slice(0, 255);
+  } catch {
+    return url.slice(0, 255);
+  }
+}
+
+export async function ensureExternalLinkResource(url: string, label = ''): Promise<ResourceItem> {
+  const identityValue = url.trim();
+  if (!identityValue) {
+    throw new Error('resource URL required');
+  }
+
+  const types = await listResourceTypes();
+  let linkType = types.find((type) => type.code === LINK_RESOURCE_TYPE_CODE);
+  if (!linkType) {
+    linkType = await createResourceType({
+      code: LINK_RESOURCE_TYPE_CODE,
+      name: '网络链接',
+      icon: 'link',
+      description: '由插入链接功能自动登记的外部网络链接',
+      identityFieldKey: 'sourceUrl',
+      identityFieldLabel: '源 URL',
+    });
+  }
+
+  const existingItems = await listResourceItems({
+    typeId: linkType.id,
+    identityValue,
+  });
+  if (existingItems.length > 0) {
+    return existingItems[0];
+  }
+
+  const title = getLinkTitle(label, identityValue);
+  const work = await createResourceWork({
+    typeId: linkType.id,
+    title,
+    subtitle: undefined,
+    description: `自动登记的网络链接：${identityValue}`,
+  });
+
+  return createResourceItem({
+    typeId: linkType.id,
+    workId: work.id,
+    title,
+    identityValue,
+    sourceUrl: identityValue,
+    edition: undefined,
+    note: '由插入链接功能自动登记',
+  });
+}

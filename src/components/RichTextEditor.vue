@@ -29,6 +29,15 @@ interface TagEditorOpenPayload {
 
 type LineHandleMode = 'editor-caret' | null;
 type SplitContent = { beforeContent: string; afterContent: string };
+type LinkDisplayMode = 'link' | 'image';
+
+interface InsertedResourceLink {
+  url: string;
+  label: string;
+  display: LinkDisplayMode;
+  markdown: string;
+  widthPercent?: number;
+}
 
 const props = withDefaults(defineProps<Props>(), {
   height: undefined,
@@ -65,6 +74,8 @@ const isEditorFocused = ref(false);
 const lastEmittedContent = ref(props.content);
 const pendingExternalContent = ref<string | null>(null);
 const pendingFocusAfterReady = ref(false);
+let savedMarkdownLinkRange: Range | null = null;
+let lastInsertedResourceLink: InsertedResourceLink | null = null;
 const activeLineElement = ref<HTMLElement | null>(null);
 const lineHandleMode = ref<LineHandleMode>(null);
 const lineHandleTop = ref<number | null>(null);
@@ -169,6 +180,30 @@ const getTagEditorAnchorFromCaret = (): TagEditorOpenPayload | undefined => {
   };
 };
 
+const getMarkdownLinkAnchor = (): TagEditorOpenPayload | undefined => {
+  const contentRoot = getEditorContentRoot();
+  if (!contentRoot) return undefined;
+
+  const selection = window.getSelection();
+  const selectionRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0).cloneRange() : null;
+  const selectionNode = selection?.focusNode ?? selectionRange?.commonAncestorContainer ?? null;
+  const range = selectionRange && selectionNode && contentRoot.contains(selectionNode)
+    ? selectionRange
+    : getEditorCaretRange(contentRoot);
+
+  if (!range) return undefined;
+
+  savedMarkdownLinkRange = range.cloneRange();
+  const lineHeight = getLineHeight(contentRoot);
+  const rect = pickCaretRect(range, lineHeight);
+  if (!rect) return undefined;
+
+  return {
+    top: rect.bottom + 8,
+    left: rect.left + 8,
+  };
+};
+
 const applyEditorContent = (content: string) => {
   if (!editorInstance.value) return;
   editorInstance.value.setValue(content);
@@ -262,6 +297,59 @@ const getSelectionAsMarkdown = (): string => {
   }
 
   return '';
+};
+
+const escapeMarkdownLinkText = (text: string): string => {
+  return text.replace(/([\[\]\\])/g, '\\$1').replace(/\n+/g, ' ').trim();
+};
+
+const escapeMarkdownLinkUrl = (url: string): string => {
+  return url.trim().replace(/\)/g, '%29');
+};
+
+const escapeHtmlAttribute = (value: string): string => {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+};
+
+const clampImageWidth = (widthPercent: number): number => {
+  return Math.max(10, Math.min(100, Math.round(widthPercent)));
+};
+
+const createResourceLinkMarkdown = (
+  label: string,
+  url: string,
+  display: LinkDisplayMode,
+  widthPercent = 100,
+): string => {
+  const safeUrl = escapeMarkdownLinkUrl(url);
+  const safeLabel = escapeMarkdownLinkText(label) || safeUrl;
+  if (display === 'image') {
+    const width = clampImageWidth(widthPercent);
+    return `<img src="${escapeHtmlAttribute(safeUrl)}" alt="${escapeHtmlAttribute(safeLabel)}" data-tu-resource-image="true" style="width: ${width}%; max-width: 100%; height: auto;" />`;
+  }
+  return `[${safeLabel}](${safeUrl})`;
+};
+
+const selectInsertedResourceLink = (url: string) => {
+  window.setTimeout(() => {
+    const contentRoot = getEditorContentRoot();
+    if (!contentRoot) return;
+
+    const target = Array.from(contentRoot.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img[src]'))
+      .reverse()
+      .find((element) => element.getAttribute(element instanceof HTMLImageElement ? 'src' : 'href') === url);
+    if (!target) return;
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNode(target);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, 120);
 };
 
 const getEditorContentRoot = (): HTMLElement | null => {
@@ -998,6 +1086,89 @@ const focusEditor = () => {
   activateEditor(true);
 };
 
+const insertMarkdown = (markdown: string) => {
+  if (!props.editable || !markdown) return;
+
+  if (!editorInstance.value) {
+    activateEditor(true);
+  }
+
+  nextTick(() => {
+    if (!editorInstance.value) return;
+    if (savedMarkdownLinkRange) {
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(savedMarkdownLinkRange);
+      savedMarkdownLinkRange = null;
+    }
+    editorInstance.value.focus();
+    editorInstance.value.insertValue(markdown, true);
+    const value = editorInstance.value.getValue();
+    lastEmittedContent.value = value;
+    emit('content-change', value);
+    setTimeout(() => {
+      updateHeight();
+      scheduleEditorHandleSync(1);
+    }, 0);
+  });
+};
+
+const insertMarkdownLink = (label: string, url: string, display: LinkDisplayMode = 'link') => {
+  const safeUrl = escapeMarkdownLinkUrl(url);
+  if (!safeUrl) return;
+  const markdown = createResourceLinkMarkdown(label, url, display);
+  lastInsertedResourceLink = { url: safeUrl, label: label || safeUrl, display, markdown, widthPercent: 100 };
+  insertMarkdown(markdown);
+  selectInsertedResourceLink(safeUrl);
+};
+
+const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
+  if (!editorInstance.value || !lastInsertedResourceLink) return false;
+  const current = editorInstance.value.getValue();
+  const nextMarkdown = createResourceLinkMarkdown(
+    lastInsertedResourceLink.label,
+    lastInsertedResourceLink.url,
+    display,
+    lastInsertedResourceLink.widthPercent ?? 100,
+  );
+  if (!current.includes(lastInsertedResourceLink.markdown)) return false;
+
+  const next = current.replace(lastInsertedResourceLink.markdown, nextMarkdown);
+  applyEditorContent(next);
+  emit('content-change', next);
+  lastInsertedResourceLink = {
+    ...lastInsertedResourceLink,
+    display,
+    markdown: nextMarkdown,
+  };
+  selectInsertedResourceLink(lastInsertedResourceLink.url);
+  return true;
+};
+
+const updateInsertedImageWidth = (widthPercent: number) => {
+  if (!editorInstance.value || !lastInsertedResourceLink || lastInsertedResourceLink.display !== 'image') return false;
+  const current = editorInstance.value.getValue();
+  const nextWidth = clampImageWidth(widthPercent);
+  const nextMarkdown = createResourceLinkMarkdown(
+    lastInsertedResourceLink.label,
+    lastInsertedResourceLink.url,
+    'image',
+    nextWidth,
+  );
+  if (!current.includes(lastInsertedResourceLink.markdown)) return false;
+
+  const next = current.replace(lastInsertedResourceLink.markdown, nextMarkdown);
+  applyEditorContent(next);
+  emit('content-change', next);
+  lastInsertedResourceLink = {
+    ...lastInsertedResourceLink,
+    widthPercent: nextWidth,
+    markdown: nextMarkdown,
+  };
+  selectInsertedResourceLink(lastInsertedResourceLink.url);
+  return true;
+};
+
 const handlePreviewClick = (event: MouseEvent) => {
   emit('click', event);
   if (!props.editable) return;
@@ -1027,6 +1198,11 @@ defineExpose({
   extractSelection,
   focusEditor,
   getSelectionAsMarkdown,
+  getMarkdownLinkAnchor,
+  insertMarkdown,
+  insertMarkdownLink,
+  updateInsertedLinkDisplay,
+  updateInsertedImageWidth,
 });
 
 onMounted(() => {

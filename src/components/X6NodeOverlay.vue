@@ -22,6 +22,11 @@ const emit = defineEmits<{
 
 const plainText = ref(props.label);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
+const richEditorRef = ref<{
+  getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+  insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
+  updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+} | null>(null);
 
 const richOverlayStyle = computed<Record<string, string>>(() => ({
   ...props.styleProps,
@@ -63,6 +68,28 @@ function handlePlainBlur() {
     emit('commit-plain', plainText.value);
   }
 }
+
+function insertMarkdownLink(label: string, url: string, display: 'link' | 'image' = 'link'): boolean {
+  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return false;
+  richEditorRef.value?.insertMarkdownLink?.(label, url, display);
+  return Boolean(richEditorRef.value?.insertMarkdownLink);
+}
+
+function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
+  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return undefined;
+  return richEditorRef.value?.getMarkdownLinkAnchor?.();
+}
+
+function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
+  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return false;
+  return richEditorRef.value?.updateInsertedLinkDisplay?.(display) ?? false;
+}
+
+defineExpose({
+  getMarkdownLinkAnchor,
+  insertMarkdownLink,
+  updateInsertedLinkDisplay,
+});
 </script>
 
 <template>
@@ -73,6 +100,7 @@ function handlePlainBlur() {
     :style="richOverlayStyle"
   >
     <VditorRichEditor
+      ref="richEditorRef"
       :model-value="richContent"
       :editing="isEditing"
       :editable="isEditable"

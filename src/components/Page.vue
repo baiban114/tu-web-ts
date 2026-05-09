@@ -14,6 +14,9 @@ import type { Block, BlockTag, GraphData } from '@/api/types';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata';
+import { ensureExternalLinkResource } from '@/api/externalResource';
+
+type LinkDisplayMode = 'link' | 'image';
 
 interface Props {
   contentList: Block[];
@@ -89,11 +92,39 @@ const blockRefs = ref<HTMLElement[]>([]);
 const richTextEditorRefs = ref<Record<number, {
   getSelectionAsMarkdown?: () => string;
   focusEditor?: () => void;
+  getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+  insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => void;
+  updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
+}>>({});
+const markdownLinkCapableRefs = ref<Record<number, {
+  getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+  insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => boolean | void;
+  updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
 }>>({});
 const hasSelection = ref(false);
 const selectedText = ref('');
 const selectedBlockIndex = ref(-1);
+const activeBlockIndex = ref(-1);
 const contentContainerRef = ref<HTMLElement | null>(null);
+const linkPopoverUrlInputRef = ref<HTMLInputElement | null>(null);
+const linkPopoverState = ref({
+  visible: false,
+  targetIndex: -1,
+  top: 0,
+  left: 0,
+  label: '',
+  url: '',
+});
+const insertedLinkToolbarState = ref({
+  visible: false,
+  targetIndex: -1,
+  top: 0,
+  left: 0,
+  url: '',
+  label: '',
+  display: 'link' as LinkDisplayMode,
+  canShowAsImage: false,
+});
 const blockHandleStyle = {
   '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
   '--hover-handle-top': 'calc(var(--block-shell-pad-y, 20px) + 6px)',
@@ -141,9 +172,24 @@ const setRichTextEditorRef = (el: unknown, index: number) => {
     richTextEditorRefs.value[index] = el as {
       getSelectionAsMarkdown?: () => string;
       focusEditor?: () => void;
+      getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+      insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => void;
+      updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
     };
   } else {
     delete richTextEditorRefs.value[index];
+  }
+};
+
+const setMarkdownLinkCapableRef = (el: unknown, index: number) => {
+  if (el) {
+    markdownLinkCapableRefs.value[index] = el as {
+      getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+      insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => boolean | void;
+      updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
+    };
+  } else {
+    delete markdownLinkCapableRefs.value[index];
   }
 };
 
@@ -1031,6 +1077,7 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
 // 为每个块添加点击事件，使其获得焦点
 const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
   if (!props.editable) return;
+  activeBlockIndex.value = blockIndex;
 
   const blockElement = blockRefs.value[blockIndex];
   const block = getBlockAtPosition(blockIndex);
@@ -1052,7 +1099,7 @@ const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
 
 // 处理富文本编辑器的点击事件
 const handleRichTextEditorClick = (event: MouseEvent, blockIndex: number) => {
-  // 点击事件处理
+  activeBlockIndex.value = blockIndex;
 };
 
 // 处理富文本编辑器的生命周期事件
@@ -1173,11 +1220,13 @@ onMounted(() => {
 
   // 添加选择事件监听器
   document.addEventListener('selectionchange', checkSelection);
+  document.addEventListener('paste', handleGlobalPaste, true);
 });
 
 onBeforeUnmount(() => {
   // 移除选择事件监听器
   document.removeEventListener('selectionchange', checkSelection);
+  document.removeEventListener('paste', handleGlobalPaste, true);
   // 销毁同步管理器，清理定时器
   blockSyncManager.destroy();
 });
@@ -1275,6 +1324,188 @@ const handleExtractSelectionButtonClick = () => {
   }
 };
 
+const getMarkdownLinkTargetIndex = (): number => {
+  if (selectedBlockIndex.value >= 0) return selectedBlockIndex.value;
+  return activeBlockIndex.value;
+};
+
+const canInsertMarkdownLink = computed(() => {
+  if (!props.editable) return false;
+  const index = getMarkdownLinkTargetIndex();
+  if (index < 0) return false;
+  return Boolean(
+    richTextEditorRefs.value[index]?.insertMarkdownLink
+    || markdownLinkCapableRefs.value[index]?.insertMarkdownLink,
+  );
+});
+
+const getBlockFallbackAnchor = (index: number): { top: number; left: number } => {
+  const blockElement = blockRefs.value[index];
+  const rect = blockElement?.getBoundingClientRect();
+  if (rect) {
+    return {
+      top: rect.top + 44,
+      left: rect.left + 44,
+    };
+  }
+  return {
+    top: 96,
+    left: 280,
+  };
+};
+
+const clampLinkPopoverPosition = (anchor: { top: number; left: number }) => {
+  const popoverWidth = 320;
+  const margin = 12;
+  return {
+    top: Math.max(margin, Math.min(anchor.top, window.innerHeight - 180)),
+    left: Math.max(margin, Math.min(anchor.left, window.innerWidth - popoverWidth - margin)),
+  };
+};
+
+const getMarkdownLinkAnchor = (index: number): { top: number; left: number } => {
+  const anchor = richTextEditorRefs.value[index]?.getMarkdownLinkAnchor?.()
+    || markdownLinkCapableRefs.value[index]?.getMarkdownLinkAnchor?.()
+    || getBlockFallbackAnchor(index);
+  return clampLinkPopoverPosition(anchor);
+};
+
+const closeLinkPopover = () => {
+  linkPopoverState.value.visible = false;
+};
+
+const closeInsertedLinkToolbar = () => {
+  insertedLinkToolbarState.value.visible = false;
+};
+
+const isImageUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url);
+    return /\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(parsed.pathname + parsed.search);
+  } catch {
+    return /\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(url);
+  }
+};
+
+const normalizePastedUrl = (text: string): string | null => {
+  const value = text.trim();
+  if (!value || /\s/.test(value)) return null;
+
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null;
+  } catch {
+    return null;
+  }
+};
+
+const registerExternalLinkResource = (url: string, label: string) => {
+  void ensureExternalLinkResource(url, label).catch((error) => {
+    console.warn('Failed to register external link resource:', error);
+    showToast('链接已插入，但外部资源登记失败');
+  });
+};
+
+const showInsertedLinkToolbar = (
+  index: number,
+  label: string,
+  url: string,
+  display: LinkDisplayMode,
+) => {
+  const anchor = getMarkdownLinkAnchor(index);
+  insertedLinkToolbarState.value = {
+    visible: true,
+    targetIndex: index,
+    top: anchor.top,
+    left: anchor.left,
+    url,
+    label,
+    display,
+    canShowAsImage: isImageUrl(url),
+  };
+};
+
+const applyMarkdownLink = (index: number, label: string, url: string, display?: LinkDisplayMode) => {
+  const linkLabel = label || url.trim();
+  const linkDisplay = display ?? (isImageUrl(url) ? 'image' : 'link');
+  const richTextEditor = richTextEditorRefs.value[index];
+  if (richTextEditor?.insertMarkdownLink) {
+    richTextEditor.insertMarkdownLink(linkLabel, url, linkDisplay);
+    activeBlockIndex.value = index;
+    registerExternalLinkResource(url, linkLabel);
+    showInsertedLinkToolbar(index, linkLabel, url, linkDisplay);
+    return true;
+  }
+
+  const target = markdownLinkCapableRefs.value[index];
+  const inserted = target?.insertMarkdownLink?.(linkLabel, url, linkDisplay);
+  if (inserted) {
+    activeBlockIndex.value = index;
+    registerExternalLinkResource(url, linkLabel);
+    showInsertedLinkToolbar(index, linkLabel, url, linkDisplay);
+    return true;
+  }
+  return false;
+};
+
+const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
+  const { targetIndex } = insertedLinkToolbarState.value;
+  if (targetIndex < 0) return;
+  const updated = richTextEditorRefs.value[targetIndex]?.updateInsertedLinkDisplay?.(display)
+    || markdownLinkCapableRefs.value[targetIndex]?.updateInsertedLinkDisplay?.(display);
+  if (!updated) return;
+  insertedLinkToolbarState.value.display = display;
+};
+
+const handleInsertLinkButtonClick = () => {
+  if (!props.editable) return;
+  closeInsertedLinkToolbar();
+  const index = getMarkdownLinkTargetIndex();
+  if (index < 0) return;
+
+  const anchor = getMarkdownLinkAnchor(index);
+  linkPopoverState.value = {
+    visible: true,
+    targetIndex: index,
+    top: anchor.top,
+    left: anchor.left,
+    label: selectedText.value,
+    url: '',
+  };
+
+  nextTick(() => linkPopoverUrlInputRef.value?.focus());
+};
+
+const submitLinkPopover = () => {
+  const { targetIndex, label, url } = linkPopoverState.value;
+  if (targetIndex < 0 || !url.trim()) return;
+  if (applyMarkdownLink(targetIndex, label, url)) closeLinkPopover();
+};
+
+const isPasteFromCurrentPage = (target: EventTarget | null): boolean => {
+  if (!(target instanceof Node)) return false;
+  return Boolean(contentContainerRef.value?.contains(target) || target.parentElement?.closest?.('.page-toolbar'));
+};
+
+const handleGlobalPaste = (event: ClipboardEvent) => {
+  if (!props.editable || linkPopoverState.value.visible) return;
+  if (!isPasteFromCurrentPage(event.target)) return;
+
+  const clipboardText = event.clipboardData?.getData('text/plain') ?? '';
+  const url = normalizePastedUrl(clipboardText);
+  if (!url) return;
+
+  const index = getMarkdownLinkTargetIndex();
+  if (index < 0 || !canInsertMarkdownLink.value) return;
+
+  const label = selectedText.value || url;
+  if (!applyMarkdownLink(index, label, url)) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  closeLinkPopover();
+};
+
 // 处理拖拽结束事件
 const handleDragEnd = () => {
   commitTopLevelBlocks();
@@ -1320,8 +1551,18 @@ const getBlockProperties = (block: Block) => {
   <div class="page-container">
     <!-- 工具栏 -->
     <div class="page-toolbar" v-if="editable">
+      <button
+        class="toolbar-button"
+        @mousedown.prevent
+        @click="handleInsertLinkButtonClick"
+        :disabled="!canInsertMarkdownLink"
+        title="在当前富文本位置插入 Markdown 链接"
+      >
+        插入链接
+      </button>
       <button 
         class="toolbar-button" 
+        @mousedown.prevent
         @click="handleExtractSelectionButtonClick"
         :disabled="!hasSelection"
         title="提取选中文本为新块"
@@ -1329,11 +1570,71 @@ const getBlockProperties = (block: Block) => {
         提取成块
       </button>
     </div>
+
+    <form
+      v-if="linkPopoverState.visible"
+      class="link-popover"
+      :style="{ top: `${linkPopoverState.top}px`, left: `${linkPopoverState.left}px` }"
+      @submit.prevent="submitLinkPopover"
+      @mousedown.stop
+      @click.stop
+      @keydown.esc.prevent.stop="closeLinkPopover"
+    >
+      <label>
+        <span>链接</span>
+        <input
+          ref="linkPopoverUrlInputRef"
+          v-model="linkPopoverState.url"
+          type="url"
+          placeholder="https://example.com"
+          required
+        />
+      </label>
+      <label>
+        <span>文字</span>
+        <input
+          v-model="linkPopoverState.label"
+          type="text"
+          placeholder="显示文字"
+        />
+      </label>
+      <div class="link-popover__actions">
+        <button type="button" @click="closeLinkPopover">取消</button>
+        <button type="submit" :disabled="!linkPopoverState.url.trim()">插入</button>
+      </div>
+    </form>
+
+    <div
+      v-if="insertedLinkToolbarState.visible"
+      class="inserted-link-toolbar"
+      :style="{ top: `${insertedLinkToolbarState.top}px`, left: `${insertedLinkToolbarState.left}px` }"
+      @mousedown.stop
+      @click.stop
+    >
+      <span class="inserted-link-toolbar__url">{{ insertedLinkToolbarState.url }}</span>
+      <div class="inserted-link-toolbar__actions">
+        <button
+          type="button"
+          :class="{ active: insertedLinkToolbarState.display === 'link' }"
+          @click="updateInsertedLinkDisplay('link')"
+        >
+          显示为链接
+        </button>
+        <button
+          type="button"
+          :disabled="!insertedLinkToolbarState.canShowAsImage"
+          :class="{ active: insertedLinkToolbarState.display === 'image' }"
+          @click="updateInsertedLinkDisplay('image')"
+        >
+          显示为图片
+        </button>
+      </div>
+    </div>
     
     <div
       ref="contentContainerRef"
       class="content-container"
-      @click="handleContentContainerClick"
+      @click="(event) => { closeLinkPopover(); closeInsertedLinkToolbar(); handleContentContainerClick(event); }"
     >
       <VueDraggable
         class="blocks-list"
@@ -1496,8 +1797,11 @@ const getBlockProperties = (block: Block) => {
                     />
                     <X6Component
                       v-else-if="childBlock.type === 'x6'"
+                      :ref="(el: any) => setMarkdownLinkCapableRef(el, index * 100 + childIndex)"
                       :graphData="childBlock.graphData"
                       :editable="editable"
+                      @click="activeBlockIndex = index * 100 + childIndex"
+                      @active="activeBlockIndex = index * 100 + childIndex"
                       @graph-data-change="(graphData: any) => { childBlock.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
                       @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index * 100 + childIndex)"
                       @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index * 100 + childIndex, payload)"
@@ -1505,9 +1809,12 @@ const getBlockProperties = (block: Block) => {
                     />
                     <TableBlock
                       v-else-if="childBlock.type === 'table'"
+                      :ref="(el: any) => setMarkdownLinkCapableRef(el, index * 100 + childIndex)"
                       :data="childBlock.tableData"
                       :editable="editable"
                       class="block-content"
+                      @click="activeBlockIndex = index * 100 + childIndex"
+                      @active="activeBlockIndex = index * 100 + childIndex"
                       @change="(tableData) => { childBlock.tableData = tableData; emit('content-change', localBlocks); }"
                     />
                     <template v-else-if="childBlock.type === 'ref' && childBlock.refId">
@@ -1584,8 +1891,11 @@ const getBlockProperties = (block: Block) => {
           <!-- X6图块 -->
           <X6Component
             v-else-if="block.type === 'x6'"
+            :ref="(el: any) => setMarkdownLinkCapableRef(el, index)"
             :graphData="block.graphData"
             :editable="editable"
+            @click="activeBlockIndex = index"
+            @active="activeBlockIndex = index"
             @graph-data-change="(graphData: any) => { block.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
             @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index)"
             @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index, payload)"
@@ -1593,9 +1903,12 @@ const getBlockProperties = (block: Block) => {
           />
           <TableBlock
             v-else-if="block.type === 'table'"
+            :ref="(el: any) => setMarkdownLinkCapableRef(el, index)"
             :data="block.tableData"
             :editable="editable"
             class="block-content"
+            @click="activeBlockIndex = index"
+            @active="activeBlockIndex = index"
             @change="(tableData) => { block.tableData = tableData; emit('content-change', localBlocks); }"
           />
           <!-- 引用块 -->
@@ -1681,13 +1994,18 @@ const getBlockProperties = (block: Block) => {
 }
 
 .page-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
   display: flex;
   align-items: center;
   padding: 10px 20px;
-  background-color: #f5f5f5;
+  background-color: rgba(245, 245, 245, 0.96);
+  backdrop-filter: blur(8px);
   border-bottom: 1px solid #e0e0e0;
   margin-bottom: 20px;
   border-radius: 4px 4px 0 0;
+  box-shadow: 0 2px 8px rgba(31, 35, 40, 0.06);
 }
 
 .toolbar-button {
@@ -1709,6 +2027,123 @@ const getBlockProperties = (block: Block) => {
   background-color: #d9d9d9;
   cursor: not-allowed;
   color: #999;
+}
+
+.link-popover {
+  position: fixed;
+  z-index: 1200;
+  width: 320px;
+  padding: 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 12px 32px rgba(31, 35, 40, 0.18);
+}
+
+.link-popover label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: #57606a;
+  font-size: 12px;
+}
+
+.link-popover input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  color: #24292f;
+  font: inherit;
+  outline: none;
+}
+
+.link-popover input:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.14);
+}
+
+.link-popover__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.link-popover__actions button {
+  padding: 6px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #24292f;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.link-popover__actions button[type="submit"] {
+  border-color: #1677ff;
+  background: #1677ff;
+  color: #fff;
+}
+
+.link-popover__actions button:disabled {
+  border-color: #d8dee4;
+  background: #f6f8fa;
+  color: #8c959f;
+  cursor: not-allowed;
+}
+
+.inserted-link-toolbar {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(560px, calc(100vw - 24px));
+  padding: 8px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(31, 35, 40, 0.16);
+}
+
+.inserted-link-toolbar__url {
+  overflow: hidden;
+  max-width: 240px;
+  color: #57606a;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inserted-link-toolbar__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.inserted-link-toolbar__actions button {
+  padding: 5px 8px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #24292f;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.inserted-link-toolbar__actions button.active {
+  border-color: #1677ff;
+  background: #eaf3ff;
+  color: #0969da;
+}
+
+.inserted-link-toolbar__actions button:disabled {
+  border-color: #d8dee4;
+  background: #f6f8fa;
+  color: #8c959f;
+  cursor: not-allowed;
 }
 
 .content-container {

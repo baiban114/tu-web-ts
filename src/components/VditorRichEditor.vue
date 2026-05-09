@@ -25,6 +25,16 @@ const emit = defineEmits<{
   (e: 'focusout-editor'): void;
 }>();
 
+type LinkDisplayMode = 'link' | 'image';
+
+interface InsertedResourceLink {
+  url: string;
+  label: string;
+  display: LinkDisplayMode;
+  markdown: string;
+  widthPercent?: number;
+}
+
 const renderedHtml = ref('');
 const editorRef = ref<HTMLDivElement | null>(null);
 
@@ -33,6 +43,111 @@ let inputTimer: number | null = null;
 let layoutFrame: number | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let vditorInstance: Vditor | null = null;
+let savedMarkdownLinkRange: Range | null = null;
+let lastInsertedResourceLink: InsertedResourceLink | null = null;
+
+function escapeMarkdownLinkText(text: string): string {
+  return text.replace(/([\[\]\\])/g, '\\$1').replace(/\n+/g, ' ').trim();
+}
+
+function escapeMarkdownLinkUrl(url: string): string {
+  return url.trim().replace(/\)/g, '%29');
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function clampImageWidth(widthPercent: number): number {
+  return Math.max(10, Math.min(100, Math.round(widthPercent)));
+}
+
+function createResourceLinkMarkdown(
+  label: string,
+  url: string,
+  display: LinkDisplayMode,
+  widthPercent = 100,
+): string {
+  const safeUrl = escapeMarkdownLinkUrl(url);
+  const safeLabel = escapeMarkdownLinkText(label) || safeUrl;
+  if (display === 'image') {
+    const width = clampImageWidth(widthPercent);
+    return `<img src="${escapeHtmlAttribute(safeUrl)}" alt="${escapeHtmlAttribute(safeLabel)}" data-tu-resource-image="true" style="width: ${width}%; max-width: 100%; height: auto;" />`;
+  }
+  return `[${safeLabel}](${safeUrl})`;
+}
+
+function isFiniteRect(rect: DOMRect | null | undefined): rect is DOMRect {
+  return Boolean(
+    rect
+    && Number.isFinite(rect.top)
+    && Number.isFinite(rect.bottom)
+    && Number.isFinite(rect.left)
+    && Number.isFinite(rect.height),
+  );
+}
+
+function pickCaretRect(range: Range): DOMRect | null {
+  const inlineRect = Array.from(range.getClientRects()).find((rect) => {
+    return isFiniteRect(rect) && rect.height > 0 && rect.height < 80;
+  });
+  if (inlineRect) return inlineRect;
+  const fallbackRect = range.getBoundingClientRect();
+  return isFiniteRect(fallbackRect) ? fallbackRect : null;
+}
+
+function getEditorContentRoot(): HTMLElement | null {
+  return editorRef.value?.querySelector('.vditor-wysiwyg .vditor-reset')
+    ?? editorRef.value?.querySelector('.vditor-wysiwyg')
+    ?? null;
+}
+
+function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
+  const contentRoot = getEditorContentRoot();
+  const selection = window.getSelection();
+  if (contentRoot && selection && selection.rangeCount > 0) {
+    const range = selection.getRangeAt(0).cloneRange();
+    const anchorNode = selection.focusNode ?? range.commonAncestorContainer;
+    if (anchorNode && contentRoot.contains(anchorNode)) {
+      savedMarkdownLinkRange = range.cloneRange();
+      const rect = pickCaretRect(range);
+      if (rect) {
+        return {
+          top: rect.bottom + 8,
+          left: rect.left + 8,
+        };
+      }
+    }
+  }
+
+  const editorRect = editorRef.value?.getBoundingClientRect();
+  if (!editorRect) return undefined;
+  return {
+    top: editorRect.top + 12,
+    left: editorRect.left + 12,
+  };
+}
+
+function selectInsertedResourceLink(url: string) {
+  window.setTimeout(() => {
+    const contentRoot = getEditorContentRoot();
+    if (!contentRoot) return;
+    const target = Array.from(contentRoot.querySelectorAll<HTMLAnchorElement | HTMLImageElement>('a[href], img[src]'))
+      .reverse()
+      .find((element) => element.getAttribute(element instanceof HTMLImageElement ? 'src' : 'href') === url);
+    if (!target) return;
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNode(target);
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  }, 120);
+}
 
 async function renderMarkdown(markdown: string) {
   if (!markdown.trim()) {
@@ -127,6 +242,92 @@ function initEditor() {
   });
 }
 
+function syncValueFromEditor() {
+  if (!vditorInstance) return;
+  const value = vditorInstance.getValue();
+  emit('update:modelValue', value);
+  void renderMarkdown(value);
+}
+
+function insertMarkdown(markdown: string) {
+  if (!props.editable || !markdown) return;
+
+  if (!vditorInstance && props.editing) {
+    initEditor();
+  }
+
+  nextTick(() => {
+    if (!vditorInstance) return;
+    if (savedMarkdownLinkRange) {
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(savedMarkdownLinkRange);
+      savedMarkdownLinkRange = null;
+    }
+    vditorInstance.focus();
+    vditorInstance.insertValue(markdown, true);
+    syncValueFromEditor();
+  });
+}
+
+function insertMarkdownLink(label: string, url: string, display: LinkDisplayMode = 'link') {
+  const safeUrl = escapeMarkdownLinkUrl(url);
+  if (!safeUrl) return;
+  const markdown = createResourceLinkMarkdown(label, url, display);
+  lastInsertedResourceLink = { url: safeUrl, label: label || safeUrl, display, markdown, widthPercent: 100 };
+  insertMarkdown(markdown);
+  selectInsertedResourceLink(safeUrl);
+}
+
+function updateInsertedLinkDisplay(display: LinkDisplayMode): boolean {
+  if (!vditorInstance || !lastInsertedResourceLink) return false;
+  const current = vditorInstance.getValue();
+  const nextMarkdown = createResourceLinkMarkdown(
+    lastInsertedResourceLink.label,
+    lastInsertedResourceLink.url,
+    display,
+    lastInsertedResourceLink.widthPercent ?? 100,
+  );
+  if (!current.includes(lastInsertedResourceLink.markdown)) return false;
+
+  const next = current.replace(lastInsertedResourceLink.markdown, nextMarkdown);
+  vditorInstance.setValue(next);
+  emit('update:modelValue', next);
+  void renderMarkdown(next);
+  lastInsertedResourceLink = {
+    ...lastInsertedResourceLink,
+    display,
+    markdown: nextMarkdown,
+  };
+  selectInsertedResourceLink(lastInsertedResourceLink.url);
+  return true;
+}
+
+function updateInsertedImageWidth(widthPercent: number): boolean {
+  if (!vditorInstance || !lastInsertedResourceLink || lastInsertedResourceLink.display !== 'image') return false;
+  const current = vditorInstance.getValue();
+  const nextWidth = clampImageWidth(widthPercent);
+  const nextMarkdown = createResourceLinkMarkdown(
+    lastInsertedResourceLink.label,
+    lastInsertedResourceLink.url,
+    'image',
+    nextWidth,
+  );
+  if (!current.includes(lastInsertedResourceLink.markdown)) return false;
+
+  const next = current.replace(lastInsertedResourceLink.markdown, nextMarkdown);
+  vditorInstance.setValue(next);
+  emit('update:modelValue', next);
+  void renderMarkdown(next);
+  lastInsertedResourceLink = {
+    ...lastInsertedResourceLink,
+    widthPercent: nextWidth,
+    markdown: nextMarkdown,
+  };
+  selectInsertedResourceLink(lastInsertedResourceLink.url);
+  return true;
+}
+
 function destroyEditor() {
   if (inputTimer) window.clearTimeout(inputTimer);
   inputTimer = null;
@@ -152,6 +353,7 @@ function handleEditorKeydown(event: KeyboardEvent) {
 function handleEditorFocusout() {
   window.setTimeout(() => {
     if (!props.editing) return;
+    if ((document.activeElement as HTMLElement | null)?.closest('.link-popover')) return;
     if (editorRef.value?.contains(document.activeElement)) return;
     emit('focusout-editor');
   }, 0);
@@ -182,6 +384,14 @@ watch(
 onBeforeUnmount(() => {
   if (renderTimer) window.clearTimeout(renderTimer);
   destroyEditor();
+});
+
+defineExpose({
+  getMarkdownLinkAnchor,
+  insertMarkdown,
+  insertMarkdownLink,
+  updateInsertedLinkDisplay,
+  updateInsertedImageWidth,
 });
 </script>
 

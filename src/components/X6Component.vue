@@ -77,10 +77,16 @@ const emit = defineEmits<{
   (e: 'graph-data-change', graphData: GraphData): void;
   (e: 'extract-selection', payload: ExtractedGraphSelectionPayload): void;
   (e: 'request-insert-ref', payload: InsertRefRequestPayload): void;
+  (e: 'active'): void;
 }>();
 
 const stageRef = ref<HTMLDivElement | null>(null);
 const containerRef = ref<HTMLDivElement | null>(null);
+const nodeOverlayRefs = ref<Record<string, {
+  getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+  insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
+  updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+}>>({});
 
 const canUndo = ref(false);
 const canRedo = ref(false);
@@ -644,6 +650,33 @@ function handleRichChange(nodeId: string, markdown: string) {
     node.updateData({ richContent: markdown });
   }
   scheduleSync();
+}
+
+function setNodeOverlayRef(el: unknown, nodeId: string) {
+  if (el) {
+    nodeOverlayRefs.value[nodeId] = el as {
+      getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
+      insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
+      updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+    };
+  } else {
+    delete nodeOverlayRefs.value[nodeId];
+  }
+}
+
+function insertMarkdownLink(label: string, url: string, display: 'link' | 'image' = 'link'): boolean {
+  if (!isEditable.value || !editingNodeId.value) return false;
+  return nodeOverlayRefs.value[editingNodeId.value]?.insertMarkdownLink?.(label, url, display) ?? false;
+}
+
+function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
+  if (!isEditable.value || !editingNodeId.value) return undefined;
+  return nodeOverlayRefs.value[editingNodeId.value]?.getMarkdownLinkAnchor?.();
+}
+
+function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
+  if (!isEditable.value || !editingNodeId.value) return false;
+  return nodeOverlayRefs.value[editingNodeId.value]?.updateInsertedLinkDisplay?.(display) ?? false;
 }
 
 // --- Edge inline editing helpers ---
@@ -1298,6 +1331,7 @@ function updateSelectedEdgeConnector(value: string) {
 
 function editNodeLabel(node: Node) {
   if (!isEditable.value || !graph) return;
+  emit('active');
   if (editingNodeId.value === node.id) return;
 
   const data = node.getData<Record<string, any>>() ?? {};
@@ -1663,10 +1697,16 @@ watch(
     nextTick(() => initGraph());
   },
 );
+
+defineExpose({
+  getMarkdownLinkAnchor,
+  insertMarkdownLink,
+  updateInsertedLinkDisplay,
+});
 </script>
 
 <template>
-  <div class="x6-editor" @mousedown.stop @click.stop @dblclick.stop>
+  <div class="x6-editor" @mousedown.stop="emit('active')" @click.stop @dblclick.stop>
     <div class="x6-toolbar">
       <div class="toolbar-group">
         <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('rect')">
@@ -1740,6 +1780,7 @@ watch(
         <X6NodeOverlay
           v-for="overlay in nodeOverlays"
           :key="overlay.id"
+          :ref="(el) => setNodeOverlayRef(el, overlay.id)"
           :node-id="overlay.id"
           :style-props="overlay.style"
           :text-mode="overlay.textMode"

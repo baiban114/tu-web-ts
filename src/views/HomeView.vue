@@ -174,7 +174,7 @@ function onContentChange(blocks: Block[]) {
   display: flex;
   flex-direction: column;
   overflow-y: auto;
-  padding: 24px 48px 32px;
+  padding: 0 48px 32px;
 }
 
 .local-file-status {
@@ -256,7 +256,7 @@ function onContentChange(blocks: Block[]) {
 
 @media (max-width: 960px) {
   .content-scroll {
-    padding: 16px 18px 24px;
+    padding: 0 18px 24px;
   }
 
   .local-file-status {
