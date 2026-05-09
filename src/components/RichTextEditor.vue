@@ -222,6 +222,7 @@ const applyEditorContent = (content: string) => {
   if (!editorInstance.value) return;
   editorInstance.value.setValue(content);
   lastEmittedContent.value = content;
+  scheduleStoredImageWidthSync(content);
 };
 
 const updateHeight = () => {
@@ -354,6 +355,71 @@ const extractSrcFromImgTag = (tag: string): string | null => {
   return m[2].replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
 };
 
+const extractImageWidthFromImgTag = (tag: string): number | null => {
+  const dataWidth = tag.match(/\bdata-tu-image-width\s*=\s*(["'])([\s\S]*?)\1/i)?.[2];
+  const styleWidth = tag.match(/\bstyle\s*=\s*(["'])([\s\S]*?)\1/i)?.[2]
+    ?.match(/\bwidth\s*:\s*(\d+(?:\.\d+)?)\s*%/i)?.[1];
+  const attrWidth = tag.match(/\bwidth\s*=\s*(["'])([\s\S]*?)\1/i)?.[2]
+    ?.match(/^(\d+(?:\.\d+)?)%?$/)?.[1];
+  const width = Number.parseFloat(dataWidth ?? styleWidth ?? attrWidth ?? '');
+  return Number.isFinite(width) ? clampImageWidth(width) : null;
+};
+
+const styleImageElementWidth = (img: HTMLImageElement, widthPercent: number) => {
+  const width = clampImageWidth(widthPercent);
+  img.dataset.tuImageWidth = `${width}`;
+  img.style.width = `${width}%`;
+  img.style.maxWidth = '100%';
+  img.style.height = 'auto';
+};
+
+const collectImageWidthRecords = (markdown: string) => {
+  return Array.from(markdown.matchAll(/<img\b[^>]*?>/gi))
+    .map((match) => {
+      const tag = match[0];
+      return {
+        src: extractSrcFromImgTag(tag),
+        width: extractImageWidthFromImgTag(tag),
+      };
+    })
+    .filter((record): record is { src: string; width: number } => {
+      return Boolean(record.src && record.width != null);
+    });
+};
+
+const applyStoredImageWidthsToDom = (markdown: string) => {
+  const contentRoot = getEditorContentRoot();
+  if (!contentRoot) return;
+
+  const records = collectImageWidthRecords(markdown);
+  if (records.length === 0) return;
+
+  contentRoot.querySelectorAll<HTMLImageElement>('img').forEach((img) => {
+    const src = img.getAttribute('src');
+    if (!src) return;
+
+    const record = records.find((item) => resourceUrlsMatch(item.src, src));
+    if (!record) return;
+
+    styleImageElementWidth(img, record.width);
+  });
+};
+
+const scheduleStoredImageWidthSync = (markdown: string) => {
+  window.setTimeout(() => applyStoredImageWidthsToDom(markdown), 0);
+};
+
+const hasImageWidthRecord = (markdown: string, src: string): boolean => {
+  return collectImageWidthRecords(markdown).some((record) => resourceUrlsMatch(record.src, src));
+};
+
+const mergeStoredImageWidths = (markdown: string, storedMarkdown: string): string => {
+  return collectImageWidthRecords(storedMarkdown).reduce((next, record) => {
+    if (hasImageWidthRecord(next, record.src)) return next;
+    return replaceImageInMarkdown(next, record.src, '', record.width) ?? next;
+  }, markdown);
+};
+
 const replaceImageInMarkdown = (
   markdown: string,
   domSrc: string,
@@ -400,7 +466,7 @@ const createResourceLinkMarkdown = (
   const safeLabel = escapeMarkdownLinkText(label) || safeUrl;
   if (display === 'image') {
     const width = clampImageWidth(widthPercent);
-    return `<img src="${escapeHtmlAttribute(safeUrl)}" alt="${escapeHtmlAttribute(safeLabel)}" data-tu-resource-image="true" style="width: ${width}%; max-width: 100%; height: auto;" />`;
+    return `<img src="${escapeHtmlAttribute(safeUrl)}" alt="${escapeHtmlAttribute(safeLabel)}" data-tu-resource-image="true" data-tu-image-width="${width}" style="width: ${width}%; max-width: 100%; height: auto;" />`;
   }
   return `[${safeLabel}](${safeUrl})`;
 };
@@ -1003,7 +1069,12 @@ const selectImage = (img: HTMLImageElement) => {
   activeImageElement.value = img;
   const styleWidth = img.style.width;
   const match = styleWidth.match(/^(\d+(?:\.\d+)?)\s*%/);
-  activeImageWidth.value = match ? clampImageWidth(parseFloat(match[1])) : 100;
+  const dataWidth = Number.parseFloat(img.dataset.tuImageWidth ?? '');
+  activeImageWidth.value = match
+    ? clampImageWidth(parseFloat(match[1]))
+    : Number.isFinite(dataWidth)
+      ? clampImageWidth(dataWidth)
+      : 100;
   imageEditActive.value = true;
   hideLineHandle();
   updateEditorContentWidth();
@@ -1239,7 +1310,7 @@ const onResizeMouseMove = (event: MouseEvent) => {
   const newPercent = clampImageWidth((newWidthPx / contentW) * 100);
   activeImageWidth.value = newPercent;
   const imgEl = activeImageElement.value;
-  imgEl.style.width = `${newPercent}%`;
+  styleImageElementWidth(imgEl, newPercent);
   void imgEl.offsetWidth;
   // 宽度变化后立刻同步边框/手柄/工具栏位置（否则只有图片 reflow，叠加层仍用旧 rect）
   updateImageRect();
@@ -1271,19 +1342,20 @@ const onResizeHandleMouseDown = (event: MouseEvent, position: string) => {
 };
 
 const commitImageWidth = () => {
-  if (!editorInstance.value) return;
   const imgEl = activeImageElement.value;
   if (!imgEl) return;
   const imgSrc = imgEl.getAttribute('src');
   if (!imgSrc) return;
 
-  const current = editorInstance.value.getValue();
+  const current = editorInstance.value?.getValue() ?? '';
   const alt = imgEl.getAttribute('alt') ?? '';
   const next = replaceImageInMarkdown(current, imgSrc, alt, activeImageWidth.value);
   if (next == null) return;
 
-  applyEditorContent(next);
+  lastEmittedContent.value = next;
+  styleImageElementWidth(imgEl, activeImageWidth.value);
   emit('content-change', next);
+  updateImageRect();
 };
 
 const HANDLE_SIZE = 12;
@@ -1343,6 +1415,7 @@ const initEditor = () => {
 
       isReady.value = true;
       attachEditorDomListeners();
+      scheduleStoredImageWidthSync(props.content);
       updateHeight();
 
       if ((props.autoFocus || pendingFocusAfterReady.value) && editorInstance.value) {
@@ -1357,9 +1430,11 @@ const initEditor = () => {
       }
     },
     input: (value: string) => {
-      lastEmittedContent.value = value;
-      emit('content-change', value);
+      const normalizedValue = mergeStoredImageWidths(value, lastEmittedContent.value);
+      lastEmittedContent.value = normalizedValue;
+      emit('content-change', normalizedValue);
       setTimeout(() => {
+        applyStoredImageWidthsToDom(normalizedValue);
         updateHeight();
         scheduleEditorHandleSync(1);
       }, 0);
