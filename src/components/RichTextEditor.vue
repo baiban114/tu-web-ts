@@ -1092,10 +1092,24 @@ const clearImageSelection = () => {
   cleanupImageResizeListeners();
 };
 
-/** 与 Vditor 一致：正文区图片可点；排除 plantuml 等预览块内的 img */
+const isEditablePreviewImage = (img: HTMLImageElement): boolean => {
+  const preview = img.closest('.vditor-wysiwyg__preview');
+  if (!preview) return true;
+
+  if (img.dataset.tuResourceImage === 'true') return true;
+
+  const block = preview.closest('.vditor-wysiwyg__block');
+  if (block?.getAttribute('data-type') === 'html-block') {
+    return (preview.previousElementSibling?.textContent ?? '').includes('<img');
+  }
+
+  return false;
+};
+
+/** 与 Vditor 一致：正文区图片可点；只排除 plantuml/mermaid 等非 HTML 图片预览 */
 const isWysiwygBodyImage = (img: HTMLImageElement): boolean => {
   if (!editorRef.value?.contains(img)) return false;
-  return !img.closest('.vditor-wysiwyg__preview');
+  return isEditablePreviewImage(img);
 };
 
 const removeEditorDomListeners = () => {
@@ -1162,7 +1176,7 @@ const attachEditorDomListeners = () => {
 
   removeEditorDomListeners();
 
-  /** 捕获阶段先于 Vditor 在 .vditor-reset 上的冒泡处理，避免只弹出内置图片面板而不走我们的叠加层 */
+  /** 捕获阶段只识别图片点击；不阻止 Vditor 自己的“图片显示原文本”处理。 */
   const handleImageClickCapture = (event: MouseEvent) => {
     if (!props.editable) return;
     const raw = event.target;
@@ -1172,9 +1186,10 @@ const attachEditorDomListeners = () => {
     if (!img || !isWysiwygBodyImage(img)) return;
 
     emit('click', event);
-    event.preventDefault();
-    event.stopPropagation();
     selectImage(img);
+    window.setTimeout(() => {
+      if (editorRef.value?.contains(img)) updateImageRect();
+    }, 0);
   };
 
   const handleClick = (event: MouseEvent) => {
@@ -1183,8 +1198,10 @@ const attachEditorDomListeners = () => {
     const target = event.target as HTMLElement;
     const img = target.closest('img');
     if (img && isWysiwygBodyImage(img)) {
-      event.preventDefault();
-      selectImage(img);
+      window.setTimeout(() => {
+        if (!editorRef.value?.contains(img)) return;
+        updateImageRect();
+      }, 0);
       return;
     }
 
