@@ -1123,6 +1123,8 @@ const removeEditorDomListeners = () => {
   const keyUpHandler = (editorRef.value as any)._keyUpHandler;
   const keyDownHandler = (editorRef.value as any)._keyDownHandler;
   const selectionChangeHandler = (editorRef.value as any)._selectionChangeHandler;
+  const imageOutsidePointerDownHandler = (editorRef.value as any)._imageOutsidePointerDownHandler;
+  const windowBlurHandler = (editorRef.value as any)._windowBlurHandler;
   const wrapperLeaveHandler = (wrapperRef.value as any)?._wrapperLeaveHandler;
 
   if (focusHandler) {
@@ -1163,6 +1165,16 @@ const removeEditorDomListeners = () => {
   if (selectionChangeHandler) {
     document.removeEventListener('selectionchange', selectionChangeHandler);
     delete (editorRef.value as any)._selectionChangeHandler;
+  }
+
+  if (imageOutsidePointerDownHandler) {
+    document.removeEventListener('mousedown', imageOutsidePointerDownHandler, true);
+    delete (editorRef.value as any)._imageOutsidePointerDownHandler;
+  }
+
+  if (windowBlurHandler) {
+    window.removeEventListener('blur', windowBlurHandler);
+    delete (editorRef.value as any)._windowBlurHandler;
   }
 
   if (wrapperRef.value && wrapperLeaveHandler) {
@@ -1261,6 +1273,19 @@ const attachEditorDomListeners = () => {
     scheduleEditorHandleSync(1);
   };
 
+  const handleImageOutsidePointerDown = (event: MouseEvent) => {
+    if (!imageEditActive.value || isDragging.value) return;
+    const target = event.target;
+    if (target instanceof Node && wrapperRef.value?.contains(target)) return;
+    clearImageSelection();
+  };
+
+  const handleWindowBlur = () => {
+    if (imageEditActive.value && !isDragging.value) {
+      clearImageSelection();
+    }
+  };
+
   const handleWrapperMouseLeave = () => {
     if (isReady.value && isEditorFocused.value) return;
     hideLineHandle();
@@ -1275,6 +1300,8 @@ const attachEditorDomListeners = () => {
   editorRef.value.addEventListener('keyup', handleKeyUp);
   editorRef.value.addEventListener('keydown', handleKeyDown, true);
   document.addEventListener('selectionchange', handleSelectionChange);
+  document.addEventListener('mousedown', handleImageOutsidePointerDown, true);
+  window.addEventListener('blur', handleWindowBlur);
   wrapperRef.value?.addEventListener('mouseleave', handleWrapperMouseLeave);
   (editorRef.value as any)._imageClickCaptureHandler = handleImageClickCapture;
   (editorRef.value as any)._clickHandler = handleClick;
@@ -1284,6 +1311,8 @@ const attachEditorDomListeners = () => {
   (editorRef.value as any)._keyUpHandler = handleKeyUp;
   (editorRef.value as any)._keyDownHandler = handleKeyDown;
   (editorRef.value as any)._selectionChangeHandler = handleSelectionChange;
+  (editorRef.value as any)._imageOutsidePointerDownHandler = handleImageOutsidePointerDown;
+  (editorRef.value as any)._windowBlurHandler = handleWindowBlur;
   if (wrapperRef.value) {
     (wrapperRef.value as any)._wrapperLeaveHandler = handleWrapperMouseLeave;
   }

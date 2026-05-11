@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue';
 import RichTextEditor from './RichTextEditor.vue';
+import VditorRichEditor from './VditorRichEditor.vue';
 import HoverHandle from './HoverHandle.vue';
 import BlockPicker from './BlockPicker.vue';
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue';
@@ -11,12 +12,15 @@ import Toast from './Toast.vue';
 import { ElMessageBox } from 'element-plus';
 import { VueDraggable } from 'vue-draggable-plus';
 import type { Block, BlockTag, GraphData } from '@/api/types';
+import { getPageContent } from '@/api/page';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
+import { useWorkspaceStore } from '@/stores/workspace';
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata';
 import { ensureExternalLinkResource } from '@/api/externalResource';
 
 type LinkDisplayMode = 'link' | 'image';
+type ReferenceTarget = { type: 'block' | 'page'; id: string };
 
 interface Props {
   contentList: Block[];
@@ -67,10 +71,14 @@ const emit = defineEmits<{
 }>();
 
 const registryStore = useBlockRegistryStore();
-const blockDragHandle = '.handle-dot';
+const workspaceStore = useWorkspaceStore();
+const blockDragHandle = '.block-handle .handle-dot';
 
 // 本地列表：VueDraggable 使用 v-model 操作此 ref，避免直接 mutate prop
 const localBlocks = ref<Block[]>([]);
+const referencedPageBlocks = ref<Record<string, Block[]>>({});
+const referencedPageLoading = ref<Record<string, boolean>>({});
+const referencedPageErrors = ref<Record<string, string>>({});
 
 // 引用块弹窗状态
 const showBlockPicker = ref(false);
@@ -88,6 +96,18 @@ const pendingX6RefInsert = ref<{
 } | null>(null);
 
 const blockRefs = ref<HTMLElement[]>([]);
+type BlockResizeEdge = 'right' | 'bottom' | 'corner';
+
+interface BlockResizeState {
+  position: number;
+  edge: BlockResizeEdge;
+  startX: number;
+  startY: number;
+  startWidth: number;
+  startHeight: number;
+  containerWidth: number;
+}
+
 /** 富文本编辑器实例（按块索引），用于提取时获取带格式的 Markdown */
 const richTextEditorRefs = ref<Record<number, {
   getSelectionAsMarkdown?: () => string;
@@ -105,6 +125,7 @@ const hasSelection = ref(false);
 const selectedText = ref('');
 const selectedBlockIndex = ref(-1);
 const activeBlockIndex = ref(-1);
+const resizingBlock = ref<BlockResizeState | null>(null);
 const contentContainerRef = ref<HTMLElement | null>(null);
 const linkPopoverUrlInputRef = ref<HTMLInputElement | null>(null);
 const linkPopoverState = ref({
@@ -130,6 +151,12 @@ const blockHandleStyle = {
   '--hover-handle-top': 'calc(var(--block-shell-pad-y, 20px) + 6px)',
   '--hover-handle-transform': 'translateX(-50%)',
 } as const;
+const richTextBlockHandleStyle = {
+  '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
+  '--hover-handle-top': '4px',
+  '--hover-handle-transform': 'translateX(-50%)',
+  '--hover-handle-z-index': 12,
+} as const;
 
 const blockHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
@@ -143,6 +170,9 @@ const blockHandleItems = [
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
 ];
+
+const MIN_BLOCK_WIDTH = 260;
+const MIN_BLOCK_HEIGHT = 80;
 
 const childBlockHandleItems = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
@@ -427,16 +457,76 @@ const createNewContainerBlock = (position: number, layout: 'horizontal' | 'verti
 };
 
 // 创建引用块
-const createRefBlock = (refId: string): Block => ({
+const createRefBlock = (refId: string, refType: 'block' | 'page' = 'block'): Block => ({
   id: generateId(),
   type: 'ref',
   refId,
+  refType,
 });
 
 const truncateText = (value: string, maxLength = 24): string => {
   const normalized = value.replace(/\s+/g, ' ').trim();
   if (!normalized) return '';
   return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}…` : normalized;
+};
+
+const findPageInTree = (pageId: string) => {
+  const walk = (nodes: typeof workspaceStore.pageTree): { id: string; title: string } | undefined => {
+    for (const page of nodes) {
+      if (page.id === pageId) return page;
+      const found = walk(page.children ?? []);
+      if (found) return found;
+    }
+    return undefined;
+  };
+
+  return walk(workspaceStore.pageTree);
+};
+
+const getPageRefTitle = (pageId: string): string => findPageInTree(pageId)?.title ?? '未知页面';
+
+const openReferencedPage = async (pageId: string) => {
+  await workspaceStore.selectPage(pageId);
+};
+
+const ensureReferencedPageLoaded = async (pageId: string) => {
+  if (!pageId || referencedPageBlocks.value[pageId] || referencedPageLoading.value[pageId]) return;
+
+  referencedPageLoading.value = {
+    ...referencedPageLoading.value,
+    [pageId]: true,
+  };
+  referencedPageErrors.value = {
+    ...referencedPageErrors.value,
+    [pageId]: '',
+  };
+
+  try {
+    const blocks = await getPageContent(pageId);
+    referencedPageBlocks.value = {
+      ...referencedPageBlocks.value,
+      [pageId]: blocks,
+    };
+    registryStore.registerBlocks(blocks, pageId, getPageRefTitle(pageId));
+  } catch (error) {
+    referencedPageErrors.value = {
+      ...referencedPageErrors.value,
+      [pageId]: error instanceof Error ? error.message : '页面内容加载失败',
+    };
+  } finally {
+    referencedPageLoading.value = {
+      ...referencedPageLoading.value,
+      [pageId]: false,
+    };
+  }
+};
+
+const renderReferencedBlockText = (block: Block): string => {
+  if (block.type === 'x6') return block.title?.trim() || '画板';
+  if (block.type === 'table') return block.title?.trim() || '表格';
+  if (block.type === 'line') return block.title?.trim() || '时间轴';
+  if (block.type === 'container') return block.title?.trim() || '容器';
+  return block.content ?? '';
 };
 
 const getRefPreviewText = (refId: string): string => {
@@ -785,8 +875,10 @@ const requestX6RefInsert = (position: number, payload: X6InsertRefRequestPayload
 };
 
 // 选中引用源后插入 ref 块
-const onRefBlockSelected = (refId: string) => {
+const onRefBlockSelected = (target: ReferenceTarget) => {
+  const refId = target.id;
   if (pendingX6RefInsert.value) {
+    if (target.type !== 'block') return;
     const { position, x, y } = pendingX6RefInsert.value;
     const sourceBlock = registryStore.getBlock(refId);
     updateBlockAtPosition(position, (block) => {
@@ -806,9 +898,10 @@ const onRefBlockSelected = (refId: string) => {
 
   const position = pendingRefInsertPosition.value;
   if (position >= 0) {
+    const refBlock = createRefBlock(refId, target.type);
     if (pendingRichTextSplitInsert.value) {
       const { beforeContent, afterContent } = pendingRichTextSplitInsert.value;
-      const blocksToInsert = buildSplitReplacementBlocks(beforeContent, createRefBlock(refId), afterContent);
+      const blocksToInsert = buildSplitReplacementBlocks(beforeContent, refBlock, afterContent);
 
       // Auto-focus trailing richtext block when cursor was at the end
       if (!hasMeaningfulRichTextContent(afterContent)) {
@@ -820,7 +913,7 @@ const onRefBlockSelected = (refId: string) => {
 
       replaceBlockAtPosition(position, blocksToInsert);
     } else {
-      insertBlock(position, createRefBlock(refId));
+      insertBlock(position, refBlock);
     }
   }
   pendingRefInsertPosition.value = -1;
@@ -870,6 +963,105 @@ const getBlockDisplayTitle = (block: Block, index: number): string => {
 const updateBlockTitle = (block: Block, title: string) => {
   block.title = title;
   emit('content-change', localBlocks.value);
+};
+
+const normalizeBlockWidth = (value: unknown): string | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `${Math.max(MIN_BLOCK_WIDTH, value)}px`;
+  }
+  if (typeof value !== 'string') return undefined;
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === 'auto') return undefined;
+  if (/^\d+(\.\d+)?%$/.test(trimmed)) {
+    const percent = Math.max(20, Math.min(100, Number.parseFloat(trimmed)));
+    return `${percent.toFixed(2).replace(/\.00$/, '')}%`;
+  }
+  if (/^\d+(\.\d+)?px$/.test(trimmed)) {
+    const pixels = Math.max(MIN_BLOCK_WIDTH, Number.parseFloat(trimmed));
+    return `${Math.round(pixels)}px`;
+  }
+
+  return undefined;
+};
+
+const getBlockLayoutStyle = (block: Block) => ({
+  flexBasis: normalizeBlockWidth(block.width) || '100%',
+  minHeight: typeof block.blockHeight === 'number' ? `${Math.max(MIN_BLOCK_HEIGHT, block.blockHeight)}px` : undefined,
+});
+
+const getContainerItemStyle = (block: Block) => ({
+  flexBasis: normalizeBlockWidth(block.width) || '260px',
+  minHeight: typeof block.blockHeight === 'number' ? `${Math.max(MIN_BLOCK_HEIGHT, block.blockHeight)}px` : undefined,
+});
+
+const commitBlockResize = (position: number, widthPx?: number, heightPx?: number) => {
+  const block = getBlockAtPosition(position);
+  if (!block || !resizingBlock.value) return;
+
+  const updates: Partial<Block> = {};
+  if (typeof widthPx === 'number') {
+    const maxWidth = Math.max(MIN_BLOCK_WIDTH, resizingBlock.value.containerWidth);
+    const width = Math.max(MIN_BLOCK_WIDTH, Math.min(maxWidth, widthPx));
+    const percent = Math.max(20, Math.min(100, (width / maxWidth) * 100));
+    updates.width = `${percent.toFixed(2)}%`;
+  }
+  if (typeof heightPx === 'number') {
+    updates.blockHeight = Math.max(MIN_BLOCK_HEIGHT, Math.round(heightPx));
+  }
+
+  updateBlockAtPosition(position, (source) => ({ ...source, ...updates }));
+};
+
+const startBlockResize = (event: MouseEvent, position: number, edge: BlockResizeEdge) => {
+  if (!props.editable) return;
+
+  const blockElement = blockRefs.value[position];
+  const containerElement = blockElement?.parentElement;
+  if (!blockElement || !containerElement) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  activeBlockIndex.value = position;
+
+  const rect = blockElement.getBoundingClientRect();
+  const containerRect = containerElement.getBoundingClientRect();
+  resizingBlock.value = {
+    position,
+    edge,
+    startX: event.clientX,
+    startY: event.clientY,
+    startWidth: rect.width,
+    startHeight: rect.height,
+    containerWidth: containerRect.width,
+  };
+
+  document.body.classList.add('tu-block-resizing');
+  document.addEventListener('mousemove', handleBlockResizeMove);
+  document.addEventListener('mouseup', stopBlockResize);
+};
+
+const handleBlockResizeMove = (event: MouseEvent) => {
+  const state = resizingBlock.value;
+  if (!state) return;
+
+  const nextWidth = state.edge === 'right' || state.edge === 'corner'
+    ? state.startWidth + event.clientX - state.startX
+    : undefined;
+  const nextHeight = state.edge === 'bottom' || state.edge === 'corner'
+    ? state.startHeight + event.clientY - state.startY
+    : undefined;
+
+  commitBlockResize(state.position, nextWidth, nextHeight);
+};
+
+const stopBlockResize = () => {
+  if (!resizingBlock.value) return;
+
+  resizingBlock.value = null;
+  document.body.classList.remove('tu-block-resizing');
+  document.removeEventListener('mousemove', handleBlockResizeMove);
+  document.removeEventListener('mouseup', stopBlockResize);
 };
 
 // 在指定位置插入新block
@@ -1151,6 +1343,27 @@ const handleRichTextLineInsert = (payload: RichTextLineInsertPayload, blockIndex
 
 const isNormalizing = ref(false);
 
+watch(
+  localBlocks,
+  (blocks) => {
+    const pageRefIds = new Set<string>();
+    const collect = (items: Block[]) => {
+      for (const block of items) {
+        if (block.type === 'ref' && block.refType === 'page' && block.refId) {
+          pageRefIds.add(block.refId);
+        }
+        if (block.children?.length) collect(block.children);
+      }
+    };
+
+    collect(blocks);
+    pageRefIds.forEach((pageId) => {
+      void ensureReferencedPageLoaded(pageId);
+    });
+  },
+  { deep: true, immediate: true },
+);
+
 watch(showBlockPicker, (visible) => {
   if (visible) return;
   blockPickerInitialTypeFilter.value = 'all';
@@ -1196,7 +1409,8 @@ watch(
       block.type !== 'line' &&
       block.type !== 'x6' &&
       block.type !== 'ref' &&
-      block.type !== 'container'
+      block.type !== 'container' &&
+      block.type !== 'table'
     );
     if (unknownBlocks.length > 0) {
       unknownBlocks.forEach(block => console.log('发现未知类型的block:', block));
@@ -1227,6 +1441,9 @@ onBeforeUnmount(() => {
   // 移除选择事件监听器
   document.removeEventListener('selectionchange', checkSelection);
   document.removeEventListener('paste', handleGlobalPaste, true);
+  document.removeEventListener('mousemove', handleBlockResizeMove);
+  document.removeEventListener('mouseup', stopBlockResize);
+  document.body.classList.remove('tu-block-resizing');
   // 销毁同步管理器，清理定时器
   blockSyncManager.destroy();
 });
@@ -1521,18 +1738,7 @@ const handleContentContainerClick = (event: MouseEvent) => {
   if (!target) return;
   if (target.closest('.content-wrapper, .block-handle, .handle-menu')) return;
 
-  const blocks = localBlocks.value;
-  if (blocks.length === 0) {
-    insertBlock(0, createNewRichTextBlock());
-    return;
-  }
-
-  const lastBlock = blocks[blocks.length - 1];
-  if (isRichTextBlock(lastBlock)) {
-    richTextEditorRefs.value[blocks.length - 1]?.focusEditor?.();
-  } else {
-    insertBlock(blocks.length, createNewRichTextBlock());
-  }
+  activeBlockIndex.value = -1;
 };
 
 // 获取block的属性，排除id和type
@@ -1655,7 +1861,9 @@ const getBlockProperties = (block: Block) => {
           class="content-wrapper"
           :class="{
             'content-wrapper--richtext': isRichTextBlock(block),
+            'content-wrapper--active': activeBlockIndex === index,
           }"
+          :style="getBlockLayoutStyle(block)"
           :data-block-index="index"
           :data-block-id="block.id"
           :ref="(el) => { if(el) blockRefs[index] = el as HTMLElement }"
@@ -1668,6 +1876,14 @@ const getBlockProperties = (block: Block) => {
             v-if="editable && !isRichTextBlock(block)"
             class="block-handle"
             :style="blockHandleStyle"
+            :items="blockHandleItems"
+            :drag-cursor="true"
+            @select="(action) => handleBlockHandleSelect(action, index)"
+          />
+          <HoverHandle
+            v-else-if="editable"
+            class="block-handle block-handle--richtext"
+            :style="richTextBlockHandleStyle"
             :items="blockHandleItems"
             :drag-cursor="true"
             @select="(action) => handleBlockHandleSelect(action, index)"
@@ -1700,6 +1916,27 @@ const getBlockProperties = (block: Block) => {
             </span>
           </button>
 
+          <template v-if="editable && activeBlockIndex === index">
+            <button
+              type="button"
+              class="block-resize-handle block-resize-handle--right"
+              aria-label="调整块宽度"
+              @mousedown="startBlockResize($event, index, 'right')"
+            />
+            <button
+              type="button"
+              class="block-resize-handle block-resize-handle--bottom"
+              aria-label="调整块高度"
+              @mousedown="startBlockResize($event, index, 'bottom')"
+            />
+            <button
+              type="button"
+              class="block-resize-handle block-resize-handle--corner"
+              aria-label="调整块尺寸"
+              @mousedown="startBlockResize($event, index, 'corner')"
+            />
+          </template>
+
           <!-- 容器块 -->
           <template v-if="block.type === 'container' && block.children">
             <div class="container-block" :class="`container-${block.layout || 'vertical'}`">
@@ -1720,11 +1957,14 @@ const getBlockProperties = (block: Block) => {
                   v-for="(childBlock, childIndex) in block.children"
                   :key="childBlock.id"
                   class="container-item"
-                  :style="{ width: childBlock.width || 'auto' }"
+                  :style="getContainerItemStyle(childBlock)"
                 >
                   <div
                     class="content-wrapper"
-                    :class="{ 'content-wrapper--richtext': isRichTextBlock(childBlock) }"
+                    :class="{
+                      'content-wrapper--richtext': isRichTextBlock(childBlock),
+                      'content-wrapper--active': activeBlockIndex === index * 100 + childIndex,
+                    }"
                     :data-block-index="index * 100 + childIndex"
                     :data-block-id="childBlock.id"
                     :ref="(el) => { if(el) blockRefs[index * 100 + childIndex] = el as HTMLElement }"
@@ -1737,6 +1977,14 @@ const getBlockProperties = (block: Block) => {
                       v-if="editable && !isRichTextBlock(childBlock)"
                       class="block-handle"
                       :style="blockHandleStyle"
+                      :items="childBlockHandleItems"
+                      :drag-cursor="true"
+                      @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
+                    />
+                    <HoverHandle
+                      v-else-if="editable"
+                      class="block-handle block-handle--richtext"
+                      :style="richTextBlockHandleStyle"
                       :items="childBlockHandleItems"
                       :drag-cursor="true"
                       @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
@@ -1768,6 +2016,27 @@ const getBlockProperties = (block: Block) => {
                         {{ tag.label }}
                       </span>
                     </button>
+
+                    <template v-if="editable && activeBlockIndex === index * 100 + childIndex">
+                      <button
+                        type="button"
+                        class="block-resize-handle block-resize-handle--right"
+                        aria-label="调整块宽度"
+                        @mousedown="startBlockResize($event, index * 100 + childIndex, 'right')"
+                      />
+                      <button
+                        type="button"
+                        class="block-resize-handle block-resize-handle--bottom"
+                        aria-label="调整块高度"
+                        @mousedown="startBlockResize($event, index * 100 + childIndex, 'bottom')"
+                      />
+                      <button
+                        type="button"
+                        class="block-resize-handle block-resize-handle--corner"
+                        aria-label="调整块尺寸"
+                        @mousedown="startBlockResize($event, index * 100 + childIndex, 'corner')"
+                      />
+                    </template>
 
                     <!-- 根据block类型动态渲染不同组件 -->
                     <template v-if="isRichTextBlock(childBlock)">
@@ -1819,6 +2088,47 @@ const getBlockProperties = (block: Block) => {
                     />
                     <template v-else-if="childBlock.type === 'ref' && childBlock.refId">
                       <div class="ref-block-wrap">
+                        <div v-if="childBlock.refType === 'page'" class="page-ref-card">
+                          <button type="button" class="page-ref-card__header" @click="openReferencedPage(childBlock.refId)">
+                            <span class="page-ref-card__label">页面引用</span>
+                            <span class="page-ref-card__title">{{ getPageRefTitle(childBlock.refId) }}</span>
+                          </button>
+                          <div v-if="referencedPageLoading[childBlock.refId]" class="page-ref-card__status">正在加载页面内容...</div>
+                          <div v-else-if="referencedPageErrors[childBlock.refId]" class="page-ref-card__status page-ref-card__status--error">
+                            {{ referencedPageErrors[childBlock.refId] }}
+                          </div>
+                          <div v-else class="page-ref-content">
+                            <div v-if="(referencedPageBlocks[childBlock.refId] ?? []).length === 0" class="page-ref-card__status">空页面</div>
+                            <template
+                              v-for="refPageBlock in referencedPageBlocks[childBlock.refId] ?? []"
+                              :key="refPageBlock.id"
+                            >
+                              <VditorRichEditor
+                                v-if="isRichTextBlock(refPageBlock)"
+                                :model-value="refPageBlock.content ?? ''"
+                                :editable="false"
+                                class="block-content page-ref-content__block"
+                              />
+                              <X6Component
+                                v-else-if="refPageBlock.type === 'x6'"
+                                :graphData="refPageBlock.graphData"
+                                :editable="false"
+                                :block-actions-enabled="false"
+                                class="block-content board-content page-ref-content__block"
+                              />
+                              <TableBlock
+                                v-else-if="refPageBlock.type === 'table'"
+                                :data="refPageBlock.tableData"
+                                :editable="false"
+                                class="block-content page-ref-content__block"
+                              />
+                              <div v-else-if="refPageBlock.type !== 'ref'" class="page-ref-content__fallback">
+                                {{ renderReferencedBlockText(refPageBlock) }}
+                              </div>
+                            </template>
+                          </div>
+                        </div>
+                        <template v-else>
                         <div class="ref-block-badge">
                           🔗 引用自：{{ registryStore.getMeta(childBlock.refId)?.pageTitle ?? '未知页面' }}
                         </div>
@@ -1841,6 +2151,7 @@ const getBlockProperties = (block: Block) => {
                             @content-change="(c: string) => registryStore.updateContent(childBlock.refId!, c)"
                             class="block-content"
                           />
+                        </template>
                         </template>
                       </div>
                     </template>
@@ -1914,6 +2225,47 @@ const getBlockProperties = (block: Block) => {
           <!-- 引用块 -->
           <template v-else-if="block.type === 'ref' && block.refId">
             <div class="ref-block-wrap">
+              <div v-if="block.refType === 'page'" class="page-ref-card">
+                <button type="button" class="page-ref-card__header" @click="openReferencedPage(block.refId)">
+                  <span class="page-ref-card__label">页面引用</span>
+                  <span class="page-ref-card__title">{{ getPageRefTitle(block.refId) }}</span>
+                </button>
+                <div v-if="referencedPageLoading[block.refId]" class="page-ref-card__status">正在加载页面内容...</div>
+                <div v-else-if="referencedPageErrors[block.refId]" class="page-ref-card__status page-ref-card__status--error">
+                  {{ referencedPageErrors[block.refId] }}
+                </div>
+                <div v-else class="page-ref-content">
+                  <div v-if="(referencedPageBlocks[block.refId] ?? []).length === 0" class="page-ref-card__status">空页面</div>
+                  <template
+                    v-for="refPageBlock in referencedPageBlocks[block.refId] ?? []"
+                    :key="refPageBlock.id"
+                  >
+                    <VditorRichEditor
+                      v-if="isRichTextBlock(refPageBlock)"
+                      :model-value="refPageBlock.content ?? ''"
+                      :editable="false"
+                      class="block-content page-ref-content__block"
+                    />
+                    <X6Component
+                      v-else-if="refPageBlock.type === 'x6'"
+                      :graphData="refPageBlock.graphData"
+                      :editable="false"
+                      :block-actions-enabled="false"
+                      class="block-content board-content page-ref-content__block"
+                    />
+                    <TableBlock
+                      v-else-if="refPageBlock.type === 'table'"
+                      :data="refPageBlock.tableData"
+                      :editable="false"
+                      class="block-content page-ref-content__block"
+                    />
+                    <div v-else-if="refPageBlock.type !== 'ref'" class="page-ref-content__fallback">
+                      {{ renderReferencedBlockText(refPageBlock) }}
+                    </div>
+                  </template>
+                </div>
+              </div>
+              <template v-else>
               <div class="ref-block-badge">
                 🔗 引用自：{{ registryStore.getMeta(block.refId)?.pageTitle ?? '未知页面' }}
               </div>
@@ -1936,6 +2288,7 @@ const getBlockProperties = (block: Block) => {
                   @content-change="(c: string) => registryStore.updateContent(block.refId!, c)"
                   class="block-content"
                 />
+              </template>
               </template>
             </div>
           </template>
@@ -1960,6 +2313,8 @@ const getBlockProperties = (block: Block) => {
     <BlockPicker
       v-model:visible="showBlockPicker"
       :initial-type-filter="blockPickerInitialTypeFilter"
+      :pages="workspaceStore.pageTree"
+      :current-page-id="workspaceStore.currentPageId"
       @select="onRefBlockSelected"
     />
 
@@ -2156,7 +2511,10 @@ const getBlockProperties = (block: Block) => {
 
 .blocks-list {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 8px;
   flex: 1;
   min-height: 100%;
 }
@@ -2166,7 +2524,10 @@ const getBlockProperties = (block: Block) => {
   --block-handle-gutter: 36px;
   --block-shell-pad-x: 20px;
   --block-shell-pad-y: 20px;
-  margin-bottom: 8px;
+  flex: 0 0 100%;
+  min-width: 260px;
+  box-sizing: border-box;
+  margin-bottom: 0;
   padding: var(--block-shell-pad-y) var(--block-shell-pad-x) var(--block-shell-pad-y) calc(var(--block-shell-pad-x) + var(--block-handle-gutter));
   border: 1px solid #e0e0e0;
   border-radius: 8px;
@@ -2181,6 +2542,11 @@ const getBlockProperties = (block: Block) => {
   box-shadow: 0 2px 8px rgba(24, 144, 255, 0.1);
 }
 
+.content-wrapper--active {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.14);
+}
+
 /* 富文本块不显示外边框 */
 .content-wrapper--richtext {
   border: none;
@@ -2188,6 +2554,7 @@ const getBlockProperties = (block: Block) => {
   --block-content-pad-y: 10px;
   --block-content-pad-x: 15px;
   padding: 0;
+  min-height: 44px;
 }
 .content-wrapper--richtext:hover {
   border: none;
@@ -2200,6 +2567,11 @@ const getBlockProperties = (block: Block) => {
 }
 .content-wrapper--richtext:focus::before {
   display: none;
+}
+
+.content-wrapper--richtext.content-wrapper--active {
+  border: 1px solid rgba(22, 119, 255, 0.35);
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1);
 }
 
 .content-wrapper:focus {
@@ -2311,6 +2683,52 @@ const getBlockProperties = (block: Block) => {
   background: #fafafa;
 }
 
+.block-resize-handle {
+  position: absolute;
+  z-index: 20;
+  border: 1px solid #1677ff;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.18);
+  opacity: 0.92;
+}
+
+.block-resize-handle--right {
+  top: 50%;
+  right: -6px;
+  width: 10px;
+  height: 36px;
+  cursor: ew-resize;
+  transform: translateY(-50%);
+}
+
+.block-resize-handle--bottom {
+  bottom: -6px;
+  left: 50%;
+  width: 44px;
+  height: 10px;
+  cursor: ns-resize;
+  transform: translateX(-50%);
+}
+
+.block-resize-handle--corner {
+  right: -7px;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+:global(.tu-block-resizing) {
+  cursor: nwse-resize;
+  user-select: none;
+}
+
+:global(.tu-block-resizing iframe),
+:global(.tu-block-resizing textarea),
+:global(.tu-block-resizing [contenteditable='true']) {
+  pointer-events: none;
+}
 
 .unknown-block {
   min-height: 100px;
@@ -2395,9 +2813,85 @@ const getBlockProperties = (block: Block) => {
   user-select: none;
 }
 
+.page-ref-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.page-ref-card__header {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.page-ref-card__header:hover .page-ref-card__title {
+  color: #0958d9;
+}
+
+.page-ref-card__label {
+  font-size: 11px;
+  color: #1677ff;
+  user-select: none;
+}
+
+.page-ref-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f1f1f;
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.page-ref-card__status {
+  padding: 8px 0;
+  font-size: 12px;
+  color: #8c8c8c;
+}
+
+.page-ref-card__status--error {
+  color: #cf1322;
+}
+
+.page-ref-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #d6e4ff;
+}
+
+.page-ref-content__block {
+  background: #fff;
+  border-radius: 6px;
+}
+
+.page-ref-content__fallback {
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #fff;
+  color: #595959;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* 左侧悬浮手柄样式 */
 .block-handle {
   opacity: 0;
+}
+
+.block-handle--richtext {
+  --hover-handle-z-index: 12;
 }
 
 .block-handle--always {
@@ -2431,7 +2925,7 @@ const getBlockProperties = (block: Block) => {
   background: #f0f7ff !important;
   border: 2px dashed #1890ff !important;
   opacity: 0.6 !important;
-  margin: 8px 0 !important;
+  margin: 0 !important;
   border-radius: 8px !important;
 }
 
@@ -2457,8 +2951,14 @@ const getBlockProperties = (block: Block) => {
 }
 
 .container-item {
-  flex: 1;
+  flex: 1 1 260px;
   min-width: 200px;
+}
+
+.container-item > .content-wrapper {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
 }
 
 /* 水平布局时的拖拽样式 */

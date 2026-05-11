@@ -1,0 +1,124 @@
+export type ProductFeatureStatus =
+  | 'idea'
+  | 'design'
+  | 'development'
+  | 'testing'
+  | 'released'
+  | 'paused';
+
+export interface ProductFeatureStatusOption {
+  value: ProductFeatureStatus;
+  label: string;
+  tone: 'info' | 'primary' | 'warning' | 'success' | 'danger';
+}
+
+export interface ProductFeature {
+  id: string;
+  name: string;
+  module: string;
+  description: string;
+  status: ProductFeatureStatus;
+  owner?: string;
+  note?: string;
+  source?: 'catalog' | 'local';
+}
+
+export const productFeatureStatuses: ProductFeatureStatusOption[] = [
+  { value: 'idea', label: '构想', tone: 'info' },
+  { value: 'design', label: '设计中', tone: 'primary' },
+  { value: 'development', label: '开发中', tone: 'warning' },
+  { value: 'testing', label: '验证中', tone: 'warning' },
+  { value: 'released', label: '已发布', tone: 'success' },
+  { value: 'paused', label: '暂停', tone: 'danger' },
+];
+
+export const productFeatureCatalog: ProductFeature[] = [
+  {
+    id: 'workspace-knowledge-pages',
+    module: '知识库',
+    name: '知识库与页面树',
+    description: '管理知识库、页面层级和当前工作区内容。',
+    status: 'released',
+    owner: 'Product',
+  },
+  {
+    id: 'page-block-editor',
+    module: '编辑器',
+    name: '块编辑页面',
+    description: '以块为单位编辑页面内容，支持块选择、排序、提取和保存。',
+    status: 'released',
+    owner: 'Editor',
+  },
+  {
+    id: 'rich-text-block',
+    module: '编辑器',
+    name: '富文本块',
+    description: '基于 Vditor 编辑和渲染 Markdown/HTML 内容。',
+    status: 'released',
+    owner: 'Editor',
+  },
+  {
+    id: 'table-block',
+    module: '编辑器',
+    name: '表格块',
+    description: '文档表格块，支持键盘加行、行列选择、边框插入和富文本单元格。',
+    status: 'development',
+    owner: 'Editor',
+  },
+  {
+    id: 'canvas-block',
+    module: '编辑器',
+    name: '画板块',
+    description: '图形画板节点，支持节点富文本内容和图形数据保存。',
+    status: 'development',
+    owner: 'Editor',
+  },
+  {
+    id: 'link-insert',
+    module: '外部资源',
+    name: '插入链接',
+    description: '从操作栏或粘贴识别 URL，插入 Markdown 链接并登记外部资源。',
+    status: 'testing',
+    owner: 'Resource',
+  },
+  {
+    id: 'network-image-tools',
+    module: '外部资源',
+    name: '网络图片工具',
+    description: '识别图片 URL，以 HTML 图片插入并提供宽度调整工具。',
+    status: 'development',
+    owner: 'Resource',
+  },
+  {
+    id: 'external-resource-manager',
+    module: '外部资源',
+    name: '外部资源管理',
+    description: '管理资源类型、抽象归类 Work 和具体资源 Item。',
+    status: 'testing',
+    owner: 'Resource',
+  },
+  {
+    id: 'local-file-sync',
+    module: '存储',
+    name: '本地文件绑定保存',
+    description: '检测页面绑定的本地文件并展示保存状态。',
+    status: 'testing',
+    owner: 'Storage',
+  },
+  {
+    id: 'mock-backend-switch',
+    module: '开发者模式',
+    name: '数据源切换',
+    description: '在 Mock 数据和后端接口之间切换，并支持重置 Mock 数据。',
+    status: 'released',
+    owner: 'Dev',
+  },
+  {
+    id: 'product-feature-management',
+    module: '开发者模式',
+    name: '产品功能管理',
+    description: '从功能维度查看当前产品能力，并维护开发流程状态。',
+    status: 'development',
+    owner: 'Product',
+  },
+];

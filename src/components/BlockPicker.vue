@@ -2,20 +2,32 @@
 import { computed, ref, watch } from 'vue';
 import { ElDialog, ElEmpty, ElInput, ElScrollbar } from 'element-plus';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
-import type { BlockWithMeta } from '@/api/page';
+import type { BlockWithMeta, PageItem } from '@/api/page';
 
 type BlockFilterType = 'all' | 'text' | 'x6';
+type PickerItem =
+  | { kind: 'page'; page: PageItem; depth: number }
+  | { kind: 'block'; blockItem: BlockWithMeta };
+
+export interface ReferenceTarget {
+  type: 'block' | 'page';
+  id: string;
+}
 
 const props = withDefaults(defineProps<{
   visible: boolean;
   initialTypeFilter?: BlockFilterType;
+  pages?: PageItem[];
+  currentPageId?: string | null;
 }>(), {
   initialTypeFilter: 'all',
+  pages: () => [],
+  currentPageId: null,
 });
 
 const emit = defineEmits<{
   (e: 'update:visible', val: boolean): void;
-  (e: 'select', blockId: string): void;
+  (e: 'select', target: ReferenceTarget): void;
 }>();
 
 const registryStore = useBlockRegistryStore();
@@ -25,17 +37,29 @@ const typeFilter = ref<BlockFilterType>(props.initialTypeFilter);
 const filterOptions: Array<{ key: BlockFilterType; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'text', label: '文本' },
-  { key: 'x6', label: '默认画板' },
+  { key: 'x6', label: '画板' },
 ];
 
 const isTextBlock = (item: BlockWithMeta) => {
   return item.block.type === 'richtext' || item.block.type === 'richText';
 };
 
-const getTypeLabel = (item: BlockWithMeta) => {
-  if (item.block.type === 'x6') return '默认画板';
+const flattenPages = (nodes: PageItem[], depth = 0): Array<{ page: PageItem; depth: number }> => {
+  return nodes.flatMap((page) => [
+    { page, depth },
+    ...flattenPages(page.children ?? [], depth + 1),
+  ]);
+};
+
+const getBlockTypeLabel = (item: BlockWithMeta) => {
+  if (item.block.type === 'x6') return '画板';
   if (isTextBlock(item)) return '文本';
   return item.block.type;
+};
+
+const getTypeLabel = (item: PickerItem) => {
+  if (item.kind === 'page') return '页面';
+  return getBlockTypeLabel(item.blockItem);
 };
 
 const matchesTypeFilter = (item: BlockWithMeta) => {
@@ -44,6 +68,13 @@ const matchesTypeFilter = (item: BlockWithMeta) => {
   if (typeFilter.value === 'x6') return item.block.type === 'x6';
   return true;
 };
+
+const pageItems = computed<PickerItem[]>(() => {
+  if (typeFilter.value !== 'all') return [];
+  return flattenPages(props.pages)
+    .filter(({ page }) => page.id !== props.currentPageId)
+    .map(({ page, depth }) => ({ kind: 'page', page, depth }));
+});
 
 watch(
   () => props.visible,
@@ -55,43 +86,71 @@ watch(
   },
 );
 
-const filteredBlocks = computed<BlockWithMeta[]>(() => {
+const filteredItems = computed<PickerItem[]>(() => {
   const keyword = searchText.value.trim().toLowerCase();
-  const items = registryStore.getAllBlocks().filter(matchesTypeFilter);
+  const items: PickerItem[] = [
+    ...pageItems.value,
+    ...registryStore.getAllBlocks().filter(matchesTypeFilter).map((blockItem) => ({
+      kind: 'block',
+      blockItem,
+    }) satisfies PickerItem),
+  ];
 
   if (!keyword) return items;
 
-  return items.filter(({ block, pageTitle }) => {
+  return items.filter((item) => {
+    if (item.kind === 'page') {
+      return item.page.title.toLowerCase().includes(keyword)
+        || getTypeLabel(item).toLowerCase().includes(keyword);
+    }
+
+    const { block, pageTitle } = item.blockItem;
     return (block.content?.toLowerCase().includes(keyword) ?? false)
       || (block.title?.toLowerCase().includes(keyword) ?? false)
       || pageTitle.toLowerCase().includes(keyword)
-      || getTypeLabel({ block, pageId: '', pageTitle }).toLowerCase().includes(keyword);
+      || getTypeLabel(item).toLowerCase().includes(keyword);
   });
 });
 
-function onSelect(item: BlockWithMeta) {
-  emit('select', item.block.id);
+function getItemKey(item: PickerItem): string {
+  return item.kind === 'page' ? `page-${item.page.id}` : `block-${item.blockItem.block.id}`;
+}
+
+function onSelect(item: PickerItem) {
+  emit('select', item.kind === 'page'
+    ? { type: 'page', id: item.page.id }
+    : { type: 'block', id: item.blockItem.block.id });
   emit('update:visible', false);
 }
 
-function preview(item: BlockWithMeta): string {
-  if (item.block.type === 'x6') {
-    return item.block.title?.trim() || '默认画板';
+function preview(item: PickerItem): string {
+  if (item.kind === 'page') {
+    return `${'　'.repeat(item.depth)}${item.page.title}`;
   }
 
-  const content = item.block.content;
+  const block = item.blockItem.block;
+  if (block.type === 'x6') {
+    return block.title?.trim() || '画板';
+  }
+
+  const content = block.content;
   if (!content) return '空内容';
 
   const plain = content.replace(/[#*`>\-_\[\]]/g, '').trim();
   if (!plain) return '空内容';
-  return plain.length > 80 ? `${plain.slice(0, 80)}…` : plain;
+  return plain.length > 80 ? `${plain.slice(0, 80)}...` : plain;
+}
+
+function sourceText(item: PickerItem): string {
+  if (item.kind === 'page') return '页面引用';
+  return `来自：${item.blockItem.pageTitle}`;
 }
 </script>
 
 <template>
   <el-dialog
     :model-value="visible"
-    title="选择引用块"
+    title="选择引用目标"
     width="520px"
     @update:model-value="emit('update:visible', $event)"
   >
@@ -117,20 +176,22 @@ function preview(item: BlockWithMeta): string {
       </div>
 
       <el-scrollbar height="340px" class="picker-list-wrap">
-        <div v-if="filteredBlocks.length === 0" class="picker-empty">
-          <el-empty description="没有找到可引用的块" :image-size="60" />
+        <div v-if="filteredItems.length === 0" class="picker-empty">
+          <el-empty description="没有找到可引用的内容" :image-size="60" />
         </div>
 
         <div
-          v-for="item in filteredBlocks"
-          :key="item.block.id"
+          v-for="item in filteredItems"
+          :key="getItemKey(item)"
           class="picker-item"
           @click="onSelect(item)"
         >
           <div class="picker-item__preview">{{ preview(item) }}</div>
           <div class="picker-item__meta">
-            <span class="picker-item__type">{{ getTypeLabel(item) }}</span>
-            <span class="picker-item__page">来自：{{ item.pageTitle }}</span>
+            <span class="picker-item__type" :class="{ 'picker-item__type--page': item.kind === 'page' }">
+              {{ getTypeLabel(item) }}
+            </span>
+            <span class="picker-item__page">{{ sourceText(item) }}</span>
           </div>
         </div>
       </el-scrollbar>
@@ -223,6 +284,10 @@ function preview(item: BlockWithMeta): string {
   background: #1677ff;
   padding: 1px 6px;
   border-radius: 8px;
+}
+
+.picker-item__type--page {
+  background: #13a8a8;
 }
 
 .picker-item__page {

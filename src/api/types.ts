@@ -85,6 +85,7 @@ export interface Block {
   content?: string;
   metadata?: BlockMetadata;
   refId?: string;
+  refType?: 'block' | 'page';
   graphData?: GraphData;
   tableData?: TableBlockData;
   timelineData?: Array<{
