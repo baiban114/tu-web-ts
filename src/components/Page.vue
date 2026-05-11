@@ -108,6 +108,15 @@ interface BlockResizeState {
   containerWidth: number;
 }
 
+interface ContainerItemMoveState {
+  containerIndex: number;
+  childIndex: number;
+  startX: number;
+  startY: number;
+  startLeft: number;
+  startTop: number;
+}
+
 /** 富文本编辑器实例（按块索引），用于提取时获取带格式的 Markdown */
 const richTextEditorRefs = ref<Record<number, {
   getSelectionAsMarkdown?: () => string;
@@ -115,17 +124,20 @@ const richTextEditorRefs = ref<Record<number, {
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => void;
   updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
+  updateInsertedImageWidth?: (widthPercent: number) => boolean;
 }>>({});
 const markdownLinkCapableRefs = ref<Record<number, {
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => boolean | void;
   updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
+  updateInsertedImageWidth?: (widthPercent: number) => boolean;
 }>>({});
 const hasSelection = ref(false);
 const selectedText = ref('');
 const selectedBlockIndex = ref(-1);
 const activeBlockIndex = ref(-1);
 const resizingBlock = ref<BlockResizeState | null>(null);
+const movingContainerItem = ref<ContainerItemMoveState | null>(null);
 const contentContainerRef = ref<HTMLElement | null>(null);
 const linkPopoverUrlInputRef = ref<HTMLInputElement | null>(null);
 const linkPopoverState = ref({
@@ -164,8 +176,8 @@ const blockHandleItems = [
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
   { key: 'insert-table', icon: '▦', label: '插入表格' },
-  { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
-  { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
+  { key: 'insert-container', icon: '📦', label: '插入容器' },
+  { key: 'insert-task-panel', icon: '✅', label: '插入任务面板' },
   { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
@@ -205,6 +217,7 @@ const setRichTextEditorRef = (el: unknown, index: number) => {
       getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
       insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => void;
       updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
+      updateInsertedImageWidth?: (widthPercent: number) => boolean;
     };
   } else {
     delete richTextEditorRefs.value[index];
@@ -217,6 +230,7 @@ const setMarkdownLinkCapableRef = (el: unknown, index: number) => {
       getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
       insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => boolean | void;
       updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
+      updateInsertedImageWidth?: (widthPercent: number) => boolean;
     };
   } else {
     delete markdownLinkCapableRefs.value[index];
@@ -442,19 +456,51 @@ const createNewTableBlock = (): Block => ({
   },
 });
 
-// 创建新的容器块
-const createNewContainerBlock = (position: number, layout: 'horizontal' | 'vertical' = 'horizontal'): Block => {
+// 创建新的自由布局容器块
+const createNewContainerBlock = (position: number): Block => {
   return {
     id: generateId(),
     type: 'container',
-    title: `新的${layout === 'horizontal' ? '水平' : '垂直'}容器`,
-    layout,
+    title: '新的容器',
+    layout: 'free',
+    blockHeight: 360,
     children: [
-      createNewRichTextBlock(),
-      createNewRichTextBlock()
-    ]
+      {
+        ...createNewRichTextBlock(),
+        containerPosition: { x: 24, y: 24, z: 1 },
+        width: '320px',
+      },
+    ],
   };
 };
+
+const createContainerRichTextBlock = (
+  content: string,
+  x: number,
+  y: number,
+  width = '300px',
+  z = 1,
+): Block => ({
+  ...createRichTextBlockWithContent(content),
+  width,
+  containerPosition: { x, y, z },
+});
+
+const createTaskPanelContainerBlock = (): Block => ({
+  id: generateId(),
+  type: 'container',
+  title: '任务面板',
+  layout: 'free',
+  blockHeight: 520,
+  children: [
+    createContainerRichTextBlock('## 任务面板\n本周计划 / 任务看板', 24, 20, '360px', 1),
+    createContainerRichTextBlock('### 待办\n- [ ] 梳理需求\n- [ ] 拆分任务', 24, 104, '280px', 2),
+    createContainerRichTextBlock('### 进行中\n- [ ] 实现核心流程\n- [ ] 联调数据', 332, 104, '280px', 3),
+    createContainerRichTextBlock('### 已完成\n- [x] 创建项目结构\n- [x] 初始化页面', 640, 104, '280px', 4),
+    createContainerRichTextBlock('#### 风险\n- 阻塞项\n- 依赖确认', 24, 344, '280px', 5),
+    createContainerRichTextBlock('#### 下次同步\n时间：\n结论：', 332, 344, '280px', 6),
+  ],
+});
 
 // 创建引用块
 const createRefBlock = (refId: string, refType: 'block' | 'page' = 'block'): Block => ({
@@ -990,10 +1036,36 @@ const getBlockLayoutStyle = (block: Block) => ({
   minHeight: typeof block.blockHeight === 'number' ? `${Math.max(MIN_BLOCK_HEIGHT, block.blockHeight)}px` : undefined,
 });
 
-const getContainerItemStyle = (block: Block) => ({
-  flexBasis: normalizeBlockWidth(block.width) || '260px',
-  minHeight: typeof block.blockHeight === 'number' ? `${Math.max(MIN_BLOCK_HEIGHT, block.blockHeight)}px` : undefined,
-});
+const ensureContainerChildPosition = (block: Block, index: number): NonNullable<Block['containerPosition']> => {
+  if (!block.containerPosition) {
+    block.containerPosition = {
+      x: 24 + (index % 3) * 36,
+      y: 24 + Math.floor(index / 3) * 36,
+      z: index + 1,
+    };
+  }
+
+  return block.containerPosition;
+};
+
+const getContainerItemStyle = (block: Block, index = 0) => {
+  const position = ensureContainerChildPosition(block, index);
+  return {
+    left: `${Math.max(0, position.x)}px`,
+    top: `${Math.max(0, position.y)}px`,
+    zIndex: position.z ?? index + 1,
+    width: normalizeBlockWidth(block.width) || '320px',
+    minHeight: typeof block.blockHeight === 'number' ? `${Math.max(MIN_BLOCK_HEIGHT, block.blockHeight)}px` : undefined,
+  };
+};
+
+const normalizeContainerChildren = (container: Block) => {
+  container.children = container.children ?? [];
+  container.children.forEach((child, childIndex) => {
+    ensureContainerChildPosition(child, childIndex);
+    child.width = normalizeBlockWidth(child.width) || child.width || '320px';
+  });
+};
 
 const commitBlockResize = (position: number, widthPx?: number, heightPx?: number) => {
   const block = getBlockAtPosition(position);
@@ -1062,6 +1134,67 @@ const stopBlockResize = () => {
   document.body.classList.remove('tu-block-resizing');
   document.removeEventListener('mousemove', handleBlockResizeMove);
   document.removeEventListener('mouseup', stopBlockResize);
+};
+
+const startContainerItemMove = (event: MouseEvent, containerIndex: number, childIndex: number) => {
+  if (!props.editable) return;
+  const container = localBlocks.value[containerIndex];
+  const child = container?.children?.[childIndex];
+  if (!container || container.type !== 'container' || !child) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  activeBlockIndex.value = containerIndex * 100 + childIndex;
+
+  const position = ensureContainerChildPosition(child, childIndex);
+  movingContainerItem.value = {
+    containerIndex,
+    childIndex,
+    startX: event.clientX,
+    startY: event.clientY,
+    startLeft: position.x,
+    startTop: position.y,
+  };
+
+  document.body.classList.add('tu-block-resizing');
+  document.addEventListener('mousemove', handleContainerItemMove);
+  document.addEventListener('mouseup', stopContainerItemMove);
+};
+
+const handleContainerItemMove = (event: MouseEvent) => {
+  const state = movingContainerItem.value;
+  if (!state) return;
+
+  const container = localBlocks.value[state.containerIndex];
+  const child = container?.children?.[state.childIndex];
+  if (!container || container.type !== 'container' || !child) return;
+
+  const position = ensureContainerChildPosition(child, state.childIndex);
+  position.x = Math.max(0, Math.round(state.startLeft + event.clientX - state.startX));
+  position.y = Math.max(0, Math.round(state.startTop + event.clientY - state.startY));
+  emit('content-change', localBlocks.value);
+};
+
+const stopContainerItemMove = () => {
+  if (!movingContainerItem.value) return;
+
+  movingContainerItem.value = null;
+  document.body.classList.remove('tu-block-resizing');
+  document.removeEventListener('mousemove', handleContainerItemMove);
+  document.removeEventListener('mouseup', stopContainerItemMove);
+};
+
+const setContainerItemZ = (containerIndex: number, childIndex: number, mode: 'front' | 'back') => {
+  const container = localBlocks.value[containerIndex];
+  const child = container?.children?.[childIndex];
+  if (!container || container.type !== 'container' || !child) return;
+
+  normalizeContainerChildren(container);
+  const siblings = container.children ?? [];
+  const zValues = siblings.map((item, index) => ensureContainerChildPosition(item, index).z ?? index + 1);
+  const position = ensureContainerChildPosition(child, childIndex);
+  position.z = mode === 'front' ? Math.max(...zValues, 0) + 1 : Math.min(...zValues, 1) - 1;
+  emit('content-change', localBlocks.value);
 };
 
 // 在指定位置插入新block
@@ -1208,11 +1341,11 @@ const handleBlockHandleSelect = (action: string, position: number) => {
     case 'insert-table':
       insertBlock(insertPosition, createNewTableBlock());
       return;
-    case 'insert-container-horizontal':
-      insertBlock(insertPosition, createNewContainerBlock(insertPosition, 'horizontal'));
+    case 'insert-container':
+      insertBlock(insertPosition, createNewContainerBlock(insertPosition));
       return;
-    case 'insert-container-vertical':
-      insertBlock(insertPosition, createNewContainerBlock(insertPosition, 'vertical'));
+    case 'insert-task-panel':
+      insertBlock(insertPosition, createTaskPanelContainerBlock());
       return;
     case 'edit-tags':
       handleTagEditorRequest(position);
@@ -1331,7 +1464,7 @@ const handleRichTextLineInsert = (payload: RichTextLineInsertPayload, blockIndex
       insertedBlock = createNewTableBlock();
       break;
     case 'container':
-      insertedBlock = createNewContainerBlock(blockIndex + 1, layout === 'vertical' ? 'vertical' : 'horizontal');
+      insertedBlock = createNewContainerBlock(blockIndex + 1);
       break;
     default:
       return;
@@ -1729,6 +1862,13 @@ const handleDragEnd = () => {
   showToast('块已成功移动');
 };
 
+const handleContainerDragAdd = (containerIndex: number) => {
+  const container = localBlocks.value[containerIndex];
+  if (!container || container.type !== 'container') return;
+  normalizeContainerChildren(container);
+  emit('content-change', localBlocks.value);
+};
+
 const handleContentContainerClick = (event: MouseEvent) => {
   if (!props.editable) return;
 
@@ -1847,6 +1987,7 @@ const getBlockProperties = (block: Block) => {
         v-model="localBlocks"
         :handle="blockDragHandle"
         :animation="200"
+        :group="{ name: 'page-blocks', pull: true, put: true }"
         ghost-class="dragging-ghost"
         chosen-class="dragging-chosen"
         drag-class="dragging-drag"
@@ -1939,26 +2080,45 @@ const getBlockProperties = (block: Block) => {
 
           <!-- 容器块 -->
           <template v-if="block.type === 'container' && block.children">
-            <div class="container-block" :class="`container-${block.layout || 'vertical'}`">
+            <div class="container-block">
               <VueDraggable
+                class="container-canvas"
                 v-model="block.children"
                 :handle="blockDragHandle"
                 :animation="200"
+                :group="{ name: 'page-blocks', pull: true, put: true }"
                 ghost-class="dragging-ghost"
                 chosen-class="dragging-chosen"
                 drag-class="dragging-drag"
                 @end="handleDragEnd"
-                :direction="block.layout === 'horizontal' ? 'horizontal' : 'vertical'"
+                @add="() => handleContainerDragAdd(index)"
                 :scroll="true"
                 :scroll-sensitivity="30"
                 :scroll-speed="10"
+                :style="{ minHeight: `${Math.max(260, block.blockHeight ?? 360)}px` }"
               >
                 <div
                   v-for="(childBlock, childIndex) in block.children"
                   :key="childBlock.id"
                   class="container-item"
-                  :style="getContainerItemStyle(childBlock)"
+                  :style="getContainerItemStyle(childBlock, childIndex)"
                 >
+                  <button
+                    v-if="editable"
+                    type="button"
+                    class="container-item-move"
+                    aria-label="移动容器内块"
+                    @mousedown="startContainerItemMove($event, index, childIndex)"
+                  >
+                    ⋮⋮
+                  </button>
+                  <div
+                    v-if="editable && activeBlockIndex === index * 100 + childIndex"
+                    class="container-z-toolbar"
+                  >
+                    <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'front')">置顶</button>
+                    <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'back')">置底</button>
+                  </div>
                   <div
                     class="content-wrapper"
                     :class="{
@@ -2931,40 +3091,78 @@ const getBlockProperties = (block: Block) => {
 
 /* 容器块样式 */
 .container-block {
-  border: 2px solid #e0e0e0;
+  position: relative;
+  border: 2px solid #d9d9d9;
   border-radius: 8px;
-  padding: 16px;
   margin: 8px 0;
-  background: #fafafa;
+  background:
+    linear-gradient(#f0f0f0 1px, transparent 1px),
+    linear-gradient(90deg, #f0f0f0 1px, transparent 1px),
+    #fafafa;
+  background-size: 24px 24px;
+  overflow: auto;
 }
 
-.container-horizontal {
-  display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-
-.container-vertical {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.container-canvas {
+  position: relative;
+  min-width: 100%;
 }
 
 .container-item {
-  flex: 1 1 260px;
-  min-width: 200px;
+  position: absolute;
+  min-width: 220px;
+  box-sizing: border-box;
 }
 
 .container-item > .content-wrapper {
   width: 100%;
   height: 100%;
   min-width: 0;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(31, 35, 40, 0.08);
 }
 
-/* 水平布局时的拖拽样式 */
-.container-horizontal .sortable-ghost {
-  margin: 0 8px !important;
-  flex: 1;
-  min-width: 200px;
+.container-item-move {
+  position: absolute;
+  top: -10px;
+  left: 8px;
+  z-index: 20;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  color: #57606a;
+  cursor: grab;
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 6px;
+  box-shadow: 0 3px 10px rgba(31, 35, 40, 0.12);
+}
+
+.container-item-move:active {
+  cursor: grabbing;
+}
+
+.container-z-toolbar {
+  position: absolute;
+  top: -34px;
+  right: 0;
+  z-index: 21;
+  display: flex;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 3px 10px rgba(31, 35, 40, 0.12);
+}
+
+.container-z-toolbar button {
+  border: 0;
+  background: #f6f8fa;
+  border-radius: 4px;
+  padding: 3px 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: #24292f;
 }
 </style>

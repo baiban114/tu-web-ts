@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import VditorRichEditor from './VditorRichEditor.vue';
+import RichTextEditor from './RichTextEditor.vue';
 
 interface Props {
   nodeId: string;
@@ -26,6 +26,7 @@ const richEditorRef = ref<{
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
   updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+  updateInsertedImageWidth?: (widthPercent: number) => boolean;
 } | null>(null);
 
 const richOverlayStyle = computed<Record<string, string>>(() => ({
@@ -85,10 +86,16 @@ function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
   return richEditorRef.value?.updateInsertedLinkDisplay?.(display) ?? false;
 }
 
+function updateInsertedImageWidth(widthPercent: number): boolean {
+  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return false;
+  return richEditorRef.value?.updateInsertedImageWidth?.(widthPercent) ?? false;
+}
+
 defineExpose({
   getMarkdownLinkAnchor,
   insertMarkdownLink,
   updateInsertedLinkDisplay,
+  updateInsertedImageWidth,
 });
 </script>
 
@@ -99,16 +106,16 @@ defineExpose({
     :class="isEditing ? 'x6-node-overlay--rich-edit' : 'x6-node-overlay--rich-preview'"
     :style="richOverlayStyle"
   >
-    <VditorRichEditor
+    <RichTextEditor
       ref="richEditorRef"
-      :model-value="richContent"
-      :editing="isEditing"
+      :content="richContent"
       :editable="isEditable"
-      preview-class="x6-node-rich-preview"
-      editor-class="x6-node-rich-editor"
-      @update:model-value="(value) => emit('rich-change', value)"
-      @escape="emit('cancel')"
-      @focusout-editor="emit('cancel')"
+      :auto-focus="isEditing"
+      :line-handle-enabled="false"
+      compact
+      class="x6-node-rich-editor"
+      @content-change="(value: string) => emit('rich-change', value)"
+      @blur="emit('cancel')"
     />
   </div>
 
@@ -138,7 +145,7 @@ defineExpose({
 
 .x6-node-overlay--rich-preview {
   position: absolute;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 4px;
   pointer-events: none;
   z-index: 10;
@@ -147,12 +154,13 @@ defineExpose({
 .x6-node-overlay--rich-edit {
   position: absolute;
   pointer-events: auto;
-  overflow: hidden;
+  overflow: visible;
   z-index: 1001;
 }
 
-.x6-node-rich-preview {
-  overflow: hidden;
+.x6-node-rich-editor {
+  width: 100%;
+  height: 100%;
   padding: 8px 10px;
   font-size: 12px;
   box-sizing: border-box;
@@ -160,17 +168,20 @@ defineExpose({
   word-break: break-word;
 }
 
-.x6-node-rich-preview :deep(p) { margin: 0; }
-.x6-node-rich-preview :deep(h1),
-.x6-node-rich-preview :deep(h2),
-.x6-node-rich-preview :deep(h3) { margin: 0 0 2px; font-size: 14px; }
-.x6-node-rich-preview :deep(ul),
-.x6-node-rich-preview :deep(ol) { margin: 0; padding-left: 16px; }
-
-.x6-node-rich-editor {
+.x6-node-rich-editor :deep(.rich-text-editor-wrapper),
+.x6-node-rich-editor :deep(.rich-text-editor-container),
+.x6-node-rich-editor :deep(.editor-preview) {
   width: 100%;
   height: 100%;
+  min-height: 0;
 }
+
+.x6-node-rich-editor :deep(p) { margin: 0; }
+.x6-node-rich-editor :deep(h1),
+.x6-node-rich-editor :deep(h2),
+.x6-node-rich-editor :deep(h3) { margin: 0 0 2px; font-size: 14px; }
+.x6-node-rich-editor :deep(ul),
+.x6-node-rich-editor :deep(ol) { margin: 0; padding-left: 16px; }
 
 .x6-node-overlay--plain-edit {
   position: absolute;

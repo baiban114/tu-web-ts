@@ -86,6 +86,7 @@ const nodeOverlayRefs = ref<Record<string, {
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
   updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+  updateInsertedImageWidth?: (widthPercent: number) => boolean;
 }>>({});
 
 const canUndo = ref(false);
@@ -658,6 +659,7 @@ function setNodeOverlayRef(el: unknown, nodeId: string) {
       getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
       insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => boolean;
       updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+      updateInsertedImageWidth?: (widthPercent: number) => boolean;
     };
   } else {
     delete nodeOverlayRefs.value[nodeId];
@@ -677,6 +679,11 @@ function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
 function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
   if (!isEditable.value || !editingNodeId.value) return false;
   return nodeOverlayRefs.value[editingNodeId.value]?.updateInsertedLinkDisplay?.(display) ?? false;
+}
+
+function updateInsertedImageWidth(widthPercent: number): boolean {
+  if (!isEditable.value || !editingNodeId.value) return false;
+  return nodeOverlayRefs.value[editingNodeId.value]?.updateInsertedImageWidth?.(widthPercent) ?? false;
 }
 
 // --- Edge inline editing helpers ---
@@ -1702,6 +1709,7 @@ defineExpose({
   getMarkdownLinkAnchor,
   insertMarkdownLink,
   updateInsertedLinkDisplay,
+  updateInsertedImageWidth,
 });
 </script>
 

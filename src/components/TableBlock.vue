@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
-import VditorRichEditor from './VditorRichEditor.vue';
+import RichTextEditor from './RichTextEditor.vue';
 
 export interface TableBlockData {
   textMode?: 'plain' | 'rich';
   headers: string[];
   rows: string[][];
+  columnWidths?: number[];
+  rowHeights?: number[];
 }
 
 type BorderDirection = 'top' | 'bottom' | 'left' | 'right';
@@ -20,6 +22,19 @@ interface HoverBorder {
   column: number | null;
   direction: BorderDirection;
 }
+
+interface ResizeState {
+  kind: 'column' | 'row';
+  index: number;
+  startClientX: number;
+  startClientY: number;
+  startSize: number;
+}
+
+const MIN_COLUMN_WIDTH = 80;
+const MIN_ROW_HEIGHT = 38;
+const DEFAULT_COLUMN_WIDTH = 160;
+const DEFAULT_ROW_HEIGHT = 38;
 
 const props = withDefaults(defineProps<{
   data?: TableBlockData;
@@ -39,22 +54,35 @@ const hoveredColumn = ref<number | null>(null);
 const selectedRow = ref<number | null>(null);
 const selectedColumn = ref<number | null>(null);
 const hoverBorder = ref<HoverBorder | null>(null);
+const resizing = ref<ResizeState | null>(null);
 const tableBlockRef = ref<HTMLElement | null>(null);
 const cellRefs = ref<Record<string, HTMLTextAreaElement>>({});
 const richCellRefs = ref<Record<string, {
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
   updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+  updateInsertedImageWidth?: (widthPercent: number) => boolean;
 }>>({});
 
 const normalizedData = computed<TableBlockData>(() => {
   const headers = props.data?.headers?.length ? props.data.headers : ['列 1', '列 2', '列 3'];
   const sourceRows = props.data?.rows?.length ? props.data.rows : [['', '', ''], ['', '', '']];
   const rows = sourceRows.map((row) => headers.map((_, index) => row[index] ?? ''));
+  const normalizedRows = rows.length ? rows : [headers.map(() => '')];
+  const columnWidths = headers.map((_, index) => Math.max(
+    MIN_COLUMN_WIDTH,
+    props.data?.columnWidths?.[index] ?? DEFAULT_COLUMN_WIDTH,
+  ));
+  const rowHeights = normalizedRows.map((_, index) => Math.max(
+    MIN_ROW_HEIGHT,
+    props.data?.rowHeights?.[index] ?? DEFAULT_ROW_HEIGHT,
+  ));
   return {
     textMode: props.data?.textMode === 'rich' ? 'rich' : 'plain',
     headers: [...headers],
-    rows: rows.length ? rows : [headers.map(() => '')],
+    rows: normalizedRows,
+    columnWidths,
+    rowHeights,
   };
 });
 
@@ -82,6 +110,7 @@ function setRichCellRef(el: unknown, row: number, column: number) {
       getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
       insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
       updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
+      updateInsertedImageWidth?: (widthPercent: number) => boolean;
     };
   } else {
     delete richCellRefs.value[key];
@@ -96,12 +125,110 @@ function focusCell(row: number, column: number) {
   });
 }
 
+function getColumnWidth(columnIndex: number): number {
+  return normalizedData.value.columnWidths?.[columnIndex] ?? DEFAULT_COLUMN_WIDTH;
+}
+
+function getRowHeight(rowIndex: number): number {
+  return normalizedData.value.rowHeights?.[rowIndex] ?? DEFAULT_ROW_HEIGHT;
+}
+
+function columnStyle(columnIndex: number): Record<string, string> {
+  const width = `${getColumnWidth(columnIndex)}px`;
+  return {
+    width,
+    minWidth: width,
+  };
+}
+
+function rowStyle(rowIndex: number): Record<string, string> {
+  return {
+    height: `${getRowHeight(rowIndex)}px`,
+  };
+}
+
 function commit(next: TableBlockData) {
+  const columnWidths = next.headers.map((_, index) => Math.max(
+    MIN_COLUMN_WIDTH,
+    next.columnWidths?.[index] ?? normalizedData.value.columnWidths?.[index] ?? DEFAULT_COLUMN_WIDTH,
+  ));
+  const normalizedRows = next.rows.map((row) => next.headers.map((_, index) => row[index] ?? ''));
+  const rowHeights = normalizedRows.map((_, index) => Math.max(
+    MIN_ROW_HEIGHT,
+    next.rowHeights?.[index] ?? normalizedData.value.rowHeights?.[index] ?? DEFAULT_ROW_HEIGHT,
+  ));
+
   emit('change', {
     textMode: next.textMode === 'rich' ? 'rich' : 'plain',
     headers: [...next.headers],
-    rows: next.rows.map((row) => next.headers.map((_, index) => row[index] ?? '')),
+    rows: normalizedRows,
+    columnWidths,
+    rowHeights,
   });
+}
+
+function commitColumnWidth(columnIndex: number, width: number) {
+  const next = normalizedData.value;
+  next.columnWidths = [...(next.columnWidths ?? [])];
+  next.columnWidths[columnIndex] = Math.max(MIN_COLUMN_WIDTH, Math.round(width));
+  commit(next);
+}
+
+function commitRowHeight(rowIndex: number, height: number) {
+  const next = normalizedData.value;
+  next.rowHeights = [...(next.rowHeights ?? [])];
+  next.rowHeights[rowIndex] = Math.max(MIN_ROW_HEIGHT, Math.round(height));
+  commit(next);
+}
+
+function stopResize() {
+  if (!resizing.value) return;
+  resizing.value = null;
+  document.removeEventListener('mousemove', handleResizeMouseMove);
+  document.removeEventListener('mouseup', stopResize);
+}
+
+function handleResizeMouseMove(event: MouseEvent) {
+  const state = resizing.value;
+  if (!state) return;
+
+  if (state.kind === 'column') {
+    commitColumnWidth(state.index, state.startSize + event.clientX - state.startClientX);
+  } else {
+    commitRowHeight(state.index, state.startSize + event.clientY - state.startClientY);
+  }
+}
+
+function startColumnResize(event: MouseEvent, columnIndex: number) {
+  if (!props.editable) return;
+  event.preventDefault();
+  event.stopPropagation();
+  stopResize();
+  resizing.value = {
+    kind: 'column',
+    index: columnIndex,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startSize: getColumnWidth(columnIndex),
+  };
+  document.addEventListener('mousemove', handleResizeMouseMove);
+  document.addEventListener('mouseup', stopResize);
+}
+
+function startRowResize(event: MouseEvent, rowIndex: number) {
+  if (!props.editable) return;
+  event.preventDefault();
+  event.stopPropagation();
+  stopResize();
+  resizing.value = {
+    kind: 'row',
+    index: rowIndex,
+    startClientX: event.clientX,
+    startClientY: event.clientY,
+    startSize: getRowHeight(rowIndex),
+  };
+  document.addEventListener('mousemove', handleResizeMouseMove);
+  document.addEventListener('mouseup', stopResize);
 }
 
 function setTextMode(textMode: 'plain' | 'rich') {
@@ -127,6 +254,8 @@ function insertRow(index: number, focusColumn = activeCell.value?.column ?? 0) {
   const next = normalizedData.value;
   const targetIndex = Math.max(0, Math.min(index, next.rows.length));
   next.rows.splice(targetIndex, 0, next.headers.map(() => ''));
+  next.rowHeights = [...(next.rowHeights ?? [])];
+  next.rowHeights.splice(targetIndex, 0, DEFAULT_ROW_HEIGHT);
   commit(next);
   selectedRow.value = targetIndex;
   hoveredRow.value = targetIndex;
@@ -137,6 +266,8 @@ function removeRow(rowIndex: number) {
   const next = normalizedData.value;
   if (next.rows.length <= 1) return;
   next.rows.splice(rowIndex, 1);
+  next.rowHeights = [...(next.rowHeights ?? [])];
+  next.rowHeights.splice(rowIndex, 1);
   commit(next);
   const focusRow = Math.min(rowIndex, next.rows.length - 1);
   selectedRow.value = focusRow;
@@ -149,6 +280,8 @@ function insertColumn(index: number, focusRow = activeCell.value?.row ?? 0) {
   const targetIndex = Math.max(0, Math.min(index, next.headers.length));
   next.headers.splice(targetIndex, 0, `列 ${targetIndex + 1}`);
   next.rows.forEach((row) => row.splice(targetIndex, 0, ''));
+  next.columnWidths = [...(next.columnWidths ?? [])];
+  next.columnWidths.splice(targetIndex, 0, DEFAULT_COLUMN_WIDTH);
   commit(next);
   selectedColumn.value = targetIndex;
   hoveredColumn.value = targetIndex;
@@ -160,6 +293,8 @@ function removeColumn(columnIndex: number) {
   if (next.headers.length <= 1) return;
   next.headers.splice(columnIndex, 1);
   next.rows.forEach((row) => row.splice(columnIndex, 1));
+  next.columnWidths = [...(next.columnWidths ?? [])];
+  next.columnWidths.splice(columnIndex, 1);
   commit(next);
   const focusColumn = Math.min(columnIndex, next.headers.length - 1);
   selectedColumn.value = focusColumn;
@@ -168,11 +303,11 @@ function removeColumn(columnIndex: number) {
 }
 
 function addRow() {
-  insertRow(normalizedData.value.rows.length);
+  insertRowFromToolbar('after');
 }
 
 function addColumn() {
-  insertColumn(normalizedData.value.headers.length);
+  insertColumnFromToolbar('after');
 }
 
 function selectRow(rowIndex: number) {
@@ -181,7 +316,6 @@ function selectRow(rowIndex: number) {
   selectedColumn.value = null;
   hoveredRow.value = rowIndex;
   activeCell.value = null;
-  nextTick(() => tableBlockRef.value?.focus());
 }
 
 function selectColumn(columnIndex: number) {
@@ -190,7 +324,6 @@ function selectColumn(columnIndex: number) {
   selectedRow.value = null;
   hoveredColumn.value = columnIndex;
   activeCell.value = null;
-  nextTick(() => tableBlockRef.value?.focus());
 }
 
 function handleTableKeydown(event: KeyboardEvent) {
@@ -205,10 +338,34 @@ function handleTableKeydown(event: KeyboardEvent) {
   }
 }
 
+function handleRowHeaderFocusout(event: FocusEvent, rowIndex: number) {
+  const current = event.currentTarget as HTMLElement;
+  window.setTimeout(() => {
+    if (current.contains(document.activeElement)) return;
+    if (selectedRow.value === rowIndex) {
+      selectedRow.value = null;
+    }
+  }, 0);
+}
+
+function handleColumnHeaderFocusout(event: FocusEvent, columnIndex: number) {
+  const current = event.currentTarget as HTMLElement;
+  window.setTimeout(() => {
+    if (current.contains(document.activeElement)) return;
+    if (selectedColumn.value === columnIndex) {
+      selectedColumn.value = null;
+    }
+  }, 0);
+}
+
 function clearHoverState() {
   hoveredRow.value = null;
   hoveredColumn.value = null;
   hoverBorder.value = null;
+}
+
+function setHoverBorder(event: MouseEvent, border: HoverBorder | null) {
+  hoverBorder.value = border;
 }
 
 function handleCellFocus(row: number, column: number) {
@@ -271,7 +428,7 @@ function handleCellMouseMove(event: MouseEvent, row: number, column: number) {
   else if (x <= edge) direction = 'left';
   else if (rect.width - x <= edge) direction = 'right';
 
-  hoverBorder.value = direction ? { row, column, direction } : null;
+  setHoverBorder(event, direction ? { row, column, direction } : null);
 }
 
 function handleHeaderMouseMove(event: MouseEvent, column: number) {
@@ -283,7 +440,7 @@ function handleHeaderMouseMove(event: MouseEvent, column: number) {
   let direction: BorderDirection | null = null;
   if (x <= edge) direction = 'left';
   else if (rect.width - x <= edge) direction = 'right';
-  hoverBorder.value = direction ? { row: null, column, direction } : null;
+  setHoverBorder(event, direction ? { row: null, column, direction } : null);
 }
 
 function handleRowHeaderMouseMove(event: MouseEvent, row: number) {
@@ -295,7 +452,7 @@ function handleRowHeaderMouseMove(event: MouseEvent, row: number) {
   let direction: BorderDirection | null = null;
   if (y <= edge) direction = 'top';
   else if (rect.height - y <= edge) direction = 'bottom';
-  hoverBorder.value = direction ? { row, column: null, direction } : null;
+  setHoverBorder(event, direction ? { row, column: null, direction } : null);
 }
 
 function isColumnActive(columnIndex: number): boolean {
@@ -354,6 +511,26 @@ function applyBorderInsert(border: HoverBorder) {
     return;
   }
   insertColumn((border.column ?? 0) + 1, border.row ?? activeCell.value?.row ?? 0);
+}
+
+function insertRowFromToolbar(position: 'before' | 'after') {
+  if (hoverBorder.value && (hoverBorder.value.direction === 'top' || hoverBorder.value.direction === 'bottom')) {
+    applyBorderInsert(hoverBorder.value);
+    return;
+  }
+
+  const rowIndex = activeRowForToolbar.value ?? activeCell.value?.row ?? normalizedData.value.rows.length - 1;
+  insertRow(position === 'before' ? rowIndex : rowIndex + 1);
+}
+
+function insertColumnFromToolbar(position: 'before' | 'after') {
+  if (hoverBorder.value && (hoverBorder.value.direction === 'left' || hoverBorder.value.direction === 'right')) {
+    applyBorderInsert(hoverBorder.value);
+    return;
+  }
+
+  const columnIndex = activeColumnForToolbar.value ?? activeCell.value?.column ?? normalizedData.value.headers.length - 1;
+  insertColumn(position === 'before' ? columnIndex : columnIndex + 1);
 }
 
 function htmlToPlainText(html: string): string {
@@ -425,15 +602,29 @@ function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
   return editor?.updateInsertedLinkDisplay?.(display) ?? false;
 }
 
+function updateInsertedImageWidth(widthPercent: number): boolean {
+  if (!isRichMode.value || !activeCell.value) return false;
+  const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
+  return editor?.updateInsertedImageWidth?.(widthPercent) ?? false;
+}
+
 defineExpose({
   getMarkdownLinkAnchor,
   insertMarkdownLink,
   updateInsertedLinkDisplay,
+  updateInsertedImageWidth,
 });
 </script>
 
 <template>
-  <div ref="tableBlockRef" class="table-block" tabindex="0" @mousedown="emit('active')" @keydown="handleTableKeydown" @mouseleave="clearHoverState">
+  <div
+    ref="tableBlockRef"
+    class="table-block"
+    tabindex="0"
+    @mousedown="emit('active')"
+    @keydown="handleTableKeydown"
+    @mouseleave="clearHoverState"
+  >
     <div class="table-block__scroll">
       <table>
         <thead>
@@ -445,6 +636,8 @@ defineExpose({
               v-for="(header, columnIndex) in normalizedData.headers"
               :key="columnIndex"
               class="table-block__header-cell"
+              tabindex="0"
+              :style="columnStyle(columnIndex)"
               :class="{
                 'table-block__header-cell--active': isColumnActive(columnIndex),
                 'table-block__header-cell--selected': selectedColumn === columnIndex,
@@ -452,6 +645,7 @@ defineExpose({
               @mouseenter="hoveredColumn = columnIndex"
               @mousemove="handleHeaderMouseMove($event, columnIndex)"
               @click="selectColumn(columnIndex)"
+              @focusout="handleColumnHeaderFocusout($event, columnIndex)"
             >
               <div class="table-block__header-wrap" :class="headerBorderClass(columnIndex)">
                 <input
@@ -471,14 +665,11 @@ defineExpose({
                   列
                 </button>
                 <button
-                  v-if="editable && hoverBorder?.row == null && hoverBorder?.column === columnIndex"
+                  v-if="editable"
                   type="button"
-                  class="table-block__border-insert"
-                  :class="`table-block__border-insert--${hoverBorder.direction}`"
-                  @click.stop="applyBorderInsert(hoverBorder)"
-                >
-                  +
-                </button>
+                  class="table-block__resize-handle table-block__resize-handle--column"
+                  @mousedown="startColumnResize($event, columnIndex)"
+                />
               </div>
             </th>
           </tr>
@@ -496,25 +687,19 @@ defineExpose({
             <th
               v-if="editable"
               class="table-block__row-handle-cell"
+              tabindex="0"
               @mousemove="handleRowHeaderMouseMove($event, rowIndex)"
               @click="selectRow(rowIndex)"
+              @focusout="handleRowHeaderFocusout($event, rowIndex)"
             >
               <div class="table-block__row-handle-wrap" :class="rowHeaderBorderClass(rowIndex)">
                 <button type="button" @click.stop="selectRow(rowIndex)">行 {{ rowIndex + 1 }}</button>
-                <button
-                  v-if="editable && hoverBorder?.column == null && hoverBorder?.row === rowIndex"
-                  type="button"
-                  class="table-block__border-insert"
-                  :class="`table-block__border-insert--${hoverBorder.direction}`"
-                  @click.stop="applyBorderInsert(hoverBorder)"
-                >
-                  +
-                </button>
               </div>
             </th>
             <td
               v-for="(cell, columnIndex) in row"
               :key="columnIndex"
+              :style="{ ...columnStyle(columnIndex), ...rowStyle(rowIndex) }"
               :class="{
                 'table-block__cell--row-active': isRowActive(rowIndex),
                 'table-block__cell--column-active': isColumnActive(columnIndex),
@@ -525,19 +710,19 @@ defineExpose({
               @mousemove="handleCellMouseMove($event, rowIndex, columnIndex)"
             >
               <div class="table-block__cell-wrap" :class="borderClass(rowIndex, columnIndex)">
-                <VditorRichEditor
+                <RichTextEditor
                   v-if="isRichMode"
-                  :ref="(el) => setRichCellRef(el, rowIndex, columnIndex)"
-                  :model-value="cell"
-                  :editing="isCellActive(rowIndex, columnIndex)"
+                  :ref="(el: unknown) => setRichCellRef(el, rowIndex, columnIndex)"
+                  :content="cell"
                   :editable="editable"
-                  preview-class="table-block__cell-render"
-                  editor-class="table-block__rich-editor"
-                  :preview-pointer-events="Boolean(editable)"
-                  @update:model-value="(value) => updateCell(rowIndex, columnIndex, value)"
-                  @escape="activeCell = null"
-                  @focusout-editor="activeCell = null"
+                  :auto-focus="isCellActive(rowIndex, columnIndex)"
+                  :line-handle-enabled="false"
+                  compact
+                  class="table-block__rich-editor"
+                  @content-change="(value: string) => updateCell(rowIndex, columnIndex, value)"
                   @click.stop="activateCell(rowIndex, columnIndex)"
+                  @blur="activeCell = null"
+                  @focused="handleCellFocus(rowIndex, columnIndex)"
                 />
                 <textarea
                   v-else-if="shouldEditCell(rowIndex, columnIndex)"
@@ -550,14 +735,17 @@ defineExpose({
                   @input="updateCell(rowIndex, columnIndex, ($event.target as HTMLTextAreaElement).value)"
                 />
                 <button
-                  v-if="editable && hoverBorder?.row === rowIndex && hoverBorder?.column === columnIndex"
+                  v-if="editable"
                   type="button"
-                  class="table-block__border-insert"
-                  :class="`table-block__border-insert--${hoverBorder.direction}`"
-                  @click.stop="applyBorderInsert(hoverBorder)"
-                >
-                  +
-                </button>
+                  class="table-block__resize-handle table-block__resize-handle--column"
+                  @mousedown="startColumnResize($event, columnIndex)"
+                />
+                <button
+                  v-if="editable"
+                  type="button"
+                  class="table-block__resize-handle table-block__resize-handle--row"
+                  @mousedown="startRowResize($event, rowIndex)"
+                />
               </div>
             </td>
           </tr>
@@ -687,6 +875,10 @@ tbody tr:last-child th {
   min-height: 38px;
 }
 
+.table-block__cell-wrap {
+  height: 100%;
+}
+
 input,
 textarea,
 select {
@@ -714,44 +906,41 @@ input {
   font-weight: 600;
 }
 
-span,
-.table-block__cell-render {
+span {
   display: block;
   padding: 9px 10px;
   white-space: pre-wrap;
 }
 
-.table-block :deep(.table-block__cell-render) {
+.table-block :deep(.table-block__rich-editor) {
   min-height: 38px;
+  padding: 9px 10px;
+  overflow: visible;
   overflow-wrap: anywhere;
 }
 
-.table-block :deep(.table-block__cell-render) {
-  cursor: text;
+.table-block :deep(.table-block__rich-editor .rich-text-editor-container),
+.table-block :deep(.table-block__rich-editor .editor-preview) {
+  min-height: 38px;
 }
 
-.table-block :deep(.table-block__cell-render p) {
+.table-block :deep(.table-block__rich-editor .vditor-reset p) {
   margin: 0;
 }
 
-.table-block :deep(.table-block__cell-render p + p) {
+.table-block :deep(.table-block__rich-editor .vditor-reset p + p) {
   margin-top: 6px;
 }
 
-.table-block :deep(.table-block__cell-render img) {
+.table-block :deep(.table-block__rich-editor img) {
   max-width: 100%;
   height: auto;
-}
-
-.table-block :deep(.table-block__rich-editor) {
-  min-height: 80px;
 }
 
 .table-block__row-handle-cell button,
 .table-block__column-menu-button,
 .table-block__toolbar button,
-.table-block__floating-toolbar button,
-.table-block__border-insert {
+.table-block__floating-toolbar button {
   border: 1px solid #d0d7de;
   border-radius: 6px;
   background: #fff;
@@ -785,11 +974,11 @@ button:disabled {
 }
 
 .table-block__cell-wrap--insert-top::before {
-  top: -1px;
+  top: 0;
 }
 
 .table-block__cell-wrap--insert-bottom::before {
-  bottom: -1px;
+  bottom: 0;
 }
 
 .table-block__cell-wrap--insert-left::before,
@@ -804,47 +993,46 @@ button:disabled {
 }
 
 .table-block__cell-wrap--insert-left::before {
-  left: -1px;
+  left: 0;
 }
 
 .table-block__cell-wrap--insert-right::before {
-  right: -1px;
+  right: 0;
 }
 
-.table-block__border-insert {
+.table-block__resize-handle {
   position: absolute;
-  z-index: 3;
-  width: 24px;
-  height: 24px;
+  z-index: 4;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   padding: 0;
-  border-color: #1677ff;
-  color: #1677ff;
-  font-weight: 700;
-  line-height: 1;
 }
 
-.table-block__border-insert--top {
-  top: -13px;
-  left: 50%;
-  transform: translateX(-50%);
+.table-block__resize-handle--column {
+  top: 0;
+  right: 0;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
 }
 
-.table-block__border-insert--bottom {
-  bottom: -13px;
-  left: 50%;
-  transform: translateX(-50%);
+.table-block__resize-handle--row {
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 8px;
+  cursor: row-resize;
 }
 
-.table-block__border-insert--left {
-  left: -13px;
-  top: 50%;
-  transform: translateY(-50%);
+.table-block__resize-handle--column:hover,
+.table-block__resize-handle--column:active {
+  background: linear-gradient(to right, transparent 3px, #1677ff 3px, #1677ff 5px, transparent 5px);
 }
 
-.table-block__border-insert--right {
-  right: -13px;
-  top: 50%;
-  transform: translateY(-50%);
+.table-block__resize-handle--row:hover,
+.table-block__resize-handle--row:active {
+  background: linear-gradient(to bottom, transparent 3px, #1677ff 3px, #1677ff 5px, transparent 5px);
 }
 
 .table-block__floating-toolbar,

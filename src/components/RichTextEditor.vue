@@ -11,6 +11,7 @@ interface Props {
   editable?: boolean;
   autoFocus?: boolean;
   lineHandleEnabled?: boolean;
+  compact?: boolean;
 }
 
 type LineInsertBlockType = 'richtext' | 'line' | 'x6' | 'ref' | 'container' | 'table';
@@ -45,6 +46,7 @@ const props = withDefaults(defineProps<Props>(), {
   editable: true,
   autoFocus: false,
   lineHandleEnabled: true,
+  compact: false,
 });
 
 const emit = defineEmits<{
@@ -1692,7 +1694,7 @@ watch(
 </script>
 
 <template>
-  <div ref="wrapperRef" class="rich-text-editor-wrapper">
+  <div ref="wrapperRef" class="rich-text-editor-wrapper" :class="{ 'rich-text-editor-wrapper--compact': compact }">
     <div v-if="hasActivatedEditor" ref="editorRef" class="rich-text-editor-container"></div>
 
     <HoverHandle
@@ -1783,6 +1785,12 @@ watch(
   min-width: 0;
   overflow: visible;
   box-sizing: border-box;
+}
+
+.rich-text-editor-wrapper--compact {
+  --line-handle-gutter: 0px;
+  --editor-block-padding: 0px;
+  --editor-inline-padding: 0px;
 }
 
 .editor-preview {

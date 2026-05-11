@@ -76,6 +76,8 @@ export interface TableBlockData {
   textMode?: 'plain' | 'rich';
   headers: string[];
   rows: string[][];
+  columnWidths?: number[];
+  rowHeights?: number[];
 }
 
 export interface Block {
@@ -99,7 +101,12 @@ export interface Block {
   }>;
   blockHeight?: number;
   spacerHeight?: number;
-  layout?: 'horizontal' | 'vertical';
+  layout?: 'horizontal' | 'vertical' | 'free';
+  containerPosition?: {
+    x: number;
+    y: number;
+    z?: number;
+  };
   children?: Block[];
   width?: string;
   [key: string]: unknown;
