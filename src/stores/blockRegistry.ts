@@ -2,6 +2,7 @@ import { reactive } from 'vue';
 import { defineStore } from 'pinia';
 import {
   listAllBlocks,
+  updateBlock as updateBlockApi,
   updateBlockContent,
   updateBlockGraphData,
   type BlockWithMeta,
@@ -48,6 +49,14 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     await updateBlockGraphData(entry.pageId, blockId, graphData);
   }
 
+  async function updateBlock(blockId: string, patchOrBlock: Partial<Block>) {
+    const entry = registry.get(blockId);
+    if (!entry) return;
+    const nextBlock = { ...entry.block, ...patchOrBlock, id: blockId };
+    registry.set(blockId, { ...entry, block: nextBlock });
+    await updateBlockApi(entry.pageId, blockId, nextBlock);
+  }
+
   function getAllBlocks(): BlockWithMeta[] {
     return Array.from(registry.values());
   }
@@ -62,6 +71,7 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     registerBlocks,
     getBlock,
     getMeta,
+    updateBlock,
     updateContent,
     updateGraphData,
     getAllBlocks,

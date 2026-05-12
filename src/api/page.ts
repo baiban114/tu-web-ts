@@ -8,6 +8,7 @@ import {
   movePageMock,
   renamePageMock,
   savePageContentMock,
+  updateBlockMock,
   updateBlockContentMock,
   updateBlockGraphDataMock,
 } from '@/mock/store';
@@ -121,5 +122,19 @@ export async function updateBlockGraphData(
   await request<void>(`/api/blocks/${blockId}/graph`, {
     method: 'PATCH',
     body: JSON.stringify({ pageId, graphData }),
+  });
+}
+
+export async function updateBlock(
+  pageId: string,
+  blockId: string,
+  block: Block,
+): Promise<void> {
+  if (isMockDataSource()) {
+    return updateBlockMock(pageId, blockId, block);
+  }
+  await request<void>(`/api/blocks/${blockId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ pageId, block }),
   });
 }

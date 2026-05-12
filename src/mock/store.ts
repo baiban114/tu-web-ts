@@ -332,6 +332,19 @@ export function updateBlockGraphDataMock(pageId: string, blockId: string, graphD
   }
 }
 
+export function updateBlockMock(pageId: string, blockId: string, nextBlock: Block): void {
+  const updated = updateBlockInPage(pageId, blockId, (block) => {
+    Object.keys(block).forEach((key) => {
+      delete (block as Record<string, unknown>)[key];
+    });
+    Object.assign(block, cloneState({ ...nextBlock, id: blockId }));
+  });
+
+  if (!updated) {
+    throw new Error(`Block not found: ${blockId}`);
+  }
+}
+
 export function syncBlocksMock(pageId: string, blocks: Block[]): void {
   savePageContentMock(pageId, blocks);
 }

@@ -9,6 +9,7 @@ import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue';
 import Line from './line.vue';
 import TableBlock from './TableBlock.vue';
 import X6Component from './X6Component.vue';
+import ReferencedBlockRenderer from './ReferencedBlockRenderer.vue';
 import Toast from './Toast.vue';
 import { ElMessageBox } from 'element-plus';
 import { VueDraggable } from 'vue-draggable-plus';
@@ -119,7 +120,8 @@ interface BlockResizeState {
   startY: number;
   startWidth: number;
   startHeight: number;
-  containerWidth: number;
+  maxWidth: number;
+  widthMode: 'percent' | 'px';
 }
 
 interface ContainerItemMoveState {
@@ -206,6 +208,19 @@ const childBlockHandleItems: BlockActionHandleItem[] = [
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
 ];
+
+const getBlockHandleItems = (block: Block | undefined): BlockActionHandleItem[] => {
+  if (!isAutoReferenceUnit(block)) return blockHandleItems;
+  const insertIndex = blockHandleItems.findIndex((item) => item.key === 'edit-tags');
+  const splitItem: BlockActionHandleItem = { key: 'ungroup-auto-reference-unit', icon: '↕', label: '取消组合' };
+  if (insertIndex < 0) return [splitItem, ...blockHandleItems];
+  return [
+    ...blockHandleItems.slice(0, insertIndex),
+    splitItem,
+    ...blockHandleItems.slice(insertIndex),
+  ];
+};
+
 const richTextLineActionItems: BlockActionHandleItem[] = [
   { key: 'line-scope', label: '当前行', divider: true },
   { key: 'line-insert-richtext', icon: '📝', label: '在当前行后插入文本块' },
@@ -400,7 +415,7 @@ const getActionHandleItems = (position: number, isChild = false): BlockActionHan
   if (hasRichTextLineHandle(position)) {
     return isChild ? richTextChildLineActionItems : richTextLineActionItems;
   }
-  return isChild ? childBlockHandleItems : blockHandleItems;
+  return isChild ? childBlockHandleItems : getBlockHandleItems(getBlockAtPosition(position));
 };
 
 const updateRichTextLineHandleState = (position: number, payload: RichTextLineHandlePayload) => {
@@ -661,6 +676,14 @@ const renderReferencedBlockText = (block: Block): string => {
   if (block.type === 'line') return block.title?.trim() || '时间轴';
   if (block.type === 'container') return block.title?.trim() || '容器';
   return block.content ?? '';
+};
+
+const updateReferencedBlock = (blockId: string | undefined, block: Block) => {
+  if (!blockId) return;
+  void registryStore.updateBlock(blockId, block).catch((error) => {
+    console.error('更新引用块失败:', error);
+    showToast('引用块更新失败');
+  });
 };
 
 const getRefPreviewText = (refId: string): string => {
@@ -1057,17 +1080,21 @@ const onRefBlockSelected = (target: ReferenceTarget) => {
 
 // 统一富文本类型为 'richtext'，避免 'richText' 导致未知类型显示
 const normalizeBlockType = (block: Block): Block => {
+  const normalizedChildren = block.children?.map((child) => normalizeBlockType(child));
+  const childrenChanged = normalizedChildren?.some((child, index) => child !== block.children?.[index]) ?? false;
+  const withNormalizedChildren = normalizedChildren && childrenChanged ? { ...block, children: normalizedChildren } : block;
+
   if (block.type === 'richText') {
-    return { ...block, type: 'richtext' };
+    return { ...withNormalizedChildren, type: 'richtext' };
   }
   if (block.type === 'graph') {
     return {
-      ...block,
+      ...withNormalizedChildren,
       type: 'x6',
       title: block.title || '画板',
     };
   }
-  return block;
+  return withNormalizedChildren;
 };
 
 // 判断是否为富文本块（统一用此方法，避免大小写/驼峰混用导致误判）
@@ -1147,8 +1174,42 @@ const getContainerItemStyle = (block: Block, index = 0) => {
   };
 };
 
+const isContainerChildPosition = (position: number): boolean => position >= 100;
+
+const getResizeWidthContext = (position: number, blockElement: HTMLElement) => {
+  if (isContainerChildPosition(position)) {
+    const canvasElement = blockElement.closest('.container-canvas') as HTMLElement | null;
+    const canvasWidth = canvasElement?.getBoundingClientRect().width ?? blockElement.getBoundingClientRect().width;
+    return {
+      maxWidth: Math.max(MIN_BLOCK_WIDTH, canvasWidth),
+      widthMode: 'px' as const,
+    };
+  }
+
+  const parentElement = blockElement.parentElement;
+  const parentWidth = parentElement?.getBoundingClientRect().width ?? blockElement.getBoundingClientRect().width;
+  return {
+    maxWidth: Math.max(MIN_BLOCK_WIDTH, parentWidth),
+    widthMode: 'percent' as const,
+  };
+};
+
+const getContainerCanvasStyle = (block: Block) => {
+  if (block.layout === 'vertical') {
+    return {};
+  }
+  return { minHeight: `${Math.max(260, block.blockHeight ?? 360)}px` };
+};
+
 const normalizeContainerChildren = (container: Block) => {
   container.children = container.children ?? [];
+  if (container.layout === 'vertical') {
+    container.children.forEach((child) => {
+      delete child.containerPosition;
+      delete child.width;
+    });
+    return;
+  }
   container.children.forEach((child, childIndex) => {
     ensureContainerChildPosition(child, childIndex);
     child.width = normalizeBlockWidth(child.width) || child.width || '320px';
@@ -1161,10 +1222,14 @@ const commitBlockResize = (position: number, widthPx?: number, heightPx?: number
 
   const updates: Partial<Block> = {};
   if (typeof widthPx === 'number') {
-    const maxWidth = Math.max(MIN_BLOCK_WIDTH, resizingBlock.value.containerWidth);
+    const maxWidth = resizingBlock.value.maxWidth;
     const width = Math.max(MIN_BLOCK_WIDTH, Math.min(maxWidth, widthPx));
-    const percent = Math.max(20, Math.min(100, (width / maxWidth) * 100));
-    updates.width = `${percent.toFixed(2)}%`;
+    if (resizingBlock.value.widthMode === 'px') {
+      updates.width = `${Math.round(width)}px`;
+    } else {
+      const percent = Math.max(20, Math.min(100, (width / maxWidth) * 100));
+      updates.width = `${percent.toFixed(2)}%`;
+    }
   }
   if (typeof heightPx === 'number') {
     updates.blockHeight = Math.max(MIN_BLOCK_HEIGHT, Math.round(heightPx));
@@ -1177,15 +1242,14 @@ const startBlockResize = (event: MouseEvent, position: number, edge: BlockResize
   if (!props.editable) return;
 
   const blockElement = blockRefs.value[position];
-  const containerElement = blockElement?.parentElement;
-  if (!blockElement || !containerElement) return;
+  if (!blockElement) return;
 
   event.preventDefault();
   event.stopPropagation();
   activeBlockIndex.value = position;
 
   const rect = blockElement.getBoundingClientRect();
-  const containerRect = containerElement.getBoundingClientRect();
+  const widthContext = getResizeWidthContext(position, blockElement);
   resizingBlock.value = {
     position,
     edge,
@@ -1193,7 +1257,8 @@ const startBlockResize = (event: MouseEvent, position: number, edge: BlockResize
     startY: event.clientY,
     startWidth: rect.width,
     startHeight: rect.height,
-    containerWidth: containerRect.width,
+    maxWidth: widthContext.maxWidth,
+    widthMode: widthContext.widthMode,
   };
 
   document.body.classList.add('tu-block-resizing');
@@ -1290,6 +1355,103 @@ const isSpacerBlock = (block: Block): boolean => {
   return block?.type === 'spacer';
 };
 
+const isAutoReferenceUnit = (block: Block | undefined): boolean => {
+  return block?.type === 'container' && block.metadata?.autoReferenceUnit === true;
+};
+
+const isReferenceUnitMediaBlock = (block: Block | undefined): boolean => {
+  return Boolean(block && (block.type === 'x6' || block.type === 'table' || block.type === 'line'));
+};
+
+const getSuppressedMediaIds = (block: Block): string[] => {
+  const value = block.metadata?.autoGroupSuppressedMediaIds;
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+};
+
+const getAutoReferenceUnitId = (blocks: Block[]): string => {
+  return `auto-ref-unit-${blocks.map((block) => block.id).join('__')}`;
+};
+
+const stripAutoReferenceUnitMetadata = (block: Block): Block => {
+  const metadata = { ...(block.metadata ?? {}) };
+  delete metadata.autoReferenceUnit;
+  delete metadata.autoGroupSuppressedMediaIds;
+  const nextBlock: Block = {
+    ...block,
+    metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
+  };
+  delete nextBlock.containerPosition;
+  delete nextBlock.width;
+  return nextBlock;
+};
+
+const createAutoReferenceUnit = (children: Block[]): Block => {
+  const [leadBlock, ...mediaBlocks] = children;
+  return {
+    id: getAutoReferenceUnitId(children),
+    type: 'container',
+    title: leadBlock.title?.trim() || '组合引用单元',
+    layout: 'vertical',
+    metadata: {
+      autoReferenceUnit: true,
+    },
+    children: children.map(stripAutoReferenceUnitMetadata),
+    blockHeight: undefined,
+  };
+};
+
+const shouldSuppressAutoReferenceUnit = (leadBlock: Block, mediaBlocks: Block[]): boolean => {
+  const suppressedIds = getSuppressedMediaIds(leadBlock);
+  if (suppressedIds.length === 0) return false;
+  const mediaIds = mediaBlocks.map((block) => block.id);
+  return mediaIds.length === suppressedIds.length && mediaIds.every((id) => suppressedIds.includes(id));
+};
+
+const applyAutoReferenceUnits = (blocks: Block[]): { blocks: Block[]; changed: boolean } => {
+  const result: Block[] = [];
+  let changed = false;
+  let index = 0;
+
+  while (index < blocks.length) {
+    const block = blocks[index];
+
+    if (isAutoReferenceUnit(block)) {
+      result.push({
+        ...block,
+        layout: 'vertical',
+        children: block.children?.map(stripAutoReferenceUnitMetadata) ?? [],
+      });
+      index += 1;
+      continue;
+    }
+
+    if (!isRichTextBlock(block) || !block.content?.trim()) {
+      result.push(block);
+      index += 1;
+      continue;
+    }
+
+    const mediaBlocks: Block[] = [];
+    let mediaIndex = index + 1;
+    while (isReferenceUnitMediaBlock(blocks[mediaIndex])) {
+      mediaBlocks.push(blocks[mediaIndex]);
+      mediaIndex += 1;
+    }
+
+    if (mediaBlocks.length === 0 || shouldSuppressAutoReferenceUnit(block, mediaBlocks)) {
+      result.push(block);
+      index += 1;
+      continue;
+    }
+
+    result.push(createAutoReferenceUnit([block, ...mediaBlocks]));
+    changed = true;
+    index = mediaIndex;
+  }
+
+  return { blocks: result, changed };
+};
+
 const normalizeTopLevelBlocks = (blocks: Block[]): Block[] => {
   let changed = false;
   const filteredBlocks: Block[] = [];
@@ -1304,7 +1466,8 @@ const normalizeTopLevelBlocks = (blocks: Block[]): Block[] => {
     filteredBlocks.push(normalizedBlock);
   }
 
-  return changed ? filteredBlocks : blocks;
+  const grouped = applyAutoReferenceUnits(filteredBlocks);
+  return changed || grouped.changed ? grouped.blocks : blocks;
 };
 
 const syncLocalBlocksFromSource = (blocks: Block[]) => {
@@ -1409,11 +1572,33 @@ const removeBlock = (position: number) => {
   }
 };
 
+const ungroupAutoReferenceUnit = (position: number) => {
+  const block = localBlocks.value[position];
+  if (!isAutoReferenceUnit(block) || !block.children?.length) return;
+
+  const [leadBlock, ...mediaBlocks] = block.children.map(stripAutoReferenceUnitMetadata);
+  if (!leadBlock) return;
+
+  const suppressedLeadBlock: Block = {
+    ...leadBlock,
+    metadata: {
+      ...(leadBlock.metadata ?? {}),
+      autoGroupSuppressedMediaIds: mediaBlocks.map((mediaBlock) => mediaBlock.id),
+    },
+  };
+
+  localBlocks.value.splice(position, 1, suppressedLeadBlock, ...mediaBlocks);
+  commitTopLevelBlocks();
+};
+
 // 处理悬浮手柄菜单操作
 const handleBlockHandleSelect = (action: string, position: number) => {
   const insertPosition = position + 1;
 
   switch (action) {
+    case 'ungroup-auto-reference-unit':
+      ungroupAutoReferenceUnit(position);
+      return;
     case 'insert-richtext':
       insertBlock(insertPosition, createNewRichTextBlock());
       return;
@@ -1500,11 +1685,14 @@ const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
 // 为每个块添加点击事件，使其获得焦点
 const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
   if (!props.editable) return;
+  const target = event.target as HTMLElement | null;
+  const currentTarget = event.currentTarget as HTMLElement | null;
+  if (target?.closest('.content-wrapper') !== currentTarget) return;
+
   activeBlockIndex.value = blockIndex;
 
   const blockElement = blockRefs.value[blockIndex];
   const block = getBlockAtPosition(blockIndex);
-  const target = event.target as HTMLElement | null;
   if (blockElement && target) {
     // 如果点击的是富文本编辑器内部，不获取焦点
     const isRichTextEditor = target.closest('.rich-text-editor-container, .vditor-container, .vditor-wysiwyg, .vditor-editor');
@@ -2229,9 +2417,10 @@ const getBlockProperties = (block: Block) => {
 
           <!-- 容器块 -->
           <template v-if="block.type === 'container' && block.children">
-            <div class="container-block">
+            <div class="container-block" :class="{ 'container-block--vertical': block.layout === 'vertical' }">
               <VueDraggable
                 class="container-canvas"
+                :class="{ 'container-canvas--vertical': block.layout === 'vertical' }"
                 v-model="block.children"
                 :handle="blockDragHandle"
                 :animation="200"
@@ -2244,16 +2433,17 @@ const getBlockProperties = (block: Block) => {
                 :scroll="true"
                 :scroll-sensitivity="30"
                 :scroll-speed="10"
-                :style="{ minHeight: `${Math.max(260, block.blockHeight ?? 360)}px` }"
+                :style="getContainerCanvasStyle(block)"
               >
                 <div
                   v-for="(childBlock, childIndex) in block.children"
                   :key="childBlock.id"
                   class="container-item"
-                  :style="getContainerItemStyle(childBlock, childIndex)"
+                  :class="{ 'container-item--vertical': block.layout === 'vertical' }"
+                  :style="block.layout === 'vertical' ? undefined : getContainerItemStyle(childBlock, childIndex)"
                 >
                   <button
-                    v-if="editable"
+                    v-if="editable && block.layout !== 'vertical'"
                     type="button"
                     class="container-item-move"
                     aria-label="移动容器内块"
@@ -2262,7 +2452,7 @@ const getBlockProperties = (block: Block) => {
                     ⋮⋮
                   </button>
                   <div
-                    v-if="editable && activeBlockIndex === index * 100 + childIndex"
+                    v-if="editable && block.layout !== 'vertical' && activeBlockIndex === index * 100 + childIndex"
                     class="container-z-toolbar"
                   >
                     <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'front')">置顶</button>
@@ -2319,7 +2509,7 @@ const getBlockProperties = (block: Block) => {
                       </span>
                     </button>
 
-                    <template v-if="editable && activeBlockIndex === index * 100 + childIndex">
+                    <template v-if="editable && block.layout !== 'vertical' && activeBlockIndex === index * 100 + childIndex">
                       <button
                         type="button"
                         class="block-resize-handle block-resize-handle--right"
@@ -2426,6 +2616,12 @@ const getBlockProperties = (block: Block) => {
                                 :editable="false"
                                 class="block-content page-ref-content__block"
                               />
+                              <ReferencedBlockRenderer
+                                v-else-if="refPageBlock.type === 'container'"
+                                :block="refPageBlock"
+                                :editable="false"
+                                class="page-ref-content__block"
+                              />
                               <div v-else-if="refPageBlock.type !== 'ref'" class="page-ref-content__fallback">
                                 {{ renderReferencedBlockText(refPageBlock) }}
                               </div>
@@ -2436,26 +2632,12 @@ const getBlockProperties = (block: Block) => {
                         <div class="ref-block-badge">
                           🔗 引用自：{{ registryStore.getMeta(childBlock.refId)?.pageTitle ?? '未知页面' }}
                         </div>
-                        <template v-if="registryStore.getBlock(childBlock.refId)?.type === 'x6'">
-                          <X6Component
-                            :key="`ref-x6-${childBlock.id}`"
-                            :graphData="registryStore.getBlock(childBlock.refId)?.graphData"
-                            :editable="editable"
-                            :block-actions-enabled="false"
-                            @graph-data-change="(graphData: any) => registryStore.updateGraphData(childBlock.refId!, graphData as GraphData)"
-                            class="block-content board-content"
-                          />
-                        </template>
-                        <template v-else>
-                          <RichTextEditor
-                            :key="`ref-${childBlock.id}`"
-                            :content="registryStore.getBlock(childBlock.refId)?.content ?? ''"
-                            :editable="editable"
-                            :line-handle-enabled="false"
-                            @content-change="(c: string) => registryStore.updateContent(childBlock.refId!, c)"
-                            class="block-content"
-                          />
-                        </template>
+                        <ReferencedBlockRenderer
+                          :key="`ref-${childBlock.id}`"
+                          :block="registryStore.getBlock(childBlock.refId)"
+                          :editable="editable"
+                          @update-block="(updatedBlock: Block) => updateReferencedBlock(childBlock.refId, updatedBlock)"
+                        />
                         </template>
                       </div>
                     </template>
@@ -2565,6 +2747,12 @@ const getBlockProperties = (block: Block) => {
                       :editable="false"
                       class="block-content page-ref-content__block"
                     />
+                    <ReferencedBlockRenderer
+                      v-else-if="refPageBlock.type === 'container'"
+                      :block="refPageBlock"
+                      :editable="false"
+                      class="page-ref-content__block"
+                    />
                     <div v-else-if="refPageBlock.type !== 'ref'" class="page-ref-content__fallback">
                       {{ renderReferencedBlockText(refPageBlock) }}
                     </div>
@@ -2575,26 +2763,12 @@ const getBlockProperties = (block: Block) => {
               <div class="ref-block-badge">
                 🔗 引用自：{{ registryStore.getMeta(block.refId)?.pageTitle ?? '未知页面' }}
               </div>
-              <template v-if="registryStore.getBlock(block.refId)?.type === 'x6'">
-                <X6Component
-                  :key="`ref-x6-${block.id}`"
-                  :graphData="registryStore.getBlock(block.refId)?.graphData"
-                  :editable="editable"
-                  :block-actions-enabled="false"
-                  @graph-data-change="(graphData: any) => registryStore.updateGraphData(block.refId!, graphData as GraphData)"
-                  class="block-content board-content"
-                />
-              </template>
-              <template v-else>
-                <RichTextEditor
-                  :key="`ref-${block.id}`"
-                  :content="registryStore.getBlock(block.refId)?.content ?? ''"
-                  :editable="editable"
-                  :line-handle-enabled="false"
-                  @content-change="(c: string) => registryStore.updateContent(block.refId!, c)"
-                  class="block-content"
-                />
-              </template>
+              <ReferencedBlockRenderer
+                :key="`ref-${block.id}`"
+                :block="registryStore.getBlock(block.refId)"
+                :editable="editable"
+                @update-block="(updatedBlock: Block) => updateReferencedBlock(block.refId, updatedBlock)"
+              />
               </template>
             </div>
           </template>
@@ -3273,15 +3447,34 @@ const getBlockProperties = (block: Block) => {
   overflow: auto;
 }
 
+.container-block--vertical {
+  border: 1px solid #d6e4ff;
+  background: #fff;
+  overflow: visible;
+}
+
 .container-canvas {
   position: relative;
   min-width: 100%;
+}
+
+.container-canvas--vertical {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
 }
 
 .container-item {
   position: absolute;
   min-width: 220px;
   box-sizing: border-box;
+}
+
+.container-item--vertical {
+  position: relative;
+  min-width: 0;
+  width: 100%;
 }
 
 .container-item > .content-wrapper {

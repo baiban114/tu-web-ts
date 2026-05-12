@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
   return {
     plugins: [
       vue(),
-      vueDevTools(),
+      mode === 'development' ? vueDevTools() : undefined,
     ],
     resolve: {
       alias: {

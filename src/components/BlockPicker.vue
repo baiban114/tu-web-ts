@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue';
 import { ElDialog, ElEmpty, ElInput, ElScrollbar } from 'element-plus';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
-import type { BlockWithMeta, PageItem } from '@/api/page';
+import type { Block, BlockWithMeta, PageItem } from '@/api/page';
 
 type BlockFilterType = 'all' | 'text' | 'x6';
 type PickerItem =
@@ -40,8 +40,8 @@ const filterOptions: Array<{ key: BlockFilterType; label: string }> = [
   { key: 'x6', label: '画板' },
 ];
 
-const isTextBlock = (item: BlockWithMeta) => {
-  return item.block.type === 'richtext' || item.block.type === 'richText';
+const isTextBlock = (block: Block) => {
+  return block.type === 'richtext' || block.type === 'richText';
 };
 
 const flattenPages = (nodes: PageItem[], depth = 0): Array<{ page: PageItem; depth: number }> => {
@@ -51,20 +51,23 @@ const flattenPages = (nodes: PageItem[], depth = 0): Array<{ page: PageItem; dep
   ]);
 };
 
-const getBlockTypeLabel = (item: BlockWithMeta) => {
-  if (item.block.type === 'x6') return '画板';
-  if (isTextBlock(item)) return '文本';
-  return item.block.type;
+const getBlockTypeLabel = (block: Block) => {
+  if (block.type === 'container') return block.metadata?.autoReferenceUnit ? '组合单元' : '容器';
+  if (block.type === 'x6') return '画板';
+  if (block.type === 'table') return '表格';
+  if (block.type === 'line') return '时间轴';
+  if (isTextBlock(block)) return '文本';
+  return block.type;
 };
 
 const getTypeLabel = (item: PickerItem) => {
   if (item.kind === 'page') return '页面';
-  return getBlockTypeLabel(item.blockItem);
+  return getBlockTypeLabel(item.blockItem.block);
 };
 
 const matchesTypeFilter = (item: BlockWithMeta) => {
   if (typeFilter.value === 'all') return true;
-  if (typeFilter.value === 'text') return isTextBlock(item);
+  if (typeFilter.value === 'text') return isTextBlock(item.block);
   if (typeFilter.value === 'x6') return item.block.type === 'x6';
   return true;
 };
@@ -86,6 +89,16 @@ watch(
   },
 );
 
+const getBlockSearchText = (block: Block): string => {
+  const childText = (block.children ?? []).map(getBlockSearchText).join(' ');
+  return [
+    block.title,
+    block.content,
+    getBlockTypeLabel(block),
+    childText,
+  ].filter(Boolean).join(' ');
+};
+
 const filteredItems = computed<PickerItem[]>(() => {
   const keyword = searchText.value.trim().toLowerCase();
   const items: PickerItem[] = [
@@ -105,10 +118,8 @@ const filteredItems = computed<PickerItem[]>(() => {
     }
 
     const { block, pageTitle } = item.blockItem;
-    return (block.content?.toLowerCase().includes(keyword) ?? false)
-      || (block.title?.toLowerCase().includes(keyword) ?? false)
-      || pageTitle.toLowerCase().includes(keyword)
-      || getTypeLabel(item).toLowerCase().includes(keyword);
+    return getBlockSearchText(block).toLowerCase().includes(keyword)
+      || pageTitle.toLowerCase().includes(keyword);
   });
 });
 
@@ -123,22 +134,25 @@ function onSelect(item: PickerItem) {
   emit('update:visible', false);
 }
 
+function blockPreview(block: Block): string {
+  if (block.type === 'container') {
+    const childPreview = (block.children ?? []).map(blockPreview).filter(Boolean).join(' / ');
+    return childPreview || block.title?.trim() || getBlockTypeLabel(block);
+  }
+  if (block.type === 'x6' || block.type === 'table' || block.type === 'line') {
+    return block.title?.trim() || getBlockTypeLabel(block);
+  }
+
+  const plain = (block.content ?? '').replace(/[#*`>\-_\[\]]/g, '').trim();
+  if (!plain) return block.title?.trim() || '空内容';
+  return plain.length > 80 ? `${plain.slice(0, 80)}...` : plain;
+}
+
 function preview(item: PickerItem): string {
   if (item.kind === 'page') {
-    return `${'　'.repeat(item.depth)}${item.page.title}`;
+    return `${'  '.repeat(item.depth)}${item.page.title}`;
   }
-
-  const block = item.blockItem.block;
-  if (block.type === 'x6') {
-    return block.title?.trim() || '画板';
-  }
-
-  const content = block.content;
-  if (!content) return '空内容';
-
-  const plain = content.replace(/[#*`>\-_\[\]]/g, '').trim();
-  if (!plain) return '空内容';
-  return plain.length > 80 ? `${plain.slice(0, 80)}...` : plain;
+  return blockPreview(item.blockItem.block);
 }
 
 function sourceText(item: PickerItem): string {
