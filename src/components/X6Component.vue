@@ -1796,9 +1796,9 @@ defineExpose({
           :rich-content="overlay.richContent"
           :is-editing="editingNodeId === overlay.id"
           :is-editable="isEditable"
-          @commit-plain="(text) => handleNodeOverlayCommit(overlay.id, text)"
+          @commit-plain="(text: string) => handleNodeOverlayCommit(overlay.id, text)"
           @cancel="() => handleNodeOverlayCancel(overlay.id)"
-          @rich-change="(md) => handleRichChange(overlay.id, md)"
+          @rich-change="(md: string) => handleRichChange(overlay.id, md)"
         />
 
         <!-- Edge inline text editor -->

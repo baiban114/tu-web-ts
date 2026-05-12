@@ -167,7 +167,9 @@ onBeforeUnmount(() => {
       :style="menuStyle"
     >
       <template v-for="item in items" :key="item.key">
-        <div v-if="item.divider" class="handle-menu-divider hover-handle__divider"></div>
+        <div v-if="item.divider" class="handle-menu-divider hover-handle__divider">
+          <span v-if="item.label" class="hover-handle__divider-label">{{ item.label }}</span>
+        </div>
         <div
           v-else
           class="handle-menu-item hover-handle__item"
@@ -271,8 +273,19 @@ onBeforeUnmount(() => {
 }
 
 .hover-handle__divider {
-  height: 1px;
+  height: auto;
+  min-height: 1px;
   margin: 6px 0;
-  background: #e8e8e8;
+  background: linear-gradient(#e8e8e8, #e8e8e8) center / 100% 1px no-repeat;
+}
+
+.hover-handle__divider-label {
+  display: inline-flex;
+  margin-left: 10px;
+  padding: 0 6px;
+  background: #fff;
+  color: #8c8c8c;
+  font-size: 11px;
+  line-height: 18px;
 }
 </style>

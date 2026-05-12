@@ -2,7 +2,8 @@
 import { ref, onMounted, onBeforeUnmount, watch, computed, nextTick } from 'vue';
 import RichTextEditor from './RichTextEditor.vue';
 import VditorRichEditor from './VditorRichEditor.vue';
-import HoverHandle from './HoverHandle.vue';
+import BlockActionHandle from './BlockActionHandle.vue';
+import type { BlockActionHandleItem } from './BlockActionHandle.vue';
 import BlockPicker from './BlockPicker.vue';
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue';
 import Line from './line.vue';
@@ -32,6 +33,19 @@ interface RichTextLineInsertPayload {
   afterContent: string;
   blockType: 'richtext' | 'line' | 'x6' | 'ref' | 'container' | 'table';
   layout?: 'horizontal' | 'vertical';
+}
+
+interface RichTextLineHandlePayload {
+  visible: boolean;
+  top: number | null;
+  splitContent: {
+    beforeContent: string;
+    afterContent: string;
+  } | null;
+}
+
+interface RichTextLineHandleState extends RichTextLineHandlePayload {
+  menuVisible: boolean;
 }
 
 interface TagEditorState {
@@ -125,6 +139,7 @@ const richTextEditorRefs = ref<Record<number, {
   insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => void;
   updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
   updateInsertedImageWidth?: (widthPercent: number) => boolean;
+  handleLineHandleSelect?: (action: string) => void;
 }>>({});
 const markdownLinkCapableRefs = ref<Record<number, {
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
@@ -136,6 +151,7 @@ const hasSelection = ref(false);
 const selectedText = ref('');
 const selectedBlockIndex = ref(-1);
 const activeBlockIndex = ref(-1);
+const richTextLineHandleStates = ref<Record<number, RichTextLineHandleState>>({});
 const resizingBlock = ref<BlockResizeState | null>(null);
 const movingContainerItem = ref<ContainerItemMoveState | null>(null);
 const contentContainerRef = ref<HTMLElement | null>(null);
@@ -163,14 +179,8 @@ const blockHandleStyle = {
   '--hover-handle-top': 'calc(var(--block-shell-pad-y, 20px) + 6px)',
   '--hover-handle-transform': 'translateX(-50%)',
 } as const;
-const richTextBlockHandleStyle = {
-  '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
-  '--hover-handle-top': '4px',
-  '--hover-handle-transform': 'translateX(-50%)',
-  '--hover-handle-z-index': 12,
-} as const;
 
-const blockHandleItems = [
+const blockHandleItems: BlockActionHandleItem[] = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
@@ -186,7 +196,7 @@ const blockHandleItems = [
 const MIN_BLOCK_WIDTH = 260;
 const MIN_BLOCK_HEIGHT = 80;
 
-const childBlockHandleItems = [
+const childBlockHandleItems: BlockActionHandleItem[] = [
   { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
@@ -195,6 +205,33 @@ const childBlockHandleItems = [
   { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
   { key: 'divider-danger', divider: true },
   { key: 'delete', icon: '🗑️', label: '删除块', danger: true },
+];
+const richTextLineActionItems: BlockActionHandleItem[] = [
+  { key: 'line-scope', label: '当前行', divider: true },
+  { key: 'line-insert-richtext', icon: '📝', label: '在当前行后插入文本块' },
+  { key: 'line-insert-ref', icon: '🔖', label: '在当前行后插入引用块' },
+  { key: 'line-insert-line', icon: '🕒', label: '在当前行后插入时间轴' },
+  { key: 'line-insert-x6', icon: '🧩', label: '在当前行后插入画板' },
+  { key: 'line-insert-table', icon: '▦', label: '在当前行后插入表格' },
+  { key: 'line-insert-container', icon: '📦', label: '在当前行后插入容器' },
+  { key: 'block-scope', label: '整个块', divider: true },
+  ...blockHandleItems.map((item) => item.divider ? item : ({
+    ...item,
+    label: item.key === 'delete' ? '删除整个块' : item.label,
+  })),
+];
+const richTextChildLineActionItems: BlockActionHandleItem[] = [
+  { key: 'line-scope', label: '当前行', divider: true },
+  { key: 'line-insert-richtext', icon: '📝', label: '在当前行后插入文本块' },
+  { key: 'line-insert-ref', icon: '🔖', label: '在当前行后插入引用块' },
+  { key: 'line-insert-line', icon: '🕒', label: '在当前行后插入时间轴' },
+  { key: 'line-insert-x6', icon: '🧩', label: '在当前行后插入画板' },
+  { key: 'line-insert-table', icon: '▦', label: '在当前行后插入表格' },
+  { key: 'block-scope', label: '整个块', divider: true },
+  ...childBlockHandleItems.map((item) => item.divider ? item : ({
+    ...item,
+    label: item.key === 'delete' ? '删除整个块' : item.label,
+  })),
 ];
 const tagEditorState = ref<TagEditorState>({
   visible: false,
@@ -218,9 +255,11 @@ const setRichTextEditorRef = (el: unknown, index: number) => {
       insertMarkdownLink?: (label: string, url: string, display?: LinkDisplayMode) => void;
       updateInsertedLinkDisplay?: (display: LinkDisplayMode) => boolean;
       updateInsertedImageWidth?: (widthPercent: number) => boolean;
+      handleLineHandleSelect?: (action: string) => void;
     };
   } else {
     delete richTextEditorRefs.value[index];
+    delete richTextLineHandleStates.value[index];
   }
 };
 
@@ -334,6 +373,55 @@ const updateBlockTags = (position: number, tags: BlockTag[]) => {
 };
 
 const getBlockTagsForRender = (block: Block): BlockTag[] => getBlockTags(block);
+
+const getRichTextLineHandleState = (position: number): RichTextLineHandleState | undefined => {
+  const state = richTextLineHandleStates.value[position];
+  if (!state?.visible || state.top == null) return undefined;
+  return state;
+};
+
+const hasRichTextLineHandle = (position: number): boolean => Boolean(getRichTextLineHandleState(position));
+
+const getActionHandleStyle = (position: number) => {
+  const lineState = getRichTextLineHandleState(position);
+  if (lineState) {
+    return {
+      '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
+      '--hover-handle-top': `${lineState.top}px`,
+      '--hover-handle-transform': 'translateX(-50%)',
+      '--hover-handle-z-index': 12,
+    } as const;
+  }
+
+  return blockHandleStyle;
+};
+
+const getActionHandleItems = (position: number, isChild = false): BlockActionHandleItem[] => {
+  if (hasRichTextLineHandle(position)) {
+    return isChild ? richTextChildLineActionItems : richTextLineActionItems;
+  }
+  return isChild ? childBlockHandleItems : blockHandleItems;
+};
+
+const updateRichTextLineHandleState = (position: number, payload: RichTextLineHandlePayload) => {
+  richTextLineHandleStates.value[position] = {
+    ...payload,
+    menuVisible: richTextLineHandleStates.value[position]?.menuVisible ?? false,
+  };
+};
+
+const updateRichTextLineMenuVisibility = (position: number, visible: boolean) => {
+  const current = richTextLineHandleStates.value[position] ?? {
+    visible: false,
+    top: null,
+    splitContent: null,
+    menuVisible: false,
+  };
+  richTextLineHandleStates.value[position] = {
+    ...current,
+    menuVisible: visible,
+  };
+};
 
 // Toast相关状态
 const toastMessages = ref<Array<{ id: string; message: string }>>([]);
@@ -1358,6 +1446,16 @@ const handleBlockHandleSelect = (action: string, position: number) => {
   }
 };
 
+const handleUnifiedHandleSelect = (action: string, position: number) => {
+  if (action.startsWith('line-')) {
+    const lineAction = action.replace(/^line-/, '');
+    richTextEditorRefs.value[position]?.handleLineHandleSelect?.(lineAction);
+    return;
+  }
+
+  handleBlockHandleSelect(action, position);
+};
+
 // 处理回车键创建新block
 const handleKeyDown = (event: KeyboardEvent, blockIndex: number) => {
   if (!props.editable) return;
@@ -1425,6 +1523,10 @@ const handleBlockClick = (event: MouseEvent, blockIndex: number) => {
 // 处理富文本编辑器的点击事件
 const handleRichTextEditorClick = (event: MouseEvent, blockIndex: number) => {
   activeBlockIndex.value = blockIndex;
+};
+
+const handleRichTextLineHandleChange = (position: number, payload: RichTextLineHandlePayload) => {
+  updateRichTextLineHandleState(position, payload);
 };
 
 // 处理富文本编辑器的生命周期事件
@@ -1869,6 +1971,54 @@ const handleContainerDragAdd = (containerIndex: number) => {
   emit('content-change', localBlocks.value);
 };
 
+const getTopLevelBlockRects = () => localBlocks.value
+  .map((_, index) => {
+    const element = blockRefs.value[index];
+    return element ? { index, rect: element.getBoundingClientRect() } : null;
+  })
+  .filter((item): item is { index: number; rect: DOMRect } => Boolean(item));
+
+const createBlankAreaRichTextBlock = (widthPx?: number): Block => {
+  const block = createNewRichTextBlock();
+  if (typeof widthPx === 'number' && Number.isFinite(widthPx)) {
+    block.width = `${Math.max(MIN_BLOCK_WIDTH, Math.round(widthPx))}px`;
+  }
+  return block;
+};
+
+const getBlankAreaInsertTarget = (event: MouseEvent): { position: number; widthPx?: number } | null => {
+  const rects = getTopLevelBlockRects();
+  if (rects.length === 0) return { position: 0 };
+
+  const clickX = event.clientX;
+  const clickY = event.clientY;
+  const rowTolerance = 6;
+  const bottom = Math.max(...rects.map(({ rect }) => rect.bottom));
+  if (clickY > bottom + rowTolerance) return { position: localBlocks.value.length };
+
+  const rowRects = rects
+    .filter(({ rect }) => clickY >= rect.top - rowTolerance && clickY <= rect.bottom + rowTolerance)
+    .sort((a, b) => a.rect.left - b.rect.left);
+  if (rowRects.length === 0) return null;
+
+  const lastBeforeClick = [...rowRects]
+    .reverse()
+    .find(({ rect }) => clickX >= rect.right + rowTolerance);
+  if (!lastBeforeClick) return null;
+
+  const nextInRow = rowRects.find(({ rect }) => rect.left > lastBeforeClick.rect.right);
+  if (nextInRow && clickX >= nextInRow.rect.left - rowTolerance) return null;
+
+  const contentRect = contentContainerRef.value?.getBoundingClientRect();
+  const rowRight = nextInRow?.rect.left ?? contentRect?.right ?? event.clientX + MIN_BLOCK_WIDTH;
+  const availableWidth = Math.max(MIN_BLOCK_WIDTH, rowRight - lastBeforeClick.rect.right - 12);
+
+  return {
+    position: lastBeforeClick.index + 1,
+    widthPx: availableWidth,
+  };
+};
+
 const handleContentContainerClick = (event: MouseEvent) => {
   if (!props.editable) return;
 
@@ -1877,6 +2027,12 @@ const handleContentContainerClick = (event: MouseEvent) => {
   const target = event.target as HTMLElement | null;
   if (!target) return;
   if (target.closest('.content-wrapper, .block-handle, .handle-menu')) return;
+
+  const insertTarget = getBlankAreaInsertTarget(event);
+  if (insertTarget) {
+    insertBlock(insertTarget.position, createBlankAreaRichTextBlock(insertTarget.widthPx));
+    return;
+  }
 
   activeBlockIndex.value = -1;
 };
@@ -2013,21 +2169,14 @@ const getBlockProperties = (block: Block) => {
           :tabindex="editable ? 0 : -1"
         >
           <!-- 左侧悬浮手柄 -->
-          <HoverHandle
-            v-if="editable && !isRichTextBlock(block)"
-            class="block-handle"
-            :style="blockHandleStyle"
-            :items="blockHandleItems"
-            :drag-cursor="true"
-            @select="(action) => handleBlockHandleSelect(action, index)"
-          />
-          <HoverHandle
-            v-else-if="editable"
-            class="block-handle block-handle--richtext"
-            :style="richTextBlockHandleStyle"
-            :items="blockHandleItems"
-            :drag-cursor="true"
-            @select="(action) => handleBlockHandleSelect(action, index)"
+          <BlockActionHandle
+            v-if="editable"
+            :mode="hasRichTextLineHandle(index) ? 'richtext-line' : 'block'"
+            :position-style="getActionHandleStyle(index)"
+            :items="getActionHandleItems(index)"
+            :drag-enabled="true"
+            @select="(action) => handleUnifiedHandleSelect(action, index)"
+            @menu-visibility-change="(visible: boolean) => updateRichTextLineMenuVisibility(index, visible)"
           />
           <div class="block-header" v-if="!isRichTextBlock(block)">
             <input
@@ -2133,21 +2282,14 @@ const getBlockProperties = (block: Block) => {
                     :tabindex="editable ? 0 : -1"
                   >
                     <!-- 左侧悬浮手柄 -->
-                    <HoverHandle
-                      v-if="editable && !isRichTextBlock(childBlock)"
-                      class="block-handle"
-                      :style="blockHandleStyle"
-                      :items="childBlockHandleItems"
-                      :drag-cursor="true"
-                      @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
-                    />
-                    <HoverHandle
-                      v-else-if="editable"
-                      class="block-handle block-handle--richtext"
-                      :style="richTextBlockHandleStyle"
-                      :items="childBlockHandleItems"
-                      :drag-cursor="true"
-                      @select="(action) => handleBlockHandleSelect(action, index * 100 + childIndex)"
+                    <BlockActionHandle
+                      v-if="editable"
+                      :mode="hasRichTextLineHandle(index * 100 + childIndex) ? 'richtext-line' : 'block'"
+                      :position-style="getActionHandleStyle(index * 100 + childIndex)"
+                      :items="getActionHandleItems(index * 100 + childIndex, true)"
+                      :drag-enabled="true"
+                      @select="(action) => handleUnifiedHandleSelect(action, index * 100 + childIndex)"
+                      @menu-visibility-change="(visible: boolean) => updateRichTextLineMenuVisibility(index * 100 + childIndex, visible)"
                     />
                     <div class="block-header" v-if="!isRichTextBlock(childBlock)">
                       <input
@@ -2215,6 +2357,8 @@ const getBlockProperties = (block: Block) => {
                         @open-tag-editor="(request?: TagEditorOpenRequest) => handleTagEditorRequest(index * 100 + childIndex, request)"
                         @delete-block="removeBlock(index * 100 + childIndex)"
                         @click="(event: MouseEvent) => handleRichTextEditorClick(event, index * 100 + childIndex)"
+                        @line-handle-change="(payload: RichTextLineHandlePayload) => handleRichTextLineHandleChange(index * 100 + childIndex, payload)"
+                        @line-handle-menu-visibility-change="(visible: boolean) => updateRichTextLineMenuVisibility(index * 100 + childIndex, visible)"
                         @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index * 100 + childIndex)"
                         class="block-content"
                       />
@@ -2349,6 +2493,8 @@ const getBlockProperties = (block: Block) => {
               @open-tag-editor="(request?: TagEditorOpenRequest) => handleTagEditorRequest(index, request)"
               @delete-block="removeBlock(index)"
               @click="(event: MouseEvent) => handleRichTextEditorClick(event, index)"
+              @line-handle-change="(payload: RichTextLineHandlePayload) => handleRichTextLineHandleChange(index, payload)"
+              @line-handle-menu-visibility-change="(visible: boolean) => updateRichTextLineMenuVisibility(index, visible)"
               @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index)"
               class="block-content"
             />
@@ -2467,6 +2613,14 @@ const getBlockProperties = (block: Block) => {
           </div>
         </div>
       </VueDraggable>
+      <button
+        v-if="editable"
+        type="button"
+        class="document-tail-insert"
+        @click.stop="insertBlock(localBlocks.length, createNewRichTextBlock())"
+      >
+        点击继续输入
+      </button>
     </div>
 
     <!-- 引用块选择弹窗 -->
@@ -2675,20 +2829,40 @@ const getBlockProperties = (block: Block) => {
   flex-wrap: wrap;
   align-content: flex-start;
   gap: 8px;
-  flex: 1;
-  min-height: 100%;
+  flex: 0 0 auto;
+  min-height: 0;
+}
+
+.document-tail-insert {
+  width: 100%;
+  min-height: 96px;
+  margin-top: 8px;
+  border: 1px dashed transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: transparent;
+  cursor: text;
+  text-align: left;
+}
+
+.document-tail-insert:hover,
+.document-tail-insert:focus {
+  border-color: #91caff;
+  background: #f8fbff;
+  color: #8c959f;
+  outline: none;
 }
 
 
 .content-wrapper {
   --block-handle-gutter: 36px;
-  --block-shell-pad-x: 20px;
-  --block-shell-pad-y: 20px;
+  --block-shell-pad-x: 0px;
+  --block-shell-pad-y: 0px;
   flex: 0 0 100%;
   min-width: 260px;
   box-sizing: border-box;
   margin-bottom: 0;
-  padding: var(--block-shell-pad-y) var(--block-shell-pad-x) var(--block-shell-pad-y) calc(var(--block-shell-pad-x) + var(--block-handle-gutter));
+  padding: var(--block-shell-pad-y) var(--block-shell-pad-x) var(--block-shell-pad-y) var(--block-handle-gutter);
   border: 1px solid #e0e0e0;
   border-radius: 8px;
   background: #fff;
@@ -2758,7 +2932,7 @@ const getBlockProperties = (block: Block) => {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  margin-bottom: 15px;
+  margin-bottom: 6px;
 }
 
 .block-header h3 {
@@ -3048,10 +3222,6 @@ const getBlockProperties = (block: Block) => {
 /* 左侧悬浮手柄样式 */
 .block-handle {
   opacity: 0;
-}
-
-.block-handle--richtext {
-  --hover-handle-z-index: 12;
 }
 
 .block-handle--always {

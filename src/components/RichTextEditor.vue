@@ -1,5 +1,4 @@
 ﻿<script setup lang="ts">
-import HoverHandle from './HoverHandle.vue';
 import Vditor from 'vditor';
 import 'vditor/dist/index.css';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
@@ -32,6 +31,12 @@ type LineHandleMode = 'editor-caret' | null;
 type SplitContent = { beforeContent: string; afterContent: string };
 type LinkDisplayMode = 'link' | 'image';
 
+interface LineHandleChangePayload {
+  visible: boolean;
+  top: number | null;
+  splitContent: SplitContent | null;
+}
+
 interface InsertedResourceLink {
   url: string;
   label: string;
@@ -61,6 +66,8 @@ const emit = defineEmits<{
   (e: 'lifecycle', method: string): void;
   (e: 'blur', content: string): void;
   (e: 'focused'): void;
+  (e: 'line-handle-change', payload: LineHandleChangePayload): void;
+  (e: 'line-handle-menu-visibility-change', visible: boolean): void;
 }>();
 
 const VDITOR_CDN = '/vditor';
@@ -103,17 +110,6 @@ const dragHandlePosition = ref<string | null>(null);
 const editorContentWidth = ref(0);
 const imageRect = ref({ top: 0, left: 0, width: 0, height: 0 });
 let imageResizeCleanup: (() => void) | null = null;
-const lineHandleItems = [
-  { key: 'insert-richtext', icon: '📝', label: '插入文本块' },
-  { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
-  { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
-  { key: 'insert-x6', icon: '🧩', label: '插入画板' },
-  { key: 'insert-table', icon: '▦', label: '插入表格' },
-  { key: 'insert-container-horizontal', icon: '📦', label: '插入水平容器' },
-  { key: 'insert-container-vertical', icon: '📦', label: '插入垂直容器' },
-  { key: 'edit-tags', icon: '🏷️', label: '编辑标签' },
-  { key: 'delete', icon: '🗑️', label: '删除当前块', danger: true },
-] ;
 const slashOptions = [
   {
     key: 'edit-tags',
@@ -166,12 +162,21 @@ const renderPreviewHtml = async () => {
 
 renderPreviewHtml();
 
+const emitLineHandleState = () => {
+  emit('line-handle-change', {
+    visible: props.editable && props.lineHandleEnabled && lineHandleVisible.value && lineHandleTop.value != null,
+    top: lineHandleTop.value,
+    splitContent: lastEditorLineSplitContent.value,
+  });
+};
+
 const hideLineHandle = () => {
   if (lineMenuVisible.value) return;
   activeLineElement.value = null;
   lineHandleMode.value = null;
   lineHandleTop.value = null;
   lineHandleVisible.value = false;
+  emitLineHandleState();
 };
 
 const hideSlashMenu = () => {
@@ -733,6 +738,7 @@ const updateLineHandlePosition = (lineElement: HTMLElement) => {
   const lineRect = lineElement.getBoundingClientRect();
   lineHandleTop.value = lineRect.top - wrapperRect.top + lineRect.height / 2;
   lineHandleVisible.value = true;
+  emitLineHandleState();
 };
 
 const updateHandlePositionFromCaret = (contentRoot: HTMLElement) => {
@@ -778,6 +784,7 @@ const updateHandlePositionFromCaret = (contentRoot: HTMLElement) => {
 
   lineHandleTop.value = visualCenter - wrapperRect.top;
   lineHandleVisible.value = true;
+  emitLineHandleState();
 };
 
 const updateSlashMenuFromCaret = (contentRoot: HTMLElement) => {
@@ -807,7 +814,10 @@ const cancelScheduledHandleSync = () => {
 const syncEditorHandleToCaret = () => {
   scheduledHandleSyncFrame = 0;
 
-  if (!isReady.value || !isEditorFocused.value || !props.editable || !props.lineHandleEnabled) return;
+  if (!isReady.value || !isEditorFocused.value || !props.editable || !props.lineHandleEnabled) {
+    hideLineHandle();
+    return;
+  }
 
   const editorContentRoot = getEditorContentRoot();
   if (!editorContentRoot) {
@@ -887,15 +897,18 @@ const emitLineInsert = (blockType: LineInsertBlockType, layout?: 'horizontal' | 
   });
 
   lineMenuVisible.value = false;
+  emit('line-handle-menu-visibility-change', false);
   activeLineElement.value = null;
   lineHandleMode.value = null;
   lineHandleTop.value = null;
   lineHandleVisible.value = false;
+  emitLineHandleState();
 };
 
 const emitDeleteBlock = () => {
   emit('delete-block');
   lineMenuVisible.value = false;
+  emit('line-handle-menu-visibility-change', false);
   hideLineHandle();
 };
 
@@ -918,6 +931,7 @@ const requestTagEditor = (options?: {
 
   hideSlashMenu();
   lineMenuVisible.value = false;
+  emit('line-handle-menu-visibility-change', false);
   hideLineHandle();
 
   void nextTick(() => {
@@ -1016,6 +1030,10 @@ const handleLineHandleSelect = (action: string) => {
 
 const handleLineMenuVisibilityChange = (visible: boolean) => {
   lineMenuVisible.value = visible;
+  emit('line-handle-menu-visibility-change', visible);
+  if (!visible && !isEditorFocused.value) {
+    hideLineHandle();
+  }
 };
 
 const updateHandleFromSelection = () => {
@@ -1636,6 +1654,7 @@ defineExpose({
   insertMarkdownLink,
   updateInsertedLinkDisplay,
   updateInsertedImageWidth,
+  handleLineHandleSelect,
 });
 
 onMounted(() => {
@@ -1696,22 +1715,6 @@ watch(
 <template>
   <div ref="wrapperRef" class="rich-text-editor-wrapper" :class="{ 'rich-text-editor-wrapper--compact': compact }">
     <div v-if="hasActivatedEditor" ref="editorRef" class="rich-text-editor-container"></div>
-
-    <HoverHandle
-      v-if="editable && lineHandleEnabled && lineHandleVisible && lineHandleTop != null"
-      class="editor-line-handle"
-      :style="{
-        '--hover-handle-left': 'calc(var(--line-handle-gutter) / 2)',
-        '--hover-handle-top': `${lineHandleTop}px`,
-        '--hover-handle-z-index': 4,
-        '--hover-handle-item-hover-bg': '#f5f5f5',
-        '--hover-handle-item-hover-color': '#333',
-      }"
-      :items="lineHandleItems"
-      :prevent-mouse-down="true"
-      @menu-visibility-change="handleLineMenuVisibilityChange"
-      @select="handleLineHandleSelect"
-    />
 
     <div
       v-if="editable && slashMenuVisible && slashMenuTop != null && slashMenuLeft != null"
