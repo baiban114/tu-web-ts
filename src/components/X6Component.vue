@@ -31,7 +31,27 @@ interface Props {
   blockActionsEnabled?: boolean;
 }
 
-type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond';
+type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
+
+interface UmlClassDefinition {
+  id: string;
+  name: string;
+  attributes: string[];
+  methods: string[];
+  nodeId?: string;
+}
+
+interface UmlObjectDefinition {
+  id: string;
+  name: string;
+  classId: string;
+  propertyValues: Record<string, string>;
+}
+
+interface UmlModel {
+  classes: UmlClassDefinition[];
+  objects: UmlObjectDefinition[];
+}
 
 type SelectedCellState =
   | {
@@ -95,6 +115,22 @@ const gridVisible = ref(true);
 const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
+const umlModel = ref<UmlModel>({
+  classes: [],
+  objects: [],
+});
+const selectedUmlClassId = ref<string | null>(null);
+const selectedUmlObjectId = ref<string | null>(null);
+const umlClassDraft = ref({
+  name: 'User',
+  attributes: 'id: string\nname: string',
+  methods: 'login(): void',
+});
+const umlObjectDraft = ref({
+  name: 'user1',
+  classId: '',
+  propertyValues: '{}',
+});
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -122,6 +158,8 @@ const selectionSummary = computed(() => {
     ? `节点: ${selectedCell.value.label || selectedCell.value.id}`
     : `连线: ${selectedCell.value.label || selectedCell.value.id}`;
 });
+const selectedUmlClass = computed(() => umlModel.value.classes.find((item) => item.id === selectedUmlClassId.value) ?? null);
+const selectedUmlObject = computed(() => umlModel.value.objects.find((item) => item.id === selectedUmlObjectId.value) ?? null);
 
 let graph: Graph | null = null;
 let resizeObserver: ResizeObserver | null = null;
@@ -280,33 +318,121 @@ function createEdgeMetadata(edge: Partial<CellData> = {}): CellData {
   };
 }
 
+function splitLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function normalizeUmlModel(value: unknown): UmlModel {
+  const source = isPlainObject(value) ? value : {};
+  const classes = Array.isArray(source.classes)
+    ? source.classes.map((item: any) => ({
+      id: typeof item.id === 'string' ? item.id : createId('uml-class'),
+      name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : 'Class',
+      attributes: Array.isArray(item.attributes) ? item.attributes.filter((line: unknown): line is string => typeof line === 'string') : [],
+      methods: Array.isArray(item.methods) ? item.methods.filter((line: unknown): line is string => typeof line === 'string') : [],
+      nodeId: typeof item.nodeId === 'string' ? item.nodeId : undefined,
+    }))
+    : [];
+  const classIds = new Set(classes.map((item) => item.id));
+  const objects = Array.isArray(source.objects)
+    ? source.objects
+      .map((item: any) => ({
+        id: typeof item.id === 'string' ? item.id : createId('uml-object'),
+        name: typeof item.name === 'string' && item.name.trim() ? item.name.trim() : 'object',
+        classId: typeof item.classId === 'string' ? item.classId : '',
+        propertyValues: isPlainObject(item.propertyValues) ? item.propertyValues as Record<string, string> : {},
+      }))
+      .filter((item) => classIds.has(item.classId))
+    : [];
+  return { classes, objects };
+}
+
+function formatUmlClassLabel(definition: UmlClassDefinition): string {
+  const attributes = definition.attributes.length ? definition.attributes.join('\n') : ' ';
+  const methods = definition.methods.length ? definition.methods.join('\n') : ' ';
+  return `${definition.name}\n────────────\n${attributes}\n────────────\n${methods}`;
+}
+
+function createUmlClassNode(definition: UmlClassDefinition, options: Partial<CellData> = {}): CellData {
+  return {
+    id: options.id ?? definition.nodeId ?? createId('uml-class-node'),
+    shape: 'rect',
+    x: options.x ?? 160,
+    y: options.y ?? 120,
+    width: options.width ?? 240,
+    height: options.height ?? 172,
+    ports: options.ports ?? createNodePorts(),
+    attrs: mergeDeep(
+      {
+        body: {
+          fill: '#fffdf7',
+          stroke: '#31511e',
+          strokeWidth: 1.8,
+          rx: 2,
+          ry: 2,
+        },
+        label: {
+          text: formatUmlClassLabel(definition),
+          fill: '#1f2d1f',
+          fontSize: 13,
+          fontFamily: 'Consolas, Menlo, monospace',
+          textVerticalAnchor: 'middle',
+          textAnchor: 'middle',
+          lineHeight: 18,
+        },
+      },
+      options.attrs ?? {},
+    ),
+    data: {
+      preset: 'umlClass',
+      umlClassId: definition.id,
+      ...(options.data ?? {}),
+    },
+    ...options,
+  };
+}
+
 function extractNodeLabel(node: CellData) {
   return node.label ?? node.data?.label ?? node.attrs?.label?.text ?? '节点';
 }
 
 function createNodeMetadata(preset: NodePreset, options: Partial<CellData> = {}): CellData {
-  const labels: Record<NodePreset, string> = {
+  if (preset === 'umlClass') {
+    const definition: UmlClassDefinition = options.data?.umlDefinition ?? {
+      id: options.data?.umlClassId ?? createId('uml-class'),
+      name: options.label ?? 'Class',
+      attributes: [],
+      methods: [],
+      nodeId: options.id,
+    };
+    return createUmlClassNode(definition, options);
+  }
+
+  const labels: Record<Exclude<NodePreset, 'umlClass'>, string> = {
     rect: '处理步骤',
     round: '子流程',
     ellipse: '开始 / 结束',
     diamond: '判断',
   };
 
-  const fills: Record<NodePreset, string> = {
+  const fills: Record<Exclude<NodePreset, 'umlClass'>, string> = {
     rect: '#fff7e6',
     round: '#f6ffed',
     ellipse: '#e6f4ff',
     diamond: '#fff1f0',
   };
 
-  const strokes: Record<NodePreset, string> = {
+  const strokes: Record<Exclude<NodePreset, 'umlClass'>, string> = {
     rect: '#d48806',
     round: '#389e0d',
     ellipse: '#1677ff',
     diamond: '#cf1322',
   };
 
-  const textColors: Record<NodePreset, string> = {
+  const textColors: Record<Exclude<NodePreset, 'umlClass'>, string> = {
     rect: '#593103',
     round: '#135200',
     ellipse: '#003a8c',
@@ -436,6 +562,46 @@ function normalizeNode(node: CellData): CellData {
         : 'rect');
   const position = getCellPosition(node);
   const nodeSize = getCellSize(node);
+  if (preset === 'umlClass') {
+    const definition = normalizeUmlModel({ classes: [node.data?.umlDefinition ?? {
+      id: node.data?.umlClassId,
+      name: extractNodeLabel(node).split('\n')[0],
+      attributes: [],
+      methods: [],
+      nodeId: node.id,
+    }] }).classes[0];
+    const base = createUmlClassNode(definition, {
+      id: node.id,
+      x: position.x,
+      y: position.y,
+      width: nodeSize.width,
+      height: nodeSize.height,
+      data: {
+        ...node.data,
+        umlClassId: definition.id,
+      },
+    });
+    return {
+      ...base,
+      ...node,
+      x: position.x,
+      y: position.y,
+      width: nodeSize.width ?? base.width,
+      height: nodeSize.height ?? base.height,
+      position: {
+        ...(isPlainObject(node.position) ? node.position : {}),
+        x: position.x,
+        y: position.y,
+      },
+      size: {
+        ...(isPlainObject(node.size) ? node.size : {}),
+        width: nodeSize.width ?? base.width,
+        height: nodeSize.height ?? base.height,
+      },
+      attrs: mergeDeep(base.attrs, node.attrs ?? {}),
+      ports: node.ports ?? base.ports,
+    };
+  }
 
   const base = createNodeMetadata(preset, {
     id: node.id,
@@ -514,7 +680,7 @@ function getGraphSnapshot(data?: GraphData) {
 
 function serializeGraphData(): GraphData {
   if (!graph) {
-    return { cells: [], nodes: [], edges: [] };
+    return { cells: [], nodes: [], edges: [], uml: umlModel.value };
   }
 
   const nodes = graph.getNodes().map((node) => node.toJSON() as CellData);
@@ -523,6 +689,7 @@ function serializeGraphData(): GraphData {
     cells: graph.toJSON().cells as CellData[],
     nodes,
     edges,
+    uml: umlModel.value,
   };
 }
 
@@ -872,6 +1039,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   if (!graph) return;
 
   const normalized = normalizeGraphData(data);
+  umlModel.value = normalizeUmlModel((data as Record<string, any> | undefined)?.uml);
   const snapshot = JSON.stringify(normalized);
   if (snapshot === lastSerializedSnapshot) {
     refreshSelectedCellState();
@@ -1203,6 +1371,9 @@ function clearCanvas() {
   if (!graph || !isEditable.value) return;
   if (!window.confirm('确认清空当前图形吗？')) return;
   graph.clearCells();
+  umlModel.value = { classes: [], objects: [] };
+  selectedUmlClassId.value = null;
+  selectedUmlObjectId.value = null;
   graph.cleanSelection();
   refreshSelectedCellState();
   scheduleSync();
@@ -1333,6 +1504,217 @@ function updateSelectedEdgeConnector(value: string) {
   const edge = graph.getCellById(selectedCell.value.id);
   if (!edge || !graph.isEdge(edge)) return;
   edge.setConnector(value);
+  scheduleSync();
+}
+
+function syncUmlClassNode(definition: UmlClassDefinition) {
+  if (!graph) return;
+  const nodeId = definition.nodeId;
+  const existingNode = nodeId ? graph.getCellById(nodeId) : null;
+  if (existingNode && graph.isNode(existingNode)) {
+    existingNode.attr('label/text', formatUmlClassLabel(definition));
+    existingNode.updateData({
+      preset: 'umlClass',
+      umlClassId: definition.id,
+      umlDefinition: definition,
+    });
+    return;
+  }
+
+  const center = getCanvasCenter();
+  const node = graph.addNode(createUmlClassNode(definition, {
+    x: center.x,
+    y: center.y,
+    data: {
+      umlClassId: definition.id,
+      umlDefinition: definition,
+    },
+  }));
+  definition.nodeId = node.id;
+  graph.cleanSelection();
+  graph.select(node);
+}
+
+function syncAllUmlClassNodes() {
+  umlModel.value.classes.forEach(syncUmlClassNode);
+  updateNodeOverlays();
+}
+
+function saveUmlClass() {
+  if (!isEditable.value) return;
+  const name = umlClassDraft.value.name.trim();
+  if (!name) return;
+  const current = selectedUmlClass.value;
+  const definition: UmlClassDefinition = {
+    id: current?.id ?? createId('uml-class'),
+    name,
+    attributes: splitLines(umlClassDraft.value.attributes),
+    methods: splitLines(umlClassDraft.value.methods),
+    nodeId: current?.nodeId,
+  };
+
+  if (current) {
+    umlModel.value.classes = umlModel.value.classes.map((item) => item.id === current.id ? definition : item);
+  } else {
+    umlModel.value.classes = [...umlModel.value.classes, definition];
+  }
+  selectedUmlClassId.value = definition.id;
+  syncUmlClassNode(definition);
+  scheduleSync();
+}
+
+function selectUmlClass(id: string) {
+  selectedUmlClassId.value = id;
+  const definition = umlModel.value.classes.find((item) => item.id === id);
+  if (!definition) return;
+  umlClassDraft.value = {
+    name: definition.name,
+    attributes: definition.attributes.join('\n'),
+    methods: definition.methods.join('\n'),
+  };
+  if (definition.nodeId && graph) {
+    const node = graph.getCellById(definition.nodeId);
+    if (node) {
+      graph.cleanSelection();
+      graph.select(node);
+    }
+  }
+}
+
+function newUmlClassDraft() {
+  selectedUmlClassId.value = null;
+  umlClassDraft.value = {
+    name: 'NewClass',
+    attributes: '',
+    methods: '',
+  };
+}
+
+function deleteUmlClass(id: string) {
+  if (!isEditable.value) return;
+  const definition = umlModel.value.classes.find((item) => item.id === id);
+  umlModel.value.classes = umlModel.value.classes.filter((item) => item.id !== id);
+  umlModel.value.objects = umlModel.value.objects.filter((item) => item.classId !== id);
+  if (selectedUmlClassId.value === id) newUmlClassDraft();
+  if (definition?.nodeId && graph) {
+    const node = graph.getCellById(definition.nodeId);
+    if (node) graph.removeCell(node);
+  }
+  scheduleSync();
+}
+
+function parseObjectValues(raw: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveUmlObject() {
+  if (!isEditable.value || !umlObjectDraft.value.classId) return;
+  const name = umlObjectDraft.value.name.trim();
+  if (!name) return;
+  const current = selectedUmlObject.value;
+  const objectDefinition: UmlObjectDefinition = {
+    id: current?.id ?? createId('uml-object'),
+    name,
+    classId: umlObjectDraft.value.classId,
+    propertyValues: parseObjectValues(umlObjectDraft.value.propertyValues),
+  };
+
+  if (current) {
+    umlModel.value.objects = umlModel.value.objects.map((item) => item.id === current.id ? objectDefinition : item);
+  } else {
+    umlModel.value.objects = [...umlModel.value.objects, objectDefinition];
+  }
+  selectedUmlObjectId.value = objectDefinition.id;
+  scheduleSync();
+}
+
+function selectUmlObject(id: string) {
+  selectedUmlObjectId.value = id;
+  const objectDefinition = umlModel.value.objects.find((item) => item.id === id);
+  if (!objectDefinition) return;
+  umlObjectDraft.value = {
+    name: objectDefinition.name,
+    classId: objectDefinition.classId,
+    propertyValues: JSON.stringify(objectDefinition.propertyValues, null, 2),
+  };
+}
+
+function newUmlObjectDraft() {
+  selectedUmlObjectId.value = null;
+  umlObjectDraft.value = {
+    name: 'object1',
+    classId: umlModel.value.classes[0]?.id ?? '',
+    propertyValues: '{}',
+  };
+}
+
+function deleteUmlObject(id: string) {
+  if (!isEditable.value) return;
+  umlModel.value.objects = umlModel.value.objects.filter((item) => item.id !== id);
+  if (selectedUmlObjectId.value === id) newUmlObjectDraft();
+  scheduleSync();
+}
+
+function insertUmlClassPreset() {
+  if (!isEditable.value) return;
+  const userClass: UmlClassDefinition = {
+    id: createId('uml-class'),
+    name: 'User',
+    attributes: ['id: string', 'name: string', 'email: string'],
+    methods: ['login(): void', 'logout(): void'],
+  };
+  const orderClass: UmlClassDefinition = {
+    id: createId('uml-class'),
+    name: 'Order',
+    attributes: ['id: string', 'createdAt: Date', 'status: OrderStatus'],
+    methods: ['submit(): void', 'cancel(): void'],
+  };
+  const classNodes = [
+    createUmlClassNode(userClass, { x: 160, y: 120, data: { umlClassId: userClass.id, umlDefinition: userClass } }),
+    createUmlClassNode(orderClass, { x: 460, y: 120, data: { umlClassId: orderClass.id, umlDefinition: orderClass } }),
+  ];
+  userClass.nodeId = classNodes[0].id;
+  orderClass.nodeId = classNodes[1].id;
+  const relation = createEdgeMetadata({
+    id: createId('uml-edge'),
+    source: { cell: userClass.nodeId, port: 'port-right' },
+    target: { cell: orderClass.nodeId, port: 'port-left' },
+    labels: [{ attrs: { label: { text: '1  creates  *', fill: '#31511e', fontSize: 12 } } }],
+    attrs: {
+      line: {
+        stroke: '#31511e',
+        strokeDasharray: '',
+      },
+    },
+  });
+  const userNode = graph?.addNode(classNodes[0]);
+  const orderNode = graph?.addNode(classNodes[1]);
+  if (userNode && orderNode) {
+    graph?.addEdge(relation);
+  }
+  umlModel.value = {
+    classes: [...umlModel.value.classes, userClass, orderClass],
+    objects: [
+      ...umlModel.value.objects,
+      {
+        id: createId('uml-object'),
+        name: 'currentUser',
+        classId: userClass.id,
+        propertyValues: {
+          id: 'u-001',
+          name: 'Alice',
+          email: 'alice@example.com',
+        },
+      },
+    ],
+  };
+  selectedUmlClassId.value = userClass.id;
+  selectUmlClass(userClass.id);
   scheduleSync();
 }
 
@@ -1729,6 +2111,9 @@ defineExpose({
         <button type="button" class="tool-button" :disabled="!isEditable" @click="addNode('diamond')">
           菱形
         </button>
+        <button type="button" class="tool-button" :disabled="!isEditable" @click="insertUmlClassPreset">
+          UML 类图
+        </button>
       </div>
 
       <div class="toolbar-group">
@@ -1830,6 +2215,104 @@ defineExpose({
       </div>
 
       <aside class="x6-inspector">
+        <div class="inspector-card uml-manager">
+          <div class="inspector-card__header">
+            <h4>类/对象管理</h4>
+            <button type="button" class="mini-button" :disabled="!isEditable" @click="syncAllUmlClassNodes">同步类图</button>
+          </div>
+
+          <div class="uml-section">
+            <div class="uml-section__title">
+              <span>类</span>
+              <button type="button" class="mini-button" :disabled="!isEditable" @click="newUmlClassDraft">新类</button>
+            </div>
+            <div class="uml-list">
+              <button
+                v-for="item in umlModel.classes"
+                :key="item.id"
+                type="button"
+                class="uml-list-item"
+                :class="{ 'uml-list-item--active': selectedUmlClassId === item.id }"
+                @click="selectUmlClass(item.id)"
+              >
+                {{ item.name }}
+              </button>
+              <span v-if="umlModel.classes.length === 0" class="inspector-empty">暂无类定义</span>
+            </div>
+
+            <label class="field">
+              <span>类名</span>
+              <input v-model="umlClassDraft.name" :disabled="!isEditable" />
+            </label>
+            <label class="field">
+              <span>属性（每行一个）</span>
+              <textarea v-model="umlClassDraft.attributes" :disabled="!isEditable" rows="4" />
+            </label>
+            <label class="field">
+              <span>方法（每行一个）</span>
+              <textarea v-model="umlClassDraft.methods" :disabled="!isEditable" rows="4" />
+            </label>
+            <div class="uml-actions">
+              <button type="button" class="mini-button mini-button--primary" :disabled="!isEditable" @click="saveUmlClass">保存类</button>
+              <button
+                type="button"
+                class="mini-button mini-button--danger"
+                :disabled="!isEditable || !selectedUmlClassId"
+                @click="selectedUmlClassId && deleteUmlClass(selectedUmlClassId)"
+              >
+                删除类
+              </button>
+            </div>
+          </div>
+
+          <div class="uml-section">
+            <div class="uml-section__title">
+              <span>对象</span>
+              <button type="button" class="mini-button" :disabled="!isEditable || umlModel.classes.length === 0" @click="newUmlObjectDraft">新对象</button>
+            </div>
+            <div class="uml-list">
+              <button
+                v-for="item in umlModel.objects"
+                :key="item.id"
+                type="button"
+                class="uml-list-item"
+                :class="{ 'uml-list-item--active': selectedUmlObjectId === item.id }"
+                @click="selectUmlObject(item.id)"
+              >
+                {{ item.name }}
+              </button>
+              <span v-if="umlModel.objects.length === 0" class="inspector-empty">暂无对象实例</span>
+            </div>
+
+            <label class="field">
+              <span>对象名</span>
+              <input v-model="umlObjectDraft.name" :disabled="!isEditable || umlModel.classes.length === 0" />
+            </label>
+            <label class="field">
+              <span>所属类</span>
+              <select v-model="umlObjectDraft.classId" :disabled="!isEditable || umlModel.classes.length === 0">
+                <option value="">选择类</option>
+                <option v-for="item in umlModel.classes" :key="item.id" :value="item.id">{{ item.name }}</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>属性值 JSON</span>
+              <textarea v-model="umlObjectDraft.propertyValues" :disabled="!isEditable || umlModel.classes.length === 0" rows="4" />
+            </label>
+            <div class="uml-actions">
+              <button type="button" class="mini-button mini-button--primary" :disabled="!isEditable || !umlObjectDraft.classId" @click="saveUmlObject">保存对象</button>
+              <button
+                type="button"
+                class="mini-button mini-button--danger"
+                :disabled="!isEditable || !selectedUmlObjectId"
+                @click="selectedUmlObjectId && deleteUmlObject(selectedUmlObjectId)"
+              >
+                删除对象
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div class="inspector-card">
           <h4>属性面板</h4>
 
@@ -2121,6 +2604,9 @@ defineExpose({
 }
 
 .x6-inspector {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   padding: 16px;
   background: rgba(248, 250, 253, 0.92);
 }
@@ -2140,6 +2626,66 @@ defineExpose({
   margin: 0;
   font-size: 15px;
   color: #1f2d3d;
+}
+
+.inspector-card__header,
+.uml-section__title,
+.uml-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.uml-manager {
+  gap: 14px;
+}
+
+.uml-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.uml-section__title {
+  color: #1f2d3d;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.uml-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 24px;
+}
+
+.uml-list-item,
+.mini-button {
+  border: 1px solid #d2d8e2;
+  border-radius: 8px;
+  background: #fff;
+  color: #213547;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.uml-list-item--active,
+.mini-button--primary {
+  border-color: #1677ff;
+  background: #eaf3ff;
+  color: #0958d9;
+}
+
+.mini-button--danger {
+  color: #cf1322;
+}
+
+.mini-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .inspector-empty {
@@ -2166,7 +2712,8 @@ defineExpose({
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   border: 1px solid #d2d8e2;
   border-radius: 10px;
@@ -2175,6 +2722,12 @@ defineExpose({
   color: #213547;
   background: #ffffff;
   box-sizing: border-box;
+  font-family: inherit;
+}
+
+.field textarea {
+  resize: vertical;
+  line-height: 1.45;
 }
 
 .field input[type='color'] {

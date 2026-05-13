@@ -34,6 +34,7 @@ type LinkDisplayMode = 'link' | 'image';
 interface LineHandleChangePayload {
   visible: boolean;
   top: number | null;
+  height: number | null;
   splitContent: SplitContent | null;
 }
 
@@ -88,6 +89,7 @@ let lastInsertedResourceLink: InsertedResourceLink | null = null;
 const activeLineElement = ref<HTMLElement | null>(null);
 const lineHandleMode = ref<LineHandleMode>(null);
 const lineHandleTop = ref<number | null>(null);
+const lineHandleHeight = ref<number | null>(null);
 const lineHandleVisible = ref(false);
 const lineMenuVisible = ref(false);
 const lastEditorLineSplitContent = ref<SplitContent | null>(null);
@@ -164,8 +166,13 @@ renderPreviewHtml();
 
 const emitLineHandleState = () => {
   emit('line-handle-change', {
-    visible: props.editable && props.lineHandleEnabled && lineHandleVisible.value && lineHandleTop.value != null,
+    visible: props.editable
+      && props.lineHandleEnabled
+      && lineHandleVisible.value
+      && lineHandleTop.value != null
+      && lineHandleHeight.value != null,
     top: lineHandleTop.value,
+    height: lineHandleHeight.value,
     splitContent: lastEditorLineSplitContent.value,
   });
 };
@@ -175,6 +182,7 @@ const hideLineHandle = () => {
   activeLineElement.value = null;
   lineHandleMode.value = null;
   lineHandleTop.value = null;
+  lineHandleHeight.value = null;
   lineHandleVisible.value = false;
   emitLineHandleState();
 };
@@ -736,7 +744,8 @@ const updateLineHandlePosition = (lineElement: HTMLElement) => {
 
   const wrapperRect = wrapperRef.value.getBoundingClientRect();
   const lineRect = lineElement.getBoundingClientRect();
-  lineHandleTop.value = lineRect.top - wrapperRect.top + lineRect.height / 2;
+  lineHandleTop.value = lineRect.top - wrapperRect.top;
+  lineHandleHeight.value = Math.max(1, lineRect.height);
   lineHandleVisible.value = true;
   emitLineHandleState();
 };
@@ -765,24 +774,27 @@ const updateHandlePositionFromCaret = (contentRoot: HTMLElement) => {
     && contentRoot.contains(currentLineElement),
   );
 
-  let visualCenter = 0;
+  let handleTop = 0;
+  let handleHeight = lineHeight;
   if (rectLooksOversized) {
     if (canUseCurrentLineElement) {
       updateLineHandlePosition(currentLineElement!);
       return;
     }
-    visualCenter = contentRect.top + getElementPaddingTop(contentRoot) + lineHeight / 2;
+    handleTop = contentRect.top + getElementPaddingTop(contentRoot);
   } else if (rect && rect.height > 0 && Number.isFinite(rect.top)) {
-    visualCenter = rect.top + rect.height / 2;
+    handleTop = rect.top;
+    handleHeight = Math.max(lineHeight, rect.height);
   } else {
     if (canUseCurrentLineElement) {
       updateLineHandlePosition(currentLineElement!);
       return;
     }
-    visualCenter = contentRect.top + getElementPaddingTop(contentRoot) + lineHeight / 2;
+    handleTop = contentRect.top + getElementPaddingTop(contentRoot);
   }
 
-  lineHandleTop.value = visualCenter - wrapperRect.top;
+  lineHandleTop.value = handleTop - wrapperRect.top;
+  lineHandleHeight.value = Math.max(1, handleHeight);
   lineHandleVisible.value = true;
   emitLineHandleState();
 };

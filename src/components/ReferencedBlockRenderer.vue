@@ -4,6 +4,19 @@ import Line from './line.vue';
 import TableBlock from './TableBlock.vue';
 import X6Component from './X6Component.vue';
 import type { Block, GraphData, TableBlockData } from '@/api/types';
+import { ref } from 'vue';
+
+type ResizeEdge = 'right' | 'bottom' | 'corner';
+
+interface ResizeState {
+  childIndex: number;
+  edge: ResizeEdge;
+  startX: number;
+  startY: number;
+  startWidth: number;
+  startHeight: number;
+  maxWidth: number;
+}
 
 const props = withDefaults(defineProps<{
   block?: Block;
@@ -15,6 +28,12 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'update-block', block: Block): void;
 }>();
+
+const MIN_CHILD_WIDTH = 220;
+const MIN_CHILD_HEIGHT = 80;
+const activeChildIndex = ref(-1);
+const resizingChild = ref<ResizeState | null>(null);
+const childShellRefs = ref<Record<number, HTMLElement>>({});
 
 const isRichTextBlock = (block: Block | undefined): boolean => {
   return Boolean(block && (block.type === 'richtext' || block.type === 'richText'));
@@ -38,6 +57,105 @@ const updateChildBlock = (childIndex: number, child: Block) => {
   const children = [...props.block.children];
   children[childIndex] = child;
   updateBlock({ children });
+};
+
+const updateChildBlockPatch = (childIndex: number, patch: Partial<Block>) => {
+  const child = props.block?.children?.[childIndex];
+  if (!child) return;
+  updateChildBlock(childIndex, { ...child, ...patch });
+};
+
+const normalizeBlockWidth = (value: unknown): string | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `${Math.max(MIN_CHILD_WIDTH, Math.round(value))}px`;
+  }
+  if (typeof value !== 'string') return undefined;
+
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === 'auto') return undefined;
+  if (/^\d+(\.\d+)?px$/.test(trimmed)) {
+    return `${Math.max(MIN_CHILD_WIDTH, Math.round(Number.parseFloat(trimmed)))}px`;
+  }
+  if (/^\d+(\.\d+)?%$/.test(trimmed)) {
+    const percent = Math.max(20, Math.min(100, Number.parseFloat(trimmed)));
+    return `${percent.toFixed(2).replace(/\.00$/, '')}%`;
+  }
+  return undefined;
+};
+
+const getReferencedChildStyle = (child: Block) => ({
+  width: normalizeBlockWidth(child.width) || '100%',
+  minHeight: typeof child.blockHeight === 'number'
+    ? `${Math.max(MIN_CHILD_HEIGHT, child.blockHeight)}px`
+    : undefined,
+});
+
+const setChildShellRef = (el: Element | null, childIndex: number) => {
+  if (el instanceof HTMLElement) {
+    childShellRefs.value[childIndex] = el;
+  } else {
+    delete childShellRefs.value[childIndex];
+  }
+};
+
+const commitChildResize = (state: ResizeState, widthPx?: number, heightPx?: number) => {
+  const updates: Partial<Block> = {};
+  if (typeof widthPx === 'number') {
+    const width = Math.max(MIN_CHILD_WIDTH, Math.min(state.maxWidth, widthPx));
+    updates.width = `${Math.round(width)}px`;
+  }
+  if (typeof heightPx === 'number') {
+    updates.blockHeight = Math.max(MIN_CHILD_HEIGHT, Math.round(heightPx));
+  }
+  updateChildBlockPatch(state.childIndex, updates);
+};
+
+const handleChildResizeMove = (event: MouseEvent) => {
+  const state = resizingChild.value;
+  if (!state) return;
+
+  const nextWidth = state.edge === 'right' || state.edge === 'corner'
+    ? state.startWidth + event.clientX - state.startX
+    : undefined;
+  const nextHeight = state.edge === 'bottom' || state.edge === 'corner'
+    ? state.startHeight + event.clientY - state.startY
+    : undefined;
+
+  commitChildResize(state, nextWidth, nextHeight);
+};
+
+const stopChildResize = () => {
+  if (!resizingChild.value) return;
+  resizingChild.value = null;
+  document.body.classList.remove('tu-referenced-block-resizing');
+  document.removeEventListener('mousemove', handleChildResizeMove);
+  document.removeEventListener('mouseup', stopChildResize);
+};
+
+const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdge) => {
+  if (!props.editable) return;
+  const shell = childShellRefs.value[childIndex];
+  if (!shell) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  activeChildIndex.value = childIndex;
+
+  const rect = shell.getBoundingClientRect();
+  const containerRect = shell.parentElement?.getBoundingClientRect();
+  resizingChild.value = {
+    childIndex,
+    edge,
+    startX: event.clientX,
+    startY: event.clientY,
+    startWidth: rect.width,
+    startHeight: rect.height,
+    maxWidth: Math.max(MIN_CHILD_WIDTH, containerRect?.width ?? rect.width),
+  };
+
+  document.body.classList.add('tu-referenced-block-resizing');
+  document.addEventListener('mousemove', handleChildResizeMove);
+  document.addEventListener('mouseup', stopChildResize);
 };
 </script>
 
@@ -80,14 +198,44 @@ const updateChildBlock = (childIndex: number, child: Block) => {
       :key="`ref-container-${block.id}`"
       class="referenced-container"
     >
-      <ReferencedBlockRenderer
+      <div
         v-for="(child, childIndex) in block.children ?? []"
         :key="child.id"
-        :block="child"
-        :editable="editable"
-        class="referenced-container__child"
-        @update-block="(updatedChild: Block) => updateChildBlock(childIndex, updatedChild)"
-      />
+        class="referenced-container__child-shell"
+        :class="{ 'referenced-container__child-shell--active': activeChildIndex === childIndex }"
+        :style="getReferencedChildStyle(child)"
+        :ref="(el) => setChildShellRef(el as Element | null, childIndex)"
+        :tabindex="editable ? 0 : -1"
+        @click.stop="activeChildIndex = childIndex"
+        @focus="activeChildIndex = childIndex"
+      >
+        <ReferencedBlockRenderer
+          :block="child"
+          :editable="editable"
+          class="referenced-container__child"
+          @update-block="(updatedChild: Block) => updateChildBlock(childIndex, updatedChild)"
+        />
+        <template v-if="editable && activeChildIndex === childIndex">
+          <button
+            type="button"
+            class="referenced-resize-handle referenced-resize-handle--right"
+            aria-label="调整引用单元内块宽度"
+            @mousedown="startChildResize($event, childIndex, 'right')"
+          />
+          <button
+            type="button"
+            class="referenced-resize-handle referenced-resize-handle--bottom"
+            aria-label="调整引用单元内块高度"
+            @mousedown="startChildResize($event, childIndex, 'bottom')"
+          />
+          <button
+            type="button"
+            class="referenced-resize-handle referenced-resize-handle--corner"
+            aria-label="调整引用单元内块尺寸"
+            @mousedown="startChildResize($event, childIndex, 'corner')"
+          />
+        </template>
+      </div>
     </div>
     <div v-else-if="block.type !== 'ref'" class="referenced-block-renderer__fallback">
       {{ renderFallbackText(block) }}
@@ -114,8 +262,64 @@ const updateChildBlock = (childIndex: number, child: Block) => {
   background: #fff;
 }
 
+.referenced-container__child-shell {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  outline: none;
+}
+
+.referenced-container__child-shell--active {
+  border-color: #1677ff;
+}
+
 .referenced-container__child {
   min-width: 0;
+  height: 100%;
+}
+
+.referenced-resize-handle {
+  position: absolute;
+  z-index: 20;
+  border: 1px solid #1677ff;
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.18);
+  opacity: 0.92;
+}
+
+.referenced-resize-handle--right {
+  top: 50%;
+  right: -6px;
+  width: 10px;
+  height: 36px;
+  cursor: ew-resize;
+  transform: translateY(-50%);
+}
+
+.referenced-resize-handle--bottom {
+  bottom: -6px;
+  left: 50%;
+  width: 44px;
+  height: 10px;
+  cursor: ns-resize;
+  transform: translateX(-50%);
+}
+
+.referenced-resize-handle--corner {
+  right: -7px;
+  bottom: -7px;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+:global(.tu-referenced-block-resizing) {
+  cursor: nwse-resize;
+  user-select: none;
 }
 
 .referenced-block-renderer__fallback {

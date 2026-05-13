@@ -39,6 +39,7 @@ interface RichTextLineInsertPayload {
 interface RichTextLineHandlePayload {
   visible: boolean;
   top: number | null;
+  height: number | null;
   splitContent: {
     beforeContent: string;
     afterContent: string;
@@ -403,6 +404,7 @@ const getActionHandleStyle = (position: number) => {
     return {
       '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
       '--hover-handle-top': `${lineState.top}px`,
+      '--hover-handle-height': `${Math.max(1, lineState.height ?? 28)}px`,
       '--hover-handle-transform': 'translateX(-50%)',
       '--hover-handle-z-index': 12,
     } as const;
@@ -429,6 +431,7 @@ const updateRichTextLineMenuVisibility = (position: number, visible: boolean) =>
   const current = richTextLineHandleStates.value[position] ?? {
     visible: false,
     top: null,
+    height: null,
     splitContent: null,
     menuVisible: false,
   };
@@ -1337,16 +1340,41 @@ const stopContainerItemMove = () => {
   document.removeEventListener('mouseup', stopContainerItemMove);
 };
 
-const setContainerItemZ = (containerIndex: number, childIndex: number, mode: 'front' | 'back') => {
+const setContainerItemZ = (
+  containerIndex: number,
+  childIndex: number,
+  mode: 'front' | 'back' | 'forward' | 'backward',
+) => {
   const container = localBlocks.value[containerIndex];
   const child = container?.children?.[childIndex];
   if (!container || container.type !== 'container' || !child) return;
 
   normalizeContainerChildren(container);
   const siblings = container.children ?? [];
-  const zValues = siblings.map((item, index) => ensureContainerChildPosition(item, index).z ?? index + 1);
-  const position = ensureContainerChildPosition(child, childIndex);
-  position.z = mode === 'front' ? Math.max(...zValues, 0) + 1 : Math.min(...zValues, 1) - 1;
+  const ordered = siblings
+    .map((item, index) => ({
+      item,
+      index,
+      z: Math.max(1, ensureContainerChildPosition(item, index).z ?? index + 1),
+    }))
+    .sort((a, b) => a.z - b.z || a.index - b.index);
+
+  const currentOrderIndex = ordered.findIndex((entry) => entry.item.id === child.id);
+  if (currentOrderIndex < 0) return;
+
+  const [entry] = ordered.splice(currentOrderIndex, 1);
+  const targetOrderIndex = mode === 'front'
+    ? ordered.length
+    : mode === 'back'
+      ? 0
+      : mode === 'forward'
+        ? Math.min(ordered.length, currentOrderIndex + 1)
+        : Math.max(0, currentOrderIndex - 1);
+  ordered.splice(targetOrderIndex, 0, entry);
+
+  ordered.forEach((orderedEntry, index) => {
+    ensureContainerChildPosition(orderedEntry.item, orderedEntry.index).z = index + 1;
+  });
   emit('content-change', localBlocks.value);
 };
 
@@ -2455,7 +2483,9 @@ const getBlockProperties = (block: Block) => {
                     v-if="editable && block.layout !== 'vertical' && activeBlockIndex === index * 100 + childIndex"
                     class="container-z-toolbar"
                   >
+                    <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'forward')">上移</button>
                     <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'front')">置顶</button>
+                    <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'backward')">下移</button>
                     <button type="button" @click.stop="setContainerItemZ(index, childIndex, 'back')">置底</button>
                   </div>
                   <div
@@ -3512,6 +3542,9 @@ const getBlockProperties = (block: Block) => {
   z-index: 21;
   display: flex;
   gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  max-width: 220px;
   padding: 4px;
   border: 1px solid #d0d7de;
   border-radius: 6px;
