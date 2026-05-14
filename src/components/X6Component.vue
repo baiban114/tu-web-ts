@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import X6NodeOverlay from './X6NodeOverlay.vue';
+import { useObjectModelStore } from '@/stores/objectModel';
+import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
 import {
   Clipboard,
   type Edge,
@@ -15,6 +17,7 @@ import {
 
 type CellData = Record<string, any>;
 const BLUEPRINT_ANCHOR = { x: 480, y: 280 } as const;
+const TASK_FLOW_KIND = 'task-flow' as const;
 
 interface GraphData {
   cells?: CellData[];
@@ -32,26 +35,6 @@ interface Props {
 }
 
 type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
-
-interface UmlClassDefinition {
-  id: string;
-  name: string;
-  attributes: string[];
-  methods: string[];
-  nodeId?: string;
-}
-
-interface UmlObjectDefinition {
-  id: string;
-  name: string;
-  classId: string;
-  propertyValues: Record<string, string>;
-}
-
-interface UmlModel {
-  classes: UmlClassDefinition[];
-  objects: UmlObjectDefinition[];
-}
 
 type SelectedCellState =
   | {
@@ -115,22 +98,7 @@ const gridVisible = ref(true);
 const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
-const umlModel = ref<UmlModel>({
-  classes: [],
-  objects: [],
-});
-const selectedUmlClassId = ref<string | null>(null);
-const selectedUmlObjectId = ref<string | null>(null);
-const umlClassDraft = ref({
-  name: 'User',
-  attributes: 'id: string\nname: string',
-  methods: 'login(): void',
-});
-const umlObjectDraft = ref({
-  name: 'user1',
-  classId: '',
-  propertyValues: '{}',
-});
+const objectModelStore = useObjectModelStore();
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -150,6 +118,7 @@ const edgeInlineEditText = ref('');
 const edgeInlineInputRef = ref<HTMLTextAreaElement | null>(null);
 
 const isEditable = computed(() => props.editable !== false);
+const isTaskFlow = computed(() => props.graphData?.blueprintMeta?.kind === TASK_FLOW_KIND);
 const selectionSummary = computed(() => {
   if (selectedCellsCount.value === 0) return '未选中对象';
   if (selectedCellsCount.value > 1) return `已选中 ${selectedCellsCount.value} 个对象`;
@@ -158,9 +127,41 @@ const selectionSummary = computed(() => {
     ? `节点: ${selectedCell.value.label || selectedCell.value.id}`
     : `连线: ${selectedCell.value.label || selectedCell.value.id}`;
 });
-const selectedUmlClass = computed(() => umlModel.value.classes.find((item) => item.id === selectedUmlClassId.value) ?? null);
-const selectedUmlObject = computed(() => umlModel.value.objects.find((item) => item.id === selectedUmlObjectId.value) ?? null);
+const taskSequenceSummary = computed(() => {
+  if (!isTaskFlow.value) return [] as string[];
+  const data = normalizeGraphData(props.graphData);
+  const taskNodes = data.nodes.filter((node) => node.data?.taskRole === 'task');
+  if (!taskNodes.length) return [];
 
+  const taskIds = new Set(taskNodes.map((node) => node.id));
+  const incomingCount = new Map(taskNodes.map((node) => [node.id, 0]));
+  const nextById = new Map<string, string>();
+  const labelById = new Map(taskNodes.map((node) => [node.id, String(node.label ?? node.data?.label ?? '未命名任务')]));
+
+  data.edges.forEach((edge) => {
+    const sourceId = typeof edge.source === 'string' ? edge.source : typeof edge.source?.cell === 'string' ? edge.source.cell : '';
+    const targetId = typeof edge.target === 'string' ? edge.target : typeof edge.target?.cell === 'string' ? edge.target.cell : '';
+    if (!taskIds.has(sourceId) || !taskIds.has(targetId)) return;
+    nextById.set(sourceId, targetId);
+    incomingCount.set(targetId, (incomingCount.get(targetId) ?? 0) + 1);
+  });
+
+  const ordered: string[] = [];
+  const visited = new Set<string>();
+  let cursor = taskNodes.find((node) => (incomingCount.get(node.id) ?? 0) === 0)?.id ?? taskNodes[0].id;
+
+  while (cursor && !visited.has(cursor)) {
+    visited.add(cursor);
+    ordered.push(labelById.get(cursor) ?? '未命名任务');
+    cursor = nextById.get(cursor) ?? '';
+  }
+
+  taskNodes.forEach((node) => {
+    if (!visited.has(node.id)) ordered.push(labelById.get(node.id) ?? '未命名任务');
+  });
+
+  return ordered;
+});
 let graph: Graph | null = null;
 let resizeObserver: ResizeObserver | null = null;
 let syncTimer: number | null = null;
@@ -485,6 +486,47 @@ function createNodeMetadata(preset: NodePreset, options: Partial<CellData> = {})
   };
 }
 
+function createTaskNode(options: Partial<CellData> = {}): CellData {
+  const label = typeof options.label === 'string' && options.label.trim() ? options.label.trim() : '新任务';
+  const description = typeof options.data?.taskDescription === 'string' && options.data.taskDescription.trim()
+    ? options.data.taskDescription.trim()
+    : '连接上下游任务';
+
+  return createNodeMetadata('round', {
+    width: 196,
+    height: 86,
+    label,
+    attrs: mergeDeep(
+      {
+        body: {
+          fill: '#fff8e6',
+          stroke: '#d48806',
+          strokeWidth: 1.8,
+          rx: 18,
+          ry: 18,
+        },
+        label: {
+          text: `${label}\n${description}`,
+          fill: '#6b3f00',
+          fontSize: 14,
+          fontWeight: 700,
+          lineHeight: 18,
+        },
+      },
+      options.attrs ?? {},
+    ),
+    data: {
+      preset: 'round',
+      textMode: 'plain',
+      taskRole: 'task',
+      taskStatus: 'todo',
+      taskDescription: description,
+      ...(options.data ?? {}),
+    },
+    ...options,
+  });
+}
+
 function createStarterGraphData(): GraphData {
   const startNode = createNodeMetadata('ellipse', {
     id: 'x6-start-node',
@@ -548,6 +590,69 @@ function createStarterGraphData(): GraphData {
     cells,
     nodes: [startNode, processNode, decisionNode, finishNode],
     edges,
+  };
+}
+
+function createTaskFlowStarterGraphData(): GraphData {
+  const startNode = createNodeMetadata('ellipse', {
+    id: 'task-flow-start-node',
+    x: 100,
+    y: 170,
+    width: 136,
+    height: 64,
+    label: '开始',
+    data: {
+      preset: 'ellipse',
+      taskRole: 'start',
+      taskStatus: 'ready',
+    },
+  });
+
+  const taskNode = createTaskNode({
+    id: 'task-flow-task-node',
+    x: 360,
+    y: 156,
+    label: '核心任务',
+    data: {
+      taskDescription: '双击后编辑任务内容',
+    },
+  });
+
+  const finishNode = createNodeMetadata('ellipse', {
+    id: 'task-flow-finish-node',
+    x: 660,
+    y: 170,
+    width: 136,
+    height: 64,
+    label: '完成',
+    data: {
+      preset: 'ellipse',
+      taskRole: 'finish',
+      taskStatus: 'ready',
+    },
+  });
+
+  const edges = [
+    createEdgeMetadata({
+      id: 'task-flow-edge-1',
+      source: { cell: startNode.id, port: 'port-right' },
+      target: { cell: taskNode.id, port: 'port-left' },
+    }),
+    createEdgeMetadata({
+      id: 'task-flow-edge-2',
+      source: { cell: taskNode.id, port: 'port-right' },
+      target: { cell: finishNode.id, port: 'port-left' },
+    }),
+  ];
+
+  return {
+    cells: [startNode, taskNode, finishNode, ...edges],
+    nodes: [startNode, taskNode, finishNode],
+    edges,
+    blueprintMeta: {
+      anchor: { x: 480, y: 240 },
+      kind: TASK_FLOW_KIND,
+    },
   };
 }
 
@@ -652,6 +757,10 @@ function normalizeGraphData(data?: GraphData): GraphData {
     return createStarterGraphData();
   }
 
+  if (data.blueprintMeta?.kind === TASK_FLOW_KIND && !(Array.isArray(data.cells) || data.nodes?.length || data.edges?.length)) {
+    return createTaskFlowStarterGraphData();
+  }
+
   if (Array.isArray(data.cells)) {
     const cells = data.cells.map((cell) =>
       cell.shape === 'edge' || cell.source || cell.target ? normalizeEdge(cell) : normalizeNode(cell),
@@ -680,7 +789,7 @@ function getGraphSnapshot(data?: GraphData) {
 
 function serializeGraphData(): GraphData {
   if (!graph) {
-    return { cells: [], nodes: [], edges: [], uml: umlModel.value };
+    return { cells: [], nodes: [], edges: [], uml: objectModelStore.model };
   }
 
   const nodes = graph.getNodes().map((node) => node.toJSON() as CellData);
@@ -689,7 +798,7 @@ function serializeGraphData(): GraphData {
     cells: graph.toJSON().cells as CellData[],
     nodes,
     edges,
-    uml: umlModel.value,
+    uml: objectModelStore.model,
   };
 }
 
@@ -1039,7 +1148,10 @@ function applyGraphData(data?: GraphData, fitView = false) {
   if (!graph) return;
 
   const normalized = normalizeGraphData(data);
-  umlModel.value = normalizeUmlModel((data as Record<string, any> | undefined)?.uml);
+  const incomingUml = (data as Record<string, any> | undefined)?.uml;
+  if (incomingUml) {
+    objectModelStore.replaceModel(incomingUml);
+  }
   const snapshot = JSON.stringify(normalized);
   if (snapshot === lastSerializedSnapshot) {
     refreshSelectedCellState();
@@ -1056,6 +1168,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   lastSerializedSnapshot = snapshot;
   graph.fromJSON({ cells: normalized.cells ?? [] });
   graph.cleanSelection();
+  syncTaskFlowEdgeState();
 
   // Hide SVG labels for rich-text nodes after loading
   graph.getNodes().forEach(n => {
@@ -1300,15 +1413,52 @@ function addNode(preset: NodePreset, position?: { x: number; y: number }) {
   if (!graph || !isEditable.value) return;
   const center = position ?? getCanvasCenter();
   const node = graph.addNode(
-    createNodeMetadata(preset, {
-      x: center.x,
-      y: center.y,
-    }),
+    isTaskFlow.value
+      ? createTaskNode({
+        x: center.x,
+        y: center.y,
+      })
+      : createNodeMetadata(preset, {
+        x: center.x,
+        y: center.y,
+      }),
   );
   graph.cleanSelection();
   graph.select(node);
   refreshSelectedCellState();
   scheduleSync();
+}
+
+function canCreateTaskFlowEdge(sourceCell: Node, targetCell: Node) {
+  if (!graph || !isTaskFlow.value) return true;
+  if (sourceCell.id === targetCell.id) return false;
+
+  const sourceRole = sourceCell.getData<Record<string, any>>()?.taskRole;
+  const targetRole = targetCell.getData<Record<string, any>>()?.taskRole;
+  if (!sourceRole || !targetRole) return false;
+  if (sourceRole === 'finish' || targetRole === 'start') return false;
+
+  const outgoing = graph.getOutgoingEdges(sourceCell) ?? [];
+  const incoming = graph.getIncomingEdges(targetCell) ?? [];
+  return outgoing.length === 0 && incoming.length === 0;
+}
+
+function syncTaskFlowEdgeState() {
+  if (!graph || !isTaskFlow.value) return;
+  graph.getEdges().forEach((edge) => {
+    edge.setLabels([]);
+    edge.attr({
+      line: {
+        stroke: '#c97a00',
+        strokeWidth: 2.4,
+        targetMarker: {
+          name: 'block',
+          width: 10,
+          height: 8,
+        },
+      },
+    });
+  });
 }
 
 function deleteSelection() {
@@ -1371,9 +1521,6 @@ function clearCanvas() {
   if (!graph || !isEditable.value) return;
   if (!window.confirm('确认清空当前图形吗？')) return;
   graph.clearCells();
-  umlModel.value = { classes: [], objects: [] };
-  selectedUmlClassId.value = null;
-  selectedUmlObjectId.value = null;
   graph.cleanSelection();
   refreshSelectedCellState();
   scheduleSync();
@@ -1442,7 +1589,17 @@ function updateSelectedNodeLabel(value: string) {
   if (!graph || !selectedCell.value || selectedCell.value.kind !== 'node') return;
   const node = graph.getCellById(selectedCell.value.id);
   if (!node || !graph.isNode(node)) return;
+  const nodeData = node.getData<Record<string, any>>() ?? {};
   node.attr('label/text', value);
+  if (nodeData.taskRole === 'task') {
+    const description = typeof nodeData.taskDescription === 'string' ? nodeData.taskDescription : '连接上下游任务';
+    node.updateData({
+      ...nodeData,
+      label: value,
+      taskDescription: description,
+    });
+    node.attr('label/text', `${value}\n${description}`);
+  }
   scheduleSync();
 }
 
@@ -1536,127 +1693,8 @@ function syncUmlClassNode(definition: UmlClassDefinition) {
 }
 
 function syncAllUmlClassNodes() {
-  umlModel.value.classes.forEach(syncUmlClassNode);
+  objectModelStore.classes.forEach(syncUmlClassNode);
   updateNodeOverlays();
-}
-
-function saveUmlClass() {
-  if (!isEditable.value) return;
-  const name = umlClassDraft.value.name.trim();
-  if (!name) return;
-  const current = selectedUmlClass.value;
-  const definition: UmlClassDefinition = {
-    id: current?.id ?? createId('uml-class'),
-    name,
-    attributes: splitLines(umlClassDraft.value.attributes),
-    methods: splitLines(umlClassDraft.value.methods),
-    nodeId: current?.nodeId,
-  };
-
-  if (current) {
-    umlModel.value.classes = umlModel.value.classes.map((item) => item.id === current.id ? definition : item);
-  } else {
-    umlModel.value.classes = [...umlModel.value.classes, definition];
-  }
-  selectedUmlClassId.value = definition.id;
-  syncUmlClassNode(definition);
-  scheduleSync();
-}
-
-function selectUmlClass(id: string) {
-  selectedUmlClassId.value = id;
-  const definition = umlModel.value.classes.find((item) => item.id === id);
-  if (!definition) return;
-  umlClassDraft.value = {
-    name: definition.name,
-    attributes: definition.attributes.join('\n'),
-    methods: definition.methods.join('\n'),
-  };
-  if (definition.nodeId && graph) {
-    const node = graph.getCellById(definition.nodeId);
-    if (node) {
-      graph.cleanSelection();
-      graph.select(node);
-    }
-  }
-}
-
-function newUmlClassDraft() {
-  selectedUmlClassId.value = null;
-  umlClassDraft.value = {
-    name: 'NewClass',
-    attributes: '',
-    methods: '',
-  };
-}
-
-function deleteUmlClass(id: string) {
-  if (!isEditable.value) return;
-  const definition = umlModel.value.classes.find((item) => item.id === id);
-  umlModel.value.classes = umlModel.value.classes.filter((item) => item.id !== id);
-  umlModel.value.objects = umlModel.value.objects.filter((item) => item.classId !== id);
-  if (selectedUmlClassId.value === id) newUmlClassDraft();
-  if (definition?.nodeId && graph) {
-    const node = graph.getCellById(definition.nodeId);
-    if (node) graph.removeCell(node);
-  }
-  scheduleSync();
-}
-
-function parseObjectValues(raw: string): Record<string, string> {
-  try {
-    const parsed = JSON.parse(raw);
-    return isPlainObject(parsed) ? parsed as Record<string, string> : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveUmlObject() {
-  if (!isEditable.value || !umlObjectDraft.value.classId) return;
-  const name = umlObjectDraft.value.name.trim();
-  if (!name) return;
-  const current = selectedUmlObject.value;
-  const objectDefinition: UmlObjectDefinition = {
-    id: current?.id ?? createId('uml-object'),
-    name,
-    classId: umlObjectDraft.value.classId,
-    propertyValues: parseObjectValues(umlObjectDraft.value.propertyValues),
-  };
-
-  if (current) {
-    umlModel.value.objects = umlModel.value.objects.map((item) => item.id === current.id ? objectDefinition : item);
-  } else {
-    umlModel.value.objects = [...umlModel.value.objects, objectDefinition];
-  }
-  selectedUmlObjectId.value = objectDefinition.id;
-  scheduleSync();
-}
-
-function selectUmlObject(id: string) {
-  selectedUmlObjectId.value = id;
-  const objectDefinition = umlModel.value.objects.find((item) => item.id === id);
-  if (!objectDefinition) return;
-  umlObjectDraft.value = {
-    name: objectDefinition.name,
-    classId: objectDefinition.classId,
-    propertyValues: JSON.stringify(objectDefinition.propertyValues, null, 2),
-  };
-}
-
-function newUmlObjectDraft() {
-  selectedUmlObjectId.value = null;
-  umlObjectDraft.value = {
-    name: 'object1',
-    classId: umlModel.value.classes[0]?.id ?? '',
-    propertyValues: '{}',
-  };
-}
-
-function deleteUmlObject(id: string) {
-  if (!isEditable.value) return;
-  umlModel.value.objects = umlModel.value.objects.filter((item) => item.id !== id);
-  if (selectedUmlObjectId.value === id) newUmlObjectDraft();
   scheduleSync();
 }
 
@@ -1697,24 +1735,17 @@ function insertUmlClassPreset() {
   if (userNode && orderNode) {
     graph?.addEdge(relation);
   }
-  umlModel.value = {
-    classes: [...umlModel.value.classes, userClass, orderClass],
-    objects: [
-      ...umlModel.value.objects,
-      {
-        id: createId('uml-object'),
-        name: 'currentUser',
-        classId: userClass.id,
-        propertyValues: {
-          id: 'u-001',
-          name: 'Alice',
-          email: 'alice@example.com',
-        },
-      },
-    ],
-  };
-  selectedUmlClassId.value = userClass.id;
-  selectUmlClass(userClass.id);
+  objectModelStore.upsertClass(userClass);
+  objectModelStore.upsertClass(orderClass);
+  objectModelStore.upsertObject({
+    name: 'currentUser',
+    classId: userClass.id,
+    propertyValues: {
+      id: 'u-001',
+      name: 'Alice',
+      email: 'alice@example.com',
+    },
+  });
   scheduleSync();
 }
 
@@ -1860,6 +1891,7 @@ function bindGraphEvents() {
   });
 
   graph.on('edge:connected', () => {
+    syncTaskFlowEdgeState();
     finishUserInteraction();
   });
 
@@ -1884,7 +1916,7 @@ function bindGraphEvents() {
   });
 
   graph.on('blank:dblclick', ({ x, y }) => {
-    addNode('rect', { x: x - 80, y: y - 32 });
+    addNode(isTaskFlow.value ? 'round' : 'rect', { x: x - 80, y: y - 32 });
   });
 
   graph.on('node:dblclick', ({ node }) => {
@@ -1924,6 +1956,10 @@ function bindGraphEvents() {
   graph.model.on('cell:change:target', () => scheduleSync());
   graph.model.on('cell:change:vertices', () => scheduleSync());
   graph.model.on('cell:change:data', () => scheduleSync());
+  graph.model.on('cell:added', syncTaskFlowEdgeState);
+  graph.model.on('cell:removed', syncTaskFlowEdgeState);
+  graph.model.on('cell:change:source', syncTaskFlowEdgeState);
+  graph.model.on('cell:change:target', syncTaskFlowEdgeState);
 
   // Update node overlays on graph transform / node changes
   graph.on('translate', updateNodeOverlays);
@@ -1996,6 +2032,7 @@ function initGraph() {
         if (!isEditable.value) return false;
         if (!sourceCell || !targetCell || !sourceMagnet || !targetMagnet) return false;
         if (sourceCell.id === targetCell.id && sourceMagnet === targetMagnet) return false;
+        if (graph?.isNode(sourceCell) && graph?.isNode(targetCell) && !canCreateTaskFlowEdge(sourceCell, targetCell)) return false;
         return true;
       },
     },
@@ -2098,7 +2135,15 @@ defineExpose({
 <template>
   <div class="x6-editor" @mousedown.stop="emit('active')" @click.stop @dblclick.stop>
     <div class="x6-toolbar">
-      <div class="toolbar-group">
+      <div class="toolbar-group" v-if="isTaskFlow">
+        <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('round')">
+          新任务
+        </button>
+        <button type="button" class="tool-button" :disabled="!isEditable" @click="addNode('ellipse')">
+          起止节点
+        </button>
+      </div>
+      <div class="toolbar-group" v-else>
         <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('rect')">
           矩形
         </button>
@@ -2113,6 +2158,9 @@ defineExpose({
         </button>
         <button type="button" class="tool-button" :disabled="!isEditable" @click="insertUmlClassPreset">
           UML 类图
+        </button>
+        <button type="button" class="tool-button" :disabled="!isEditable || objectModelStore.classes.length === 0" @click="syncAllUmlClassNodes">
+          同步对象模型
         </button>
       </div>
 
@@ -2215,102 +2263,15 @@ defineExpose({
       </div>
 
       <aside class="x6-inspector">
-        <div class="inspector-card uml-manager">
-          <div class="inspector-card__header">
-            <h4>类/对象管理</h4>
-            <button type="button" class="mini-button" :disabled="!isEditable" @click="syncAllUmlClassNodes">同步类图</button>
-          </div>
-
-          <div class="uml-section">
-            <div class="uml-section__title">
-              <span>类</span>
-              <button type="button" class="mini-button" :disabled="!isEditable" @click="newUmlClassDraft">新类</button>
-            </div>
-            <div class="uml-list">
-              <button
-                v-for="item in umlModel.classes"
-                :key="item.id"
-                type="button"
-                class="uml-list-item"
-                :class="{ 'uml-list-item--active': selectedUmlClassId === item.id }"
-                @click="selectUmlClass(item.id)"
-              >
-                {{ item.name }}
-              </button>
-              <span v-if="umlModel.classes.length === 0" class="inspector-empty">暂无类定义</span>
-            </div>
-
-            <label class="field">
-              <span>类名</span>
-              <input v-model="umlClassDraft.name" :disabled="!isEditable" />
-            </label>
-            <label class="field">
-              <span>属性（每行一个）</span>
-              <textarea v-model="umlClassDraft.attributes" :disabled="!isEditable" rows="4" />
-            </label>
-            <label class="field">
-              <span>方法（每行一个）</span>
-              <textarea v-model="umlClassDraft.methods" :disabled="!isEditable" rows="4" />
-            </label>
-            <div class="uml-actions">
-              <button type="button" class="mini-button mini-button--primary" :disabled="!isEditable" @click="saveUmlClass">保存类</button>
-              <button
-                type="button"
-                class="mini-button mini-button--danger"
-                :disabled="!isEditable || !selectedUmlClassId"
-                @click="selectedUmlClassId && deleteUmlClass(selectedUmlClassId)"
-              >
-                删除类
-              </button>
-            </div>
-          </div>
-
-          <div class="uml-section">
-            <div class="uml-section__title">
-              <span>对象</span>
-              <button type="button" class="mini-button" :disabled="!isEditable || umlModel.classes.length === 0" @click="newUmlObjectDraft">新对象</button>
-            </div>
-            <div class="uml-list">
-              <button
-                v-for="item in umlModel.objects"
-                :key="item.id"
-                type="button"
-                class="uml-list-item"
-                :class="{ 'uml-list-item--active': selectedUmlObjectId === item.id }"
-                @click="selectUmlObject(item.id)"
-              >
-                {{ item.name }}
-              </button>
-              <span v-if="umlModel.objects.length === 0" class="inspector-empty">暂无对象实例</span>
-            </div>
-
-            <label class="field">
-              <span>对象名</span>
-              <input v-model="umlObjectDraft.name" :disabled="!isEditable || umlModel.classes.length === 0" />
-            </label>
-            <label class="field">
-              <span>所属类</span>
-              <select v-model="umlObjectDraft.classId" :disabled="!isEditable || umlModel.classes.length === 0">
-                <option value="">选择类</option>
-                <option v-for="item in umlModel.classes" :key="item.id" :value="item.id">{{ item.name }}</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>属性值 JSON</span>
-              <textarea v-model="umlObjectDraft.propertyValues" :disabled="!isEditable || umlModel.classes.length === 0" rows="4" />
-            </label>
-            <div class="uml-actions">
-              <button type="button" class="mini-button mini-button--primary" :disabled="!isEditable || !umlObjectDraft.classId" @click="saveUmlObject">保存对象</button>
-              <button
-                type="button"
-                class="mini-button mini-button--danger"
-                :disabled="!isEditable || !selectedUmlObjectId"
-                @click="selectedUmlObjectId && deleteUmlObject(selectedUmlObjectId)"
-              >
-                删除对象
-              </button>
-            </div>
-          </div>
+        <div v-if="isTaskFlow" class="inspector-card">
+          <h4>任务顺序</h4>
+          <p v-if="taskSequenceSummary.length === 0" class="inspector-empty">连接任务节点后会在这里显示执行顺序。</p>
+          <ol v-else class="task-sequence-list">
+            <li v-for="(taskLabel, index) in taskSequenceSummary" :key="`${taskLabel}-${index}`">
+              {{ index + 1 }}. {{ taskLabel }}
+            </li>
+          </ol>
+          <p class="inspector-empty">每个任务节点只允许一条前驱和一条后继连线，用于表达明确的先后顺序。</p>
         </div>
 
         <div class="inspector-card">
@@ -2628,64 +2589,11 @@ defineExpose({
   color: #1f2d3d;
 }
 
-.inspector-card__header,
-.uml-section__title,
-.uml-actions {
+.inspector-card__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-}
-
-.uml-manager {
-  gap: 14px;
-}
-
-.uml-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.uml-section__title {
-  color: #1f2d3d;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.uml-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-height: 24px;
-}
-
-.uml-list-item,
-.mini-button {
-  border: 1px solid #d2d8e2;
-  border-radius: 8px;
-  background: #fff;
-  color: #213547;
-  padding: 5px 8px;
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.uml-list-item--active,
-.mini-button--primary {
-  border-color: #1677ff;
-  background: #eaf3ff;
-  color: #0958d9;
-}
-
-.mini-button--danger {
-  color: #cf1322;
-}
-
-.mini-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .inspector-empty {
@@ -2700,6 +2608,14 @@ defineExpose({
   padding-left: 18px;
   color: #5f6b7a;
   font-size: 12px;
+  line-height: 1.7;
+}
+
+.task-sequence-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #213547;
+  font-size: 13px;
   line-height: 1.7;
 }
 

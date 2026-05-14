@@ -83,6 +83,7 @@ function onContentChange(blocks: Block[]) {
     <div class="workspace__right">
       <div class="workspace-topbar">
         <RouterLink class="workspace-topbar__link" to="/resources">外部资源</RouterLink>
+        <RouterLink class="workspace-topbar__link" :to="{ path: '/resources', query: { tab: 'objects' } }">对象管理</RouterLink>
       </div>
       <div v-if="store.currentPageId" class="content-scroll">
         <div
@@ -154,6 +155,7 @@ function onContentChange(blocks: Block[]) {
 .workspace-topbar {
   display: flex;
   justify-content: flex-end;
+  gap: 8px;
   flex-shrink: 0;
   padding: 10px 18px;
   border-bottom: 1px solid #edf0f5;

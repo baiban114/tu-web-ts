@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import {
   createResourceItem,
   createResourceType,
@@ -17,8 +18,19 @@ import {
   type ResourceType,
   type ResourceWork,
 } from '@/api/externalResource';
+import { useObjectModelStore } from '@/stores/objectModel';
 
-const activeTab = ref<'items' | 'works' | 'types'>('items');
+type ResourceTab = 'items' | 'works' | 'types' | 'objects';
+
+const route = useRoute();
+const resourceTabs = new Set<ResourceTab>(['items', 'works', 'types', 'objects']);
+
+function getRouteTab(): ResourceTab {
+  const tab = route.query.tab;
+  return typeof tab === 'string' && resourceTabs.has(tab as ResourceTab) ? tab as ResourceTab : 'items';
+}
+
+const activeTab = ref<ResourceTab>(getRouteTab());
 const loading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
@@ -28,6 +40,9 @@ const selectedWorkId = ref('');
 const types = ref<ResourceType[]>([]);
 const works = ref<ResourceWork[]>([]);
 const items = ref<ResourceItem[]>([]);
+const objectModelStore = useObjectModelStore();
+const selectedClassId = ref('');
+const selectedObjectId = ref('');
 
 const typeForm = reactive({
   id: '',
@@ -58,12 +73,43 @@ const itemForm = reactive({
   note: '',
 });
 
+const classForm = reactive({
+  id: '',
+  name: '',
+  attributes: '',
+  methods: '',
+});
+
+const objectForm = reactive({
+  id: '',
+  name: '',
+  classId: '',
+  propertyValues: '{}',
+});
+
 const filteredWorks = computed(() => {
   if (!selectedTypeId.value) return works.value;
   return works.value.filter((work) => work.typeId === selectedTypeId.value);
 });
 
 const itemFormType = computed(() => types.value.find((type) => type.id === itemForm.typeId));
+const classNameById = computed(() => new Map(objectModelStore.classes.map((item) => [item.id, item.name])));
+
+function splitLines(value: string): string[] {
+  return value
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function parseObjectValues(raw: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(raw);
+    return Object.prototype.toString.call(parsed) === '[object Object]' ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
+}
 
 function resetTypeForm() {
   Object.assign(typeForm, {
@@ -99,6 +145,26 @@ function resetItemForm() {
     sourceUrl: '',
     edition: '',
     note: '',
+  });
+}
+
+function resetClassForm() {
+  selectedClassId.value = '';
+  Object.assign(classForm, {
+    id: '',
+    name: '',
+    attributes: '',
+    methods: '',
+  });
+}
+
+function resetObjectForm() {
+  selectedObjectId.value = '';
+  Object.assign(objectForm, {
+    id: '',
+    name: '',
+    classId: selectedClassId.value || objectModelStore.classes[0]?.id || '',
+    propertyValues: '{}',
   });
 }
 
@@ -236,6 +302,67 @@ function editItem(item: ResourceItem) {
   activeTab.value = 'items';
 }
 
+function saveClass() {
+  const definition = objectModelStore.upsertClass({
+    id: classForm.id || undefined,
+    name: classForm.name,
+    attributes: splitLines(classForm.attributes),
+    methods: splitLines(classForm.methods),
+  });
+  selectedClassId.value = definition.id;
+  resetClassForm();
+  showSuccess('类定义已保存，可在 X6 类图中同步。');
+}
+
+function editClass(id: string) {
+  const definition = objectModelStore.classes.find((item) => item.id === id);
+  if (!definition) return;
+  selectedClassId.value = id;
+  Object.assign(classForm, {
+    id: definition.id,
+    name: definition.name,
+    attributes: definition.attributes.join('\n'),
+    methods: definition.methods.join('\n'),
+  });
+  if (!objectForm.classId) objectForm.classId = id;
+}
+
+function removeClass(id: string) {
+  objectModelStore.deleteClass(id);
+  if (selectedClassId.value === id) resetClassForm();
+  if (objectForm.classId === id) resetObjectForm();
+  showSuccess('类定义已删除。');
+}
+
+function saveObject() {
+  objectModelStore.upsertObject({
+    id: objectForm.id || undefined,
+    name: objectForm.name,
+    classId: objectForm.classId,
+    propertyValues: parseObjectValues(objectForm.propertyValues),
+  });
+  resetObjectForm();
+  showSuccess('对象实例已保存，可随类图数据同步。');
+}
+
+function editObject(id: string) {
+  const objectDefinition = objectModelStore.objects.find((item) => item.id === id);
+  if (!objectDefinition) return;
+  selectedObjectId.value = id;
+  Object.assign(objectForm, {
+    id: objectDefinition.id,
+    name: objectDefinition.name,
+    classId: objectDefinition.classId,
+    propertyValues: JSON.stringify(objectDefinition.propertyValues, null, 2),
+  });
+}
+
+function removeObject(id: string) {
+  objectModelStore.deleteObject(id);
+  if (selectedObjectId.value === id) resetObjectForm();
+  showSuccess('对象实例已删除。');
+}
+
 async function removeType(id: string) {
   try {
     await deleteResourceType(id);
@@ -274,6 +401,13 @@ function onTypeFilterChange() {
 }
 
 onMounted(refreshAll);
+
+watch(
+  () => route.query.tab,
+  () => {
+    activeTab.value = getRouteTab();
+  },
+);
 </script>
 
 <template>
@@ -314,6 +448,7 @@ onMounted(refreshAll);
       <button :class="{ active: activeTab === 'items' }" @click="activeTab = 'items'">资源实体</button>
       <button :class="{ active: activeTab === 'works' }" @click="activeTab = 'works'">资源归类</button>
       <button :class="{ active: activeTab === 'types' }" @click="activeTab = 'types'">资源类型</button>
+      <button :class="{ active: activeTab === 'objects' }" @click="activeTab = 'objects'">对象管理</button>
     </nav>
 
     <section v-if="activeTab === 'items'" class="resource-layout">
@@ -474,6 +609,93 @@ onMounted(refreshAll);
         <p v-if="!types.length" class="empty">暂无资源类型</p>
       </div>
     </section>
+
+    <section v-if="activeTab === 'objects'" class="object-model-layout">
+      <form class="resource-form" @submit.prevent="saveClass">
+        <h2>{{ classForm.id ? '编辑类定义' : '新增类定义' }}</h2>
+        <label>
+          类名
+          <input v-model.trim="classForm.name" required maxlength="128" placeholder="User" />
+        </label>
+        <label>
+          属性
+          <textarea v-model="classForm.attributes" rows="6" placeholder="id: string&#10;name: string" />
+        </label>
+        <label>
+          方法
+          <textarea v-model="classForm.methods" rows="5" placeholder="login(): void&#10;logout(): void" />
+        </label>
+        <div class="form-actions">
+          <button type="submit">{{ classForm.id ? '保存类' : '创建类' }}</button>
+          <button type="button" class="secondary" @click="resetClassForm">清空</button>
+        </div>
+      </form>
+
+      <form class="resource-form" @submit.prevent="saveObject">
+        <h2>{{ objectForm.id ? '编辑对象实例' : '新增对象实例' }}</h2>
+        <label>
+          对象名
+          <input v-model.trim="objectForm.name" required maxlength="128" placeholder="currentUser" />
+        </label>
+        <label>
+          所属类
+          <select v-model="objectForm.classId" required>
+            <option value="" disabled>选择类定义</option>
+            <option v-for="definition in objectModelStore.classes" :key="definition.id" :value="definition.id">
+              {{ definition.name }}
+            </option>
+          </select>
+        </label>
+        <label>
+          属性值 JSON
+          <textarea v-model="objectForm.propertyValues" rows="8" placeholder="{&quot;id&quot;:&quot;u-001&quot;}" />
+        </label>
+        <div class="form-actions">
+          <button type="submit" :disabled="objectModelStore.classes.length === 0">{{ objectForm.id ? '保存对象' : '创建对象' }}</button>
+          <button type="button" class="secondary" @click="resetObjectForm">清空</button>
+        </div>
+      </form>
+
+      <div class="resource-list object-model-list">
+        <section class="object-model-section">
+          <div class="object-model-section__header">
+            <h2>类定义</h2>
+            <span>{{ objectModelStore.classes.length }}</span>
+          </div>
+          <article v-for="definition in objectModelStore.classes" :key="definition.id" class="resource-row">
+            <div>
+              <div class="row-title">{{ definition.name }}</div>
+              <div class="row-meta">属性 {{ definition.attributes.length }} · 方法 {{ definition.methods.length }}</div>
+              <p v-if="definition.attributes.length">{{ definition.attributes.join('，') }}</p>
+            </div>
+            <div class="row-actions">
+              <button @click="editClass(definition.id)">编辑</button>
+              <button class="danger" @click="removeClass(definition.id)">删除</button>
+            </div>
+          </article>
+          <p v-if="!objectModelStore.classes.length" class="empty">暂无类定义</p>
+        </section>
+
+        <section class="object-model-section">
+          <div class="object-model-section__header">
+            <h2>对象实例</h2>
+            <span>{{ objectModelStore.objects.length }}</span>
+          </div>
+          <article v-for="objectDefinition in objectModelStore.objects" :key="objectDefinition.id" class="resource-row">
+            <div>
+              <div class="row-title">{{ objectDefinition.name }}</div>
+              <div class="row-meta">所属类：{{ classNameById.get(objectDefinition.classId) || objectDefinition.classId }}</div>
+              <p>{{ JSON.stringify(objectDefinition.propertyValues) }}</p>
+            </div>
+            <div class="row-actions">
+              <button @click="editObject(objectDefinition.id)">编辑</button>
+              <button class="danger" @click="removeObject(objectDefinition.id)">删除</button>
+            </div>
+          </article>
+          <p v-if="!objectModelStore.objects.length" class="empty">暂无对象实例</p>
+        </section>
+      </div>
+    </section>
   </main>
 </template>
 
@@ -595,6 +817,13 @@ textarea {
   align-items: start;
 }
 
+.object-model-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(260px, 320px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
 .resource-form,
 .resource-list {
   border: 1px solid #e4e7ec;
@@ -641,6 +870,32 @@ textarea {
   overflow: hidden;
 }
 
+.object-model-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.object-model-section + .object-model-section {
+  border-top: 1px solid #edf0f5;
+}
+
+.object-model-section__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.object-model-section__header h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.object-model-section__header span {
+  color: #667085;
+}
+
 .resource-row {
   display: flex;
   justify-content: space-between;
@@ -685,7 +940,8 @@ textarea {
     flex-direction: column;
   }
 
-  .resource-layout {
+  .resource-layout,
+  .object-model-layout {
     grid-template-columns: 1fr;
   }
 }
