@@ -76,6 +76,13 @@ interface X6InsertRefRequestPayload {
   y: number;
 }
 
+interface TocItem {
+  id: string;
+  blockId: string;
+  level: number;
+  text: string;
+}
+
 type BlockPickerTypeFilter = 'all' | 'text' | 'x6';
 
 const props = withDefaults(defineProps<Props>(), {
@@ -112,6 +119,7 @@ const pendingX6RefInsert = ref<{
 } | null>(null);
 
 const blockRefs = ref<HTMLElement[]>([]);
+const highlightedBlockId = ref<string | null>(null);
 type BlockResizeEdge = 'right' | 'bottom' | 'corner';
 
 interface BlockResizeState {
@@ -304,6 +312,35 @@ const getBlockAtPosition = (position: number): Block | undefined => {
   }
 
   return localBlocks.value[position];
+};
+
+const findBlockIndexById = (blockId: string): number => {
+  for (let index = 0; index < localBlocks.value.length; index += 1) {
+    const block = localBlocks.value[index];
+    if (block?.id === blockId) return index;
+    if (block?.type === 'container' && block.children) {
+      const childIndex = block.children.findIndex((child) => child.id === blockId);
+      if (childIndex >= 0) {
+        return index * 100 + childIndex;
+      }
+    }
+  }
+  return -1;
+};
+
+const scrollToBlockId = async (blockId: string) => {
+  const index = findBlockIndexById(blockId);
+  if (index < 0) return;
+  await nextTick();
+  const element = blockRefs.value[index];
+  if (!element) return;
+  highlightedBlockId.value = blockId;
+  element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  window.setTimeout(() => {
+    if (highlightedBlockId.value === blockId) {
+      highlightedBlockId.value = null;
+    }
+  }, 2200);
 };
 
 const replaceBlockAtPosition = (position: number, blocks: Block[]) => {
@@ -1177,12 +1214,62 @@ const isRichTextBlock = (block: Block): boolean => {
   return block != null && (block.type === 'richtext' || block.type === 'richText');
 };
 
+const extractMarkdownHeadings = (content: string, blockId: string): TocItem[] => {
+  const items: TocItem[] = [];
+  const lines = content.replace(/\r\n/g, '\n').split('\n');
+  let inCodeFence = false;
+
+  lines.forEach((line, index) => {
+    if (/^\s*```/.test(line)) {
+      inCodeFence = !inCodeFence;
+      return;
+    }
+    if (inCodeFence) return;
+
+    const match = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
+    if (!match) return;
+
+    const text = match[2]?.trim();
+    if (!text) return;
+
+    items.push({
+      id: `${blockId}-${index}-${match[1].length}`,
+      blockId,
+      level: match[1].length,
+      text,
+    });
+  });
+
+  return items;
+};
+
+const collectTocItems = (blocks: Block[]): TocItem[] => {
+  const items: TocItem[] = [];
+
+  blocks.forEach((block) => {
+    if (isRichTextBlock(block) && typeof block.content === 'string' && block.content.trim()) {
+      items.push(...extractMarkdownHeadings(block.content, block.id));
+    }
+    if (block.type === 'container' && Array.isArray(block.children) && block.children.length > 0) {
+      items.push(...collectTocItems(block.children));
+    }
+  });
+
+  return items;
+};
+
 const isEmptyRichTextBlock = (block: Block | undefined): boolean => {
   if (!block || !isRichTextBlock(block)) return false;
   const hasTitle = Boolean(block.title?.trim());
   const hasContent = Boolean(block.content?.trim());
   const hasTags = getBlockTags(block).length > 0;
   return !hasTitle && !hasContent && !hasTags;
+};
+
+const tocItems = computed(() => collectTocItems(localBlocks.value));
+
+const handleTocItemClick = (item: TocItem) => {
+  void scrollToBlockId(item.blockId);
 };
 
 const isEditableTitleBlock = (block: Block): boolean => {
@@ -1902,6 +1989,16 @@ watch(
   { immediate: true }
 );
 
+watch(
+  () => workspaceStore.focusedBlockId,
+  async (blockId) => {
+    if (!blockId) return;
+    await scrollToBlockId(blockId);
+    workspaceStore.consumeFocusedBlockId();
+  },
+  { immediate: true },
+);
+
 // 监听本地列表长度变化，重置 block DOM refs
 watch(
   () => localBlocks.value.length,
@@ -2421,33 +2518,35 @@ const getBlockProperties = (block: Block) => {
       </div>
     </div>
     
-    <div
-      ref="contentContainerRef"
-      class="content-container"
-      @click="(event) => { closeLinkPopover(); closeInsertedLinkToolbar(); handleContentContainerClick(event); }"
-    >
-      <VueDraggable
-        class="blocks-list"
-        v-model="localBlocks"
-        :handle="blockDragHandle"
-        :animation="200"
-        :group="{ name: 'page-blocks', pull: true, put: true }"
-        ghost-class="dragging-ghost"
-        chosen-class="dragging-chosen"
-        drag-class="dragging-drag"
-        @end="handleDragEnd"
-        :scroll="true"
-        :scroll-sensitivity="30"
-        :scroll-speed="10"
+    <div class="content-shell">
+      <div
+        ref="contentContainerRef"
+        class="content-container"
+        @click="(event) => { closeLinkPopover(); closeInsertedLinkToolbar(); handleContentContainerClick(event); }"
       >
-        <div
-          v-for="(block, index) in localBlocks"
-          :key="block.id"
-          class="content-wrapper"
-          :class="{
-            'content-wrapper--richtext': isRichTextBlock(block),
-            'content-wrapper--active': activeBlockIndex === index,
-          }"
+        <VueDraggable
+          class="blocks-list"
+          v-model="localBlocks"
+          :handle="blockDragHandle"
+          :animation="200"
+          :group="{ name: 'page-blocks', pull: true, put: true }"
+          ghost-class="dragging-ghost"
+          chosen-class="dragging-chosen"
+          drag-class="dragging-drag"
+          @end="handleDragEnd"
+          :scroll="true"
+          :scroll-sensitivity="30"
+          :scroll-speed="10"
+        >
+          <div
+            v-for="(block, index) in localBlocks"
+            :key="block.id"
+            class="content-wrapper"
+            :class="{
+              'content-wrapper--highlighted': highlightedBlockId === block.id,
+              'content-wrapper--richtext': isRichTextBlock(block),
+              'content-wrapper--active': activeBlockIndex === index,
+            }"
           :style="getBlockLayoutStyle(block)"
           :data-block-index="index"
           :data-block-id="block.id"
@@ -2888,15 +2987,36 @@ const getBlockProperties = (block: Block) => {
             </div>
           </div>
         </div>
-      </VueDraggable>
-      <button
-        v-if="editable"
-        type="button"
-        class="document-tail-insert"
-        @click.stop="insertBlock(localBlocks.length, createNewRichTextBlock())"
-      >
-        点击继续输入
-      </button>
+        </VueDraggable>
+        <button
+          v-if="editable"
+          type="button"
+          class="document-tail-insert"
+          @click.stop="insertBlock(localBlocks.length, createNewRichTextBlock())"
+        >
+          点击继续输入
+        </button>
+      </div>
+
+      <aside v-if="tocItems.length > 0" class="page-toc">
+        <div class="page-toc__card">
+          <div class="page-toc__title">目录</div>
+          <button
+            v-for="item in tocItems"
+            :key="item.id"
+            type="button"
+            class="page-toc__item"
+            :class="{
+              'page-toc__item--active': highlightedBlockId === item.blockId,
+              [`page-toc__item--level-${item.level}`]: true,
+            }"
+            @click="handleTocItemClick(item)"
+          >
+            <span class="page-toc__bullet">H{{ item.level }}</span>
+            <span class="page-toc__text">{{ item.text }}</span>
+          </button>
+        </div>
+      </aside>
     </div>
 
     <!-- 引用块选择弹窗 -->
@@ -3091,12 +3211,21 @@ const getBlockProperties = (block: Block) => {
   cursor: not-allowed;
 }
 
+.content-shell {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+  width: 100%;
+  min-height: 100%;
+}
+
 .content-container {
   position: relative;
   min-height: 100%;
   display: flex;
   flex-direction: column;
   flex: 1;
+  min-width: 0;
 }
 
 .blocks-list {
@@ -3129,6 +3258,96 @@ const getBlockProperties = (block: Block) => {
   outline: none;
 }
 
+.page-toc {
+  position: sticky;
+  top: 20px;
+  flex: 0 0 248px;
+  width: 248px;
+  align-self: flex-start;
+}
+
+.page-toc__card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: calc(100vh - 40px);
+  overflow: auto;
+  padding: 14px 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #fcfdff 0%, #f7faff 100%);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+}
+
+.page-toc__title {
+  margin-bottom: 4px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #1f2937;
+}
+
+.page-toc__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #4b5563;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
+}
+
+.page-toc__item:hover {
+  background: rgba(22, 119, 255, 0.08);
+  color: #0958d9;
+}
+
+.page-toc__item--active {
+  background: rgba(22, 119, 255, 0.12);
+  color: #0958d9;
+}
+
+.page-toc__bullet {
+  flex: 0 0 auto;
+  min-width: 26px;
+  padding-top: 1px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #1677ff;
+}
+
+.page-toc__text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.page-toc__item--level-2 {
+  padding-left: 18px;
+}
+
+.page-toc__item--level-3 {
+  padding-left: 28px;
+}
+
+.page-toc__item--level-4 {
+  padding-left: 38px;
+}
+
+.page-toc__item--level-5 {
+  padding-left: 48px;
+}
+
+.page-toc__item--level-6 {
+  padding-left: 58px;
+}
+
 
 .content-wrapper {
   --block-handle-gutter: 36px;
@@ -3155,6 +3374,13 @@ const getBlockProperties = (block: Block) => {
 .content-wrapper--active {
   border-color: #1677ff;
   box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.14);
+}
+
+.content-wrapper--highlighted {
+  box-shadow:
+    0 0 0 2px rgba(22, 119, 255, 0.22),
+    0 16px 28px rgba(22, 119, 255, 0.12);
+  background: linear-gradient(135deg, rgba(22, 119, 255, 0.08), rgba(22, 119, 255, 0.02));
 }
 
 /* 富文本块不显示外边框 */
@@ -3632,5 +3858,22 @@ const getBlockProperties = (block: Block) => {
   cursor: pointer;
   font-size: 12px;
   color: #24292f;
+}
+
+@media (max-width: 1100px) {
+  .content-shell {
+    flex-direction: column;
+  }
+
+  .page-toc {
+    position: static;
+    order: -1;
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .page-toc__card {
+    max-height: none;
+  }
 }
 </style>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElEmpty } from 'element-plus';
+import { useRoute, useRouter } from 'vue-router';
 import type { Block } from '@/api/types';
 import DevModePanel from '@/components/DevModePanel.vue';
 import LeftPanel from '@/components/LeftPanel.vue';
@@ -8,10 +9,24 @@ import Page from '@/components/Page.vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 const store = useWorkspaceStore();
+const route = useRoute();
+const router = useRouter();
 
 onMounted(() => {
-  store.reloadWorkspace();
+  void initializeWorkspace();
 });
+
+async function initializeWorkspace() {
+  await store.reloadWorkspace();
+  await applyRouteSelection();
+}
+
+async function applyRouteSelection() {
+  const pageId = typeof route.query.pageId === 'string' ? route.query.pageId : '';
+  const blockId = typeof route.query.blockId === 'string' ? route.query.blockId : null;
+  if (!pageId) return;
+  await store.openPageAtBlock(pageId, blockId);
+}
 
 const leftWidth = ref(240);
 const MIN_WIDTH = 160;
@@ -26,9 +41,9 @@ const localFileStatusText = computed(() => {
 
   switch (binding.status) {
     case 'pending':
-      return '检测到改动，等待自动保存';
+      return '检测到改动，等待自动保存。';
     case 'saving':
-      return '正在保存到本地文件';
+      return '正在保存到本地文件。';
     case 'saved':
       return binding.lastSavedAt
         ? `已保存到本地文件 ${new Date(binding.lastSavedAt).toLocaleTimeString()}`
@@ -36,7 +51,7 @@ const localFileStatusText = computed(() => {
     case 'error':
       return binding.error || '本地文件保存失败';
     case 'unsupported':
-      return binding.error || '当前浏览器不支持自动保存回原文件';
+      return binding.error || '当前浏览器不支持自动保存回原始本地文件';
     default:
       return '已绑定本地文件';
   }
@@ -68,8 +83,17 @@ onBeforeUnmount(() => {
 });
 
 function onContentChange(blocks: Block[]) {
-  store.saveCurrentPage(blocks);
+  void store.saveCurrentPage(blocks);
 }
+
+watch(
+  () => [route.query.pageId, route.query.blockId],
+  async ([nextPageId, nextBlockId]) => {
+    if (typeof nextPageId !== 'string' || !nextPageId) return;
+    if (store.currentPageId === nextPageId && typeof nextBlockId !== 'string') return;
+    await store.openPageAtBlock(nextPageId, typeof nextBlockId === 'string' ? nextBlockId : null);
+  },
+);
 </script>
 
 <template>
@@ -82,8 +106,16 @@ function onContentChange(blocks: Block[]) {
 
     <div class="workspace__right">
       <div class="workspace-topbar">
-        <RouterLink class="workspace-topbar__link" to="/resources">外部资源</RouterLink>
+        <RouterLink class="workspace-topbar__link" to="/resources">引用与资源</RouterLink>
         <RouterLink class="workspace-topbar__link" :to="{ path: '/resources', query: { tab: 'objects' } }">对象管理</RouterLink>
+        <button
+          v-if="route.query.pageId"
+          class="workspace-topbar__link workspace-topbar__link--button"
+          type="button"
+          @click="router.replace({ path: '/', query: {} })"
+        >
+          清除定位
+        </button>
       </div>
       <div v-if="store.currentPageId" class="content-scroll">
         <div
@@ -169,6 +201,12 @@ function onContentChange(blocks: Block[]) {
   color: #1f2933;
   text-decoration: none;
   font-size: 13px;
+  background: #fff;
+}
+
+.workspace-topbar__link--button {
+  font: inherit;
+  cursor: pointer;
 }
 
 .content-scroll {

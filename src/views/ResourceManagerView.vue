@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import {
   createResourceItem,
   createResourceType,
@@ -18,28 +18,43 @@ import {
   type ResourceType,
   type ResourceWork,
 } from '@/api/externalResource';
+import {
+  listReferences,
+  rebuildReferences,
+  updateExternalReference,
+  type ReferenceItem,
+} from '@/api/reference';
 import { useObjectModelStore } from '@/stores/objectModel';
 
-type ResourceTab = 'items' | 'works' | 'types' | 'objects';
+type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'objects';
+type ReferenceCategoryFilter = 'all' | 'internal' | 'external';
+type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
 
 const route = useRoute();
-const resourceTabs = new Set<ResourceTab>(['items', 'works', 'types', 'objects']);
+const router = useRouter();
+const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'objects']);
 
 function getRouteTab(): ResourceTab {
   const tab = route.query.tab;
-  return typeof tab === 'string' && resourceTabs.has(tab as ResourceTab) ? tab as ResourceTab : 'items';
+  return typeof tab === 'string' && resourceTabs.has(tab as ResourceTab) ? tab as ResourceTab : 'references';
 }
 
 const activeTab = ref<ResourceTab>(getRouteTab());
 const loading = ref(false);
+const referencesLoading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
 const selectedTypeId = ref('');
 const selectedWorkId = ref('');
+const selectedReferenceCategory = ref<ReferenceCategoryFilter>('all');
+const selectedReferenceStatus = ref<ReferenceStatusFilter>('all');
+const referenceKeyword = ref('');
+const selectedReferenceResourceItemId = ref('');
 
 const types = ref<ResourceType[]>([]);
 const works = ref<ResourceWork[]>([]);
 const items = ref<ResourceItem[]>([]);
+const references = ref<ReferenceItem[]>([]);
 const objectModelStore = useObjectModelStore();
 const selectedClassId = ref('');
 const selectedObjectId = ref('');
@@ -87,6 +102,15 @@ const objectForm = reactive({
   propertyValues: '{}',
 });
 
+const referenceForm = reactive({
+  id: '',
+  resourceItemId: '',
+  bindingMode: 'auto' as 'auto' | 'manual_bound' | 'manual_unbound',
+  displayText: '',
+  citationLocator: '',
+  citationNote: '',
+});
+
 const filteredWorks = computed(() => {
   if (!selectedTypeId.value) return works.value;
   return works.value.filter((work) => work.typeId === selectedTypeId.value);
@@ -94,6 +118,7 @@ const filteredWorks = computed(() => {
 
 const itemFormType = computed(() => types.value.find((type) => type.id === itemForm.typeId));
 const classNameById = computed(() => new Map(objectModelStore.classes.map((item) => [item.id, item.name])));
+const editableExternalReferences = computed(() => references.value.filter((item) => item.category === 'external'));
 
 function splitLines(value: string): string[] {
   return value
@@ -109,6 +134,10 @@ function parseObjectValues(raw: string): Record<string, string> {
   } catch {
     return {};
   }
+}
+
+function normalizeText(value: string | null | undefined): string {
+  return value?.trim() || '';
 }
 
 function resetTypeForm() {
@@ -168,6 +197,17 @@ function resetObjectForm() {
   });
 }
 
+function resetReferenceForm() {
+  Object.assign(referenceForm, {
+    id: '',
+    resourceItemId: '',
+    bindingMode: 'auto',
+    displayText: '',
+    citationLocator: '',
+    citationNote: '',
+  });
+}
+
 function showError(error: unknown) {
   errorMessage.value = error instanceof Error ? error.message : 'Request failed';
   successMessage.value = '';
@@ -208,6 +248,22 @@ async function refreshItems() {
     showError(error);
   } finally {
     loading.value = false;
+  }
+}
+
+async function refreshReferences() {
+  referencesLoading.value = true;
+  try {
+    references.value = await listReferences({
+      category: selectedReferenceCategory.value === 'all' ? undefined : selectedReferenceCategory.value,
+      resourceItemId: selectedReferenceResourceItemId.value || undefined,
+      status: selectedReferenceStatus.value === 'all' ? undefined : selectedReferenceStatus.value,
+      q: referenceKeyword.value.trim() || undefined,
+    });
+  } catch (error) {
+    showError(error);
+  } finally {
+    referencesLoading.value = false;
   }
 }
 
@@ -272,6 +328,24 @@ async function saveItem() {
   }
 }
 
+async function saveReference() {
+  try {
+    if (!referenceForm.id) return;
+    await updateExternalReference(referenceForm.id, {
+      resourceItemId: referenceForm.bindingMode === 'manual_bound' ? referenceForm.resourceItemId || null : null,
+      bindingMode: referenceForm.bindingMode,
+      displayText: referenceForm.displayText,
+      citationLocator: referenceForm.citationLocator,
+      citationNote: referenceForm.citationNote,
+    });
+    showSuccess('引用元数据已更新');
+    resetReferenceForm();
+    await refreshReferences();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 function editType(type: ResourceType) {
   Object.assign(typeForm, type);
   activeTab.value = 'types';
@@ -300,6 +374,52 @@ function editItem(item: ResourceItem) {
     note: item.note || '',
   });
   activeTab.value = 'items';
+}
+
+function editReference(item: ReferenceItem) {
+  if (item.category !== 'external') return;
+  Object.assign(referenceForm, {
+    id: item.id,
+    resourceItemId: item.target.resourceItemId || '',
+    bindingMode: item.status === 'unbound'
+      ? 'manual_unbound'
+      : item.target.resourceItemId
+        ? 'manual_bound'
+        : 'auto',
+    displayText: item.citation.displayText || '',
+    citationLocator: item.citation.locator || '',
+    citationNote: item.citation.note || '',
+  });
+}
+
+async function setReferenceBinding(item: ReferenceItem, bindingMode: 'auto' | 'manual_unbound') {
+  try {
+    await updateExternalReference(item.id, {
+      resourceItemId: null,
+      bindingMode,
+      displayText: item.citation.displayText || '',
+      citationLocator: item.citation.locator || '',
+      citationNote: item.citation.note || '',
+    });
+    showSuccess(bindingMode === 'auto' ? '已恢复自动匹配' : '已解绑引用');
+    await refreshReferences();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function rebuildReferenceIndex() {
+  try {
+    referencesLoading.value = true;
+    await rebuildReferences();
+    showSuccess('引用索引已重建');
+    await refreshAll();
+    await refreshReferences();
+  } catch (error) {
+    showError(error);
+  } finally {
+    referencesLoading.value = false;
+  }
 }
 
 function saveClass() {
@@ -388,6 +508,7 @@ async function removeItem(id: string) {
     await deleteResourceItem(id);
     showSuccess('资源实体已删除');
     await refreshAll();
+    await refreshReferences();
   } catch (error) {
     showError(error);
   }
@@ -397,10 +518,34 @@ function onTypeFilterChange() {
   selectedWorkId.value = '';
   resetWorkForm();
   resetItemForm();
-  refreshItems();
+  void refreshItems();
 }
 
-onMounted(refreshAll);
+function goToReferenceSource(item: ReferenceItem) {
+  void router.push({
+    path: '/',
+    query: {
+      pageId: item.source.pageId,
+      blockId: item.source.blockId,
+    },
+  });
+}
+
+function setActiveTab(tab: ResourceTab) {
+  activeTab.value = tab;
+  void router.replace({
+    path: route.path,
+    query: {
+      ...route.query,
+      tab,
+    },
+  });
+}
+
+onMounted(async () => {
+  await refreshAll();
+  await refreshReferences();
+});
 
 watch(
   () => route.query.tab,
@@ -414,8 +559,8 @@ watch(
   <main class="resource-page">
     <header class="resource-header">
       <div>
-        <h1>外部资源</h1>
-        <p>管理图书、图片、视频等外部资源的类型、归类和具体实体。</p>
+        <h1>引用与外部资源</h1>
+        <p>统一查看页面内部引用、外部链接引用，以及资源类型、归类和具体实体。</p>
       </div>
       <RouterLink class="back-link" to="/">返回工作区</RouterLink>
     </header>
@@ -445,11 +590,126 @@ watch(
     <div v-if="successMessage" class="message message--success">{{ successMessage }}</div>
 
     <nav class="resource-tabs">
-      <button :class="{ active: activeTab === 'items' }" @click="activeTab = 'items'">资源实体</button>
-      <button :class="{ active: activeTab === 'works' }" @click="activeTab = 'works'">资源归类</button>
-      <button :class="{ active: activeTab === 'types' }" @click="activeTab = 'types'">资源类型</button>
-      <button :class="{ active: activeTab === 'objects' }" @click="activeTab = 'objects'">对象管理</button>
+      <button :class="{ active: activeTab === 'references' }" @click="setActiveTab('references')">引用管理</button>
+      <button :class="{ active: activeTab === 'items' }" @click="setActiveTab('items')">资源实体</button>
+      <button :class="{ active: activeTab === 'works' }" @click="setActiveTab('works')">资源归类</button>
+      <button :class="{ active: activeTab === 'types' }" @click="setActiveTab('types')">资源类型</button>
+      <button :class="{ active: activeTab === 'objects' }" @click="setActiveTab('objects')">对象管理</button>
     </nav>
+
+    <section v-if="activeTab === 'references'" class="resource-layout reference-layout">
+      <form class="resource-form" @submit.prevent="saveReference">
+        <h2>{{ referenceForm.id ? '编辑外部引用' : '引用详情' }}</h2>
+        <label>
+          引用类别
+          <select v-model="selectedReferenceCategory" @change="refreshReferences">
+            <option value="all">全部</option>
+            <option value="internal">内部引用</option>
+            <option value="external">外部引用</option>
+          </select>
+        </label>
+        <label>
+          引用状态
+          <select v-model="selectedReferenceStatus" @change="refreshReferences">
+            <option value="all">全部</option>
+            <option value="ok">正常</option>
+            <option value="broken">失效</option>
+            <option value="bound">已绑定</option>
+            <option value="unbound">未绑定</option>
+          </select>
+        </label>
+        <label>
+          关联资源实体
+          <select v-model="selectedReferenceResourceItemId" @change="refreshReferences">
+            <option value="">全部资源实体</option>
+            <option v-for="item in items" :key="item.id" :value="item.id">
+              {{ item.title }}
+            </option>
+          </select>
+        </label>
+        <label>
+          关键字
+          <input v-model.trim="referenceKeyword" maxlength="200" placeholder="页面、块、资源标题、URL" />
+        </label>
+        <div class="form-actions">
+          <button type="button" @click="refreshReferences">查询</button>
+          <button type="button" class="secondary" @click="rebuildReferenceIndex">重建索引</button>
+        </div>
+
+        <template v-if="referenceForm.id">
+          <hr class="form-divider" />
+          <label>
+            绑定方式
+            <select v-model="referenceForm.bindingMode">
+              <option value="auto">自动匹配</option>
+              <option value="manual_bound">手动绑定</option>
+              <option value="manual_unbound">手动解绑</option>
+            </select>
+          </label>
+          <label>
+            资源实体
+            <select v-model="referenceForm.resourceItemId" :disabled="referenceForm.bindingMode !== 'manual_bound'">
+              <option value="">选择资源实体</option>
+              <option v-for="item in items" :key="item.id" :value="item.id">
+                {{ item.title }}
+              </option>
+            </select>
+          </label>
+          <label>
+            显示文案
+            <input v-model.trim="referenceForm.displayText" maxlength="255" />
+          </label>
+          <label>
+            页码/定位
+            <input v-model.trim="referenceForm.citationLocator" maxlength="255" placeholder="p. 18" />
+          </label>
+          <label>
+            引用说明
+            <textarea v-model.trim="referenceForm.citationNote" rows="4" maxlength="1024" />
+          </label>
+          <div class="form-actions">
+            <button type="submit">保存引用</button>
+            <button type="button" class="secondary" @click="resetReferenceForm">清空</button>
+          </div>
+        </template>
+      </form>
+
+      <div class="resource-list" :aria-busy="referencesLoading">
+        <article v-for="item in references" :key="item.id" class="resource-row">
+          <div class="reference-row__content">
+            <div class="row-title">
+              <span class="reference-badge" :class="`reference-badge--${item.category}`">{{ item.category }}</span>
+              <span class="reference-status" :class="`reference-status--${item.status}`">{{ item.status }}</span>
+            </div>
+            <div class="row-meta">来源页面：{{ item.source.pageTitle }} · 块 {{ item.source.blockId }} · {{ item.source.sourceKind }}</div>
+            <div class="row-meta">
+              目标：
+              <template v-if="item.category === 'internal'">
+                {{ item.target.kind }} {{ item.target.pageTitle || item.target.pageId || item.target.blockId }}
+              </template>
+              <template v-else>
+                {{ item.target.resourceItemTitle || '未绑定资源' }}
+                <span v-if="item.target.resourceTypeName"> · {{ item.target.resourceTypeName }}</span>
+              </template>
+            </div>
+            <p v-if="item.target.url" class="reference-url">{{ item.target.url }}</p>
+            <p v-if="item.target.blockPreview" class="reference-preview">{{ item.target.blockPreview }}</p>
+            <p v-if="item.citation.displayText || item.citation.locator || item.citation.note" class="reference-preview">
+              {{ item.citation.displayText || '未设置显示文案' }}
+              <span v-if="item.citation.locator"> · {{ item.citation.locator }}</span>
+              <span v-if="item.citation.note"> · {{ item.citation.note }}</span>
+            </p>
+          </div>
+          <div class="row-actions">
+            <button @click="goToReferenceSource(item)">打开来源</button>
+            <button v-if="item.editable" @click="editReference(item)">编辑</button>
+            <button v-if="item.editable" class="secondary" @click="setReferenceBinding(item, 'auto')">自动匹配</button>
+            <button v-if="item.editable" class="danger" @click="setReferenceBinding(item, 'manual_unbound')">解绑</button>
+          </div>
+        </article>
+        <p v-if="!references.length && !referencesLoading" class="empty">暂无引用记录</p>
+      </div>
+    </section>
 
     <section v-if="activeTab === 'items'" class="resource-layout">
       <form class="resource-form" @submit.prevent="saveItem">
@@ -666,7 +926,7 @@ watch(
             <div>
               <div class="row-title">{{ definition.name }}</div>
               <div class="row-meta">属性 {{ definition.attributes.length }} · 方法 {{ definition.methods.length }}</div>
-              <p v-if="definition.attributes.length">{{ definition.attributes.join('，') }}</p>
+              <p v-if="definition.attributes.length">{{ definition.attributes.join('；') }}</p>
             </div>
             <div class="row-actions">
               <button @click="editClass(definition.id)">编辑</button>
@@ -703,7 +963,7 @@ watch(
 .resource-page {
   min-height: 100vh;
   padding: 24px 32px 40px;
-  background: #f6f7f9;
+  background: linear-gradient(180deg, #f5f8fb 0%, #eef3f8 100%);
   color: #1f2933;
 }
 
@@ -729,7 +989,7 @@ watch(
 .back-link,
 button {
   border: 1px solid #cfd7e3;
-  border-radius: 6px;
+  border-radius: 8px;
   background: #fff;
   color: #1f2933;
   cursor: pointer;
@@ -765,7 +1025,7 @@ select,
 textarea {
   min-width: 220px;
   border: 1px solid #cfd7e3;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 8px 10px;
   font: inherit;
   background: #fff;
@@ -777,7 +1037,7 @@ textarea {
 
 .message {
   padding: 10px 12px;
-  border-radius: 6px;
+  border-radius: 8px;
 }
 
 .message--error {
@@ -795,6 +1055,7 @@ textarea {
 .resource-tabs {
   display: flex;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .resource-tabs button,
@@ -817,6 +1078,10 @@ textarea {
   align-items: start;
 }
 
+.reference-layout {
+  grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
+}
+
 .object-model-layout {
   display: grid;
   grid-template-columns: minmax(260px, 320px) minmax(260px, 320px) minmax(0, 1fr);
@@ -827,8 +1092,9 @@ textarea {
 .resource-form,
 .resource-list {
   border: 1px solid #e4e7ec;
-  border-radius: 8px;
-  background: #fff;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(6px);
 }
 
 .resource-form {
@@ -855,6 +1121,13 @@ textarea {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.form-divider {
+  width: 100%;
+  border: 0;
+  border-top: 1px solid #edf0f5;
+  margin: 4px 0;
 }
 
 .secondary {
@@ -909,6 +1182,9 @@ textarea {
 }
 
 .row-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-weight: 700;
   margin-bottom: 4px;
 }
@@ -917,12 +1193,58 @@ textarea {
   margin: 8px 0 0;
 }
 
-.resource-row a {
+.resource-row a,
+.reference-url {
   display: inline-block;
   max-width: 720px;
   margin-top: 6px;
   color: #0969da;
   word-break: break-all;
+}
+
+.reference-preview {
+  color: #52606d;
+}
+
+.reference-row__content {
+  min-width: 0;
+}
+
+.reference-badge,
+.reference-status {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.reference-badge--internal {
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.reference-badge--external {
+  background: #fdf2fa;
+  color: #c11574;
+}
+
+.reference-status--ok,
+.reference-status--bound {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.reference-status--broken {
+  background: #fff1f3;
+  color: #c01048;
+}
+
+.reference-status--unbound {
+  background: #fff7ed;
+  color: #c2410c;
 }
 
 .empty {
@@ -941,7 +1263,8 @@ textarea {
   }
 
   .resource-layout,
-  .object-model-layout {
+  .object-model-layout,
+  .reference-layout {
     grid-template-columns: 1fr;
   }
 }

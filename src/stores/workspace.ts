@@ -54,6 +54,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const pageTree = ref<PageItem[]>([]);
   const currentPageId = ref<string | null>(null);
   const currentBlocks = ref<Block[]>([]);
+  const focusedBlockId = ref<string | null>(null);
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
   const registryStore = useBlockRegistryStore();
@@ -83,6 +84,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function resetWorkspaceState() {
     currentKbId.value = null;
     currentPageId.value = null;
+    focusedBlockId.value = null;
     pageTree.value = [];
     currentBlocks.value = [];
     blockSyncManager.setPageId(null);
@@ -123,6 +125,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function selectPage(pageId: string) {
     currentPageId.value = pageId;
+    focusedBlockId.value = null;
     blockSyncManager.setPageId(pageId);
     loading.value = true;
     try {
@@ -277,6 +280,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  async function openPageAtBlock(pageId: string, blockId: string | null) {
+    await selectPage(pageId);
+    focusedBlockId.value = blockId;
+  }
+
+  function consumeFocusedBlockId(): string | null {
+    const value = focusedBlockId.value;
+    focusedBlockId.value = null;
+    return value;
+  }
+
   async function reloadWorkspace() {
     resetWorkspaceState();
     await loadKbList();
@@ -359,12 +373,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pageTree,
     currentPageId,
     currentBlocks,
+    focusedBlockId,
     loading,
     currentLocalFileBinding,
     loadKbList,
     reloadWorkspace,
     selectKb,
     selectPage,
+    openPageAtBlock,
+    consumeFocusedBlockId,
     saveCurrentPage,
     addKb,
     removeKb,
