@@ -2,6 +2,8 @@
 import Vditor from 'vditor';
 import 'vditor/dist/index.css';
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import type { TextAnnotation } from '@/api/types';
+import { applyAnnotations } from '@/utils/annotations';
 
 interface Props {
   content: string;
@@ -11,6 +13,7 @@ interface Props {
   autoFocus?: boolean;
   lineHandleEnabled?: boolean;
   compact?: boolean;
+  annotations?: TextAnnotation[];
 }
 
 type LineInsertBlockType = 'richtext' | 'line' | 'x6' | 'ref' | 'container' | 'table';
@@ -64,6 +67,7 @@ const emit = defineEmits<{
   (e: 'open-tag-editor', payload?: TagEditorOpenPayload): void;
   (e: 'delete-block'): void;
   (e: 'click', event: MouseEvent): void;
+  (e: 'annotation-click', payload: { annotationId: string; event: MouseEvent }): void;
   (e: 'lifecycle', method: string): void;
   (e: 'blur', content: string): void;
   (e: 'focused'): void;
@@ -75,6 +79,7 @@ const VDITOR_CDN = '/vditor';
 
 const wrapperRef = ref<HTMLDivElement | null>(null);
 const editorRef = ref<HTMLDivElement | null>(null);
+const previewContentRef = ref<HTMLDivElement | null>(null);
 const editorInstance = ref<Vditor | null>(null);
 const isUnmounted = ref(false);
 const isReady = ref(false);
@@ -153,6 +158,21 @@ const escapeHtml = (value: string): string => {
 
 const previewHtml = ref('');
 
+const applyCurrentAnnotations = () => {
+  const target = isReady.value ? editorRef.value : previewContentRef.value;
+  if (!target) return;
+  applyAnnotations(target, props.annotations ?? []);
+};
+
+const scheduleAnnotationApply = (delays = [0]) => {
+  delays.forEach((delay) => {
+    window.setTimeout(() => {
+      if (isUnmounted.value) return;
+      applyCurrentAnnotations();
+    }, delay);
+  });
+};
+
 const renderPreviewHtml = async () => {
   if (isReady.value) return;
   try {
@@ -160,6 +180,8 @@ const renderPreviewHtml = async () => {
   } catch {
     previewHtml.value = `<p>${escapeHtml(props.content)}</p>`;
   }
+  await nextTick();
+  if (!isReady.value) applyCurrentAnnotations();
 };
 
 renderPreviewHtml();
@@ -1240,6 +1262,12 @@ const attachEditorDomListeners = () => {
     emit('click', event);
 
     const target = event.target as HTMLElement;
+    const annotationSpan = target.closest('.tu-annotation') as HTMLElement | null;
+    if (annotationSpan && annotationSpan.dataset.annotationId) {
+      emit('annotation-click', { annotationId: annotationSpan.dataset.annotationId, event });
+      return;
+    }
+
     const img = target.closest('img');
     if (img && isWysiwygBodyImage(img)) {
       window.setTimeout(() => {
@@ -1494,6 +1522,7 @@ const initEditor = () => {
       isReady.value = true;
       attachEditorDomListeners();
       scheduleStoredImageWidthSync(props.content);
+      scheduleAnnotationApply([0, 40, 120]);
       updateHeight();
 
       if ((props.autoFocus || pendingFocusAfterReady.value) && editorInstance.value) {
@@ -1513,6 +1542,7 @@ const initEditor = () => {
       emit('content-change', normalizedValue);
       setTimeout(() => {
         applyStoredImageWidthsToDom(normalizedValue);
+        scheduleAnnotationApply([0, 40]);
         updateHeight();
         scheduleEditorHandleSync(1);
       }, 0);
@@ -1542,7 +1572,11 @@ const activateEditor = (shouldFocus = false) => {
 
 const focusEditor = () => {
   if (editorInstance.value) {
-    editorInstance.value.focus();
+    if (isReady.value) {
+      editorInstance.value.focus();
+    } else {
+      pendingFocusAfterReady.value = true;
+    }
     return;
   }
 
@@ -1558,22 +1592,35 @@ const insertMarkdown = (markdown: string) => {
 
   nextTick(() => {
     if (!editorInstance.value) return;
-    if (savedMarkdownLinkRange) {
-      const selection = window.getSelection();
-      selection?.removeAllRanges();
-      selection?.addRange(savedMarkdownLinkRange);
-      savedMarkdownLinkRange = null;
+    if (!isReady.value) {
+      const stop = watch(isReady, (ready) => {
+        if (ready) {
+          stop();
+          doInsertMarkdown(markdown);
+        }
+      });
+      return;
     }
-    editorInstance.value.focus();
-    editorInstance.value.insertValue(markdown, true);
-    const value = editorInstance.value.getValue();
-    lastEmittedContent.value = value;
-    emit('content-change', value);
-    setTimeout(() => {
-      updateHeight();
-      scheduleEditorHandleSync(1);
-    }, 0);
+    doInsertMarkdown(markdown);
   });
+};
+
+const doInsertMarkdown = (markdown: string) => {
+  if (savedMarkdownLinkRange) {
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(savedMarkdownLinkRange);
+    savedMarkdownLinkRange = null;
+  }
+  editorInstance.value!.focus();
+  editorInstance.value!.insertValue(markdown, true);
+  const value = editorInstance.value!.getValue();
+  lastEmittedContent.value = value;
+  emit('content-change', value);
+  setTimeout(() => {
+    updateHeight();
+    scheduleEditorHandleSync(1);
+  }, 0);
 };
 
 const insertMarkdownLink = (label: string, url: string, display: LinkDisplayMode = 'link') => {
@@ -1634,8 +1681,34 @@ const updateInsertedImageWidth = (widthPercent: number) => {
 
 const handlePreviewClick = (event: MouseEvent) => {
   emit('click', event);
+  const target = event.target as HTMLElement | null;
+  const annotationSpan = target?.closest('.tu-annotation') as HTMLElement | null;
+  if (annotationSpan?.dataset.annotationId) {
+    emit('annotation-click', { annotationId: annotationSpan.dataset.annotationId, event });
+    return;
+  }
   if (!props.editable) return;
   activateEditor(true);
+};
+
+const getSelectionPosition = (): { top: number; left: number; width: number } | null => {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0 || !selection.toString().trim()) return null;
+
+  const contentRoot = getEditorContentRoot();
+  if (!contentRoot) return null;
+
+  const range = selection.getRangeAt(0);
+  if (!contentRoot.contains(range.commonAncestorContainer)) return null;
+
+  const rect = range.getBoundingClientRect();
+  if (!rect || rect.width === 0) return null;
+
+  return {
+    top: rect.bottom,
+    left: rect.left + rect.width / 2,
+    width: rect.width,
+  };
 };
 
 const destroyEditorSafely = () => {
@@ -1662,6 +1735,7 @@ defineExpose({
   focusEditor,
   getSelectionAsMarkdown,
   getMarkdownLinkAnchor,
+  getSelectionPosition,
   insertMarkdown,
   insertMarkdownLink,
   updateInsertedLinkDisplay,
@@ -1721,6 +1795,19 @@ watch(
       activateEditor(true);
     }
   }
+);
+
+watch(
+  () => props.annotations,
+  (newAnnotations) => {
+    if (isReady.value && editorRef.value) {
+      nextTick(() => {
+        scheduleAnnotationApply([0, 40]);
+      });
+      return;
+    }
+    nextTick(() => applyCurrentAnnotations());
+  },
 );
 </script>
 
@@ -1784,7 +1871,7 @@ watch(
         @click="handlePreviewClick"
         @keydown.enter.prevent="activateEditor(true)"
       >
-        <div class="editor-preview__content vditor-reset" v-html="previewHtml" />
+        <div ref="previewContentRef" class="editor-preview__content vditor-reset" v-html="previewHtml" />
       </div>
     </Transition>
   </div>

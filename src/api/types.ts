@@ -67,6 +67,17 @@ export interface BlockTag {
   color?: string;
 }
 
+export interface TextAnnotation {
+  id: string;
+  selectedText: string;
+  contextBefore: string;
+  contextAfter: string;
+  note: string;
+  color: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface BlockMetadata {
   tags?: BlockTag[];
   [key: string]: unknown;

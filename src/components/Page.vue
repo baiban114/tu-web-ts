@@ -11,9 +11,12 @@ import TableBlock from './TableBlock.vue';
 import X6Component from './X6Component.vue';
 import ReferencedBlockRenderer from './ReferencedBlockRenderer.vue';
 import Toast from './Toast.vue';
+import SelectionToolbar from './SelectionToolbar.vue';
+import NoteEditor from './NoteEditor.vue';
+import NotePopover from './NotePopover.vue';
 import { ElMessageBox } from 'element-plus';
 import { VueDraggable } from 'vue-draggable-plus';
-import type { Block, BlockTag, GraphData } from '@/api/types';
+import type { Block, BlockTag, GraphData, TextAnnotation } from '@/api/types';
 import { getPageContent } from '@/api/page';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
@@ -1761,11 +1764,31 @@ const normalizeTopLevelBlocks = (blocks: Block[]): Block[] => {
   return changed || grouped.changed ? grouped.blocks : blocks;
 };
 
+const syncAnnotationsFromBlocks = () => {
+  const next: Record<number, TextAnnotation[]> = {};
+  for (let i = 0; i < localBlocks.value.length; i++) {
+    const block = localBlocks.value[i];
+    if (block?.metadata?.annotations) {
+      next[i] = block.metadata.annotations as TextAnnotation[];
+    }
+    if (block?.type === 'container' && block.children) {
+      for (let j = 0; j < block.children.length; j++) {
+        const child = block.children[j];
+        if (child?.metadata?.annotations) {
+          next[i * 100 + j] = child.metadata.annotations as TextAnnotation[];
+        }
+      }
+    }
+  }
+  annotationStates.value = next;
+};
+
 const syncLocalBlocksFromSource = (blocks: Block[]) => {
   isNormalizing.value = true;
   localBlocks.value = normalizeTopLevelBlocks(blocks);
   void nextTick(() => {
     isNormalizing.value = false;
+    syncAnnotationsFromBlocks();
   });
 };
 
@@ -2011,6 +2034,132 @@ const handleRichTextEditorClick = (event: MouseEvent, blockIndex: number) => {
   activeBlockIndex.value = blockIndex;
 };
 
+// 处理 annotation 点击（显示笔记弹窗）
+const handleAnnotationClick = (payload: { annotationId: string; event: MouseEvent }, blockIndex: number) => {
+  const annotations = getBlockAnnotations(blockIndex);
+  const annotation = annotations.find((a) => a.id === payload.annotationId);
+  if (!annotation) return;
+
+  notePopoverAnnotation.value = annotation;
+  notePopoverPos.value = { top: payload.event.clientY - 10, left: payload.event.clientX + 12 };
+  notePopoverVisible.value = true;
+};
+
+// 从选中文本创建 annotation
+let pendingNoteBlockIndex = -1;
+let pendingNoteSelectedText = '';
+let pendingNoteContextBefore = '';
+let pendingNoteContextAfter = '';
+
+const getSelectionContextFromDom = (dir: 'before' | 'after'): string => {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return '';
+  const range = sel.getRangeAt(0);
+  const text = range.startContainer.textContent ?? '';
+  const offset = range.startOffset;
+  const selLen = range.toString().length;
+  if (dir === 'before') {
+    return text.slice(Math.max(0, offset - 50), offset);
+  }
+  return text.slice(offset + selLen, offset + selLen + 50);
+};
+
+const handleAddNoteFromSelection = () => {
+  if (selectionBlockIndex.value < 0 || !selectedText.value) return;
+
+  pendingNoteBlockIndex = selectionBlockIndex.value;
+  pendingNoteSelectedText = selectedText.value;
+  pendingNoteContextBefore = getSelectionContextFromDom('before');
+  pendingNoteContextAfter = getSelectionContextFromDom('after');
+
+  editingAnnotation.value = undefined;
+  noteEditorVisible.value = true;
+};
+
+// 保存 annotation
+const handleSaveAnnotation = (note: string) => {
+  if (pendingNoteBlockIndex < 0) return;
+
+  const now = Date.now();
+  const existing = editingAnnotation.value;
+  const annotations = [...getBlockAnnotations(pendingNoteBlockIndex)];
+
+  if (existing) {
+    const idx = annotations.findIndex((a) => a.id === existing.id);
+    if (idx >= 0) {
+      annotations[idx] = { ...existing, note, updatedAt: now };
+    }
+  } else {
+    const annotation: TextAnnotation = {
+      id: `annot-${now}-${Math.random().toString(36).substr(2, 6)}`,
+      selectedText: pendingNoteSelectedText,
+      contextBefore: pendingNoteContextBefore,
+      contextAfter: pendingNoteContextAfter,
+      note,
+      color: '#FFEB3B',
+      createdAt: now,
+      updatedAt: now,
+    };
+    annotations.push(annotation);
+  }
+
+  setBlockAnnotations(pendingNoteBlockIndex, annotations);
+  noteEditorVisible.value = false;
+  editingAnnotation.value = undefined;
+
+  // 关闭选中
+  hasSelection.value = false;
+  selectionBlockIndex.value = -1;
+  selectionToolbarPos.value = { top: 0, left: 0 };
+  pendingNoteBlockIndex = -1;
+  pendingNoteSelectedText = '';
+  pendingNoteContextBefore = '';
+  pendingNoteContextAfter = '';
+};
+
+// 编辑 annotation
+const handleEditAnnotation = () => {
+  if (!notePopoverAnnotation.value) return;
+  const target = notePopoverAnnotation.value;
+
+  // 找到该 annotation 所属的 block index
+  for (let i = 0; i < localBlocks.value.length; i++) {
+    const annotations = getBlockAnnotations(i);
+    if (annotations.some((a) => a.id === target.id)) {
+      pendingNoteBlockIndex = i;
+      break;
+    }
+  }
+  if (pendingNoteBlockIndex < 0) return;
+
+  pendingNoteSelectedText = target.selectedText;
+  pendingNoteContextBefore = target.contextBefore;
+  pendingNoteContextAfter = target.contextAfter;
+  editingAnnotation.value = { ...target };
+  noteEditorVisible.value = true;
+  notePopoverVisible.value = false;
+};
+
+// 删除 annotation
+const handleDeleteAnnotation = () => {
+  if (!notePopoverAnnotation.value) return;
+  const target = notePopoverAnnotation.value;
+
+  for (let i = 0; i < localBlocks.value.length; i++) {
+    const annotations = getBlockAnnotations(i);
+    const idx = annotations.findIndex((a) => a.id === target.id);
+    if (idx >= 0) {
+      const next = [...annotations];
+      next.splice(idx, 1);
+      setBlockAnnotations(i, next);
+      break;
+    }
+  }
+
+  notePopoverAnnotation.value = null;
+  notePopoverVisible.value = false;
+};
+
 const handleRichTextLineHandleChange = (position: number, payload: RichTextLineHandlePayload) => {
   updateRichTextLineHandleState(position, payload);
 };
@@ -2203,10 +2352,21 @@ const checkSelection = () => {
           break;
         }
       }
+
+      // 捕获选中位置
+      if (selectedBlockIndex.value >= 0) {
+        const editor = richTextEditorRefs.value[selectedBlockIndex.value] as any;
+        const pos = editor?.getSelectionPosition?.();
+        if (pos) {
+          selectionToolbarPos.value = { top: pos.top + 4, left: pos.left };
+          selectionBlockIndex.value = selectedBlockIndex.value;
+        }
+      }
     } else {
       hasSelection.value = false;
       selectedText.value = '';
       selectedBlockIndex.value = -1;
+      selectionBlockIndex.value = -1;
     }
   } catch (error) {
     console.error('检查选中文本失败:', error);
@@ -2333,6 +2493,31 @@ const getMarkdownLinkAnchor = (index: number): { top: number; left: number } => 
 const closeLinkPopover = () => {
   linkPopoverState.value.visible = false;
 };
+
+const annotationStates = ref<Record<number, TextAnnotation[]>>({});
+
+const getBlockAnnotations = (index: number): TextAnnotation[] => {
+  return annotationStates.value[index] ?? [];
+};
+
+const setBlockAnnotations = (index: number, annotations: TextAnnotation[]) => {
+  annotationStates.value = { ...annotationStates.value, [index]: annotations };
+  const block = getBlockAtPosition(index);
+  if (block) {
+    block.metadata = { ...(block.metadata ?? {}), annotations };
+    emit('content-change', localBlocks.value);
+  }
+};
+
+const selectionToolbarPos = ref({ top: 0, left: 0 });
+const selectionBlockIndex = ref(-1);
+
+const noteEditorVisible = ref(false);
+const editingAnnotation = ref<TextAnnotation | undefined>();
+
+const notePopoverVisible = ref(false);
+const notePopoverAnnotation = ref<TextAnnotation | null>(null);
+const notePopoverPos = ref({ top: 0, left: 0 });
 
 const closeInsertedLinkToolbar = () => {
   insertedLinkToolbarState.value.visible = false;
@@ -2898,6 +3083,7 @@ const getBlockProperties = (block: Block) => {
                         :content="childBlock.content || ''"
                         :editable="editable"
                         :auto-focus="childBlock.id === autoFocusBlockId"
+                        :annotations="getBlockAnnotations(index * 100 + childIndex)"
                         @focused="autoFocusBlockId = null"
                         @content-change="(content: string) => { childBlock.content = content; emit('content-change', localBlocks); }"
                         @height-change="(height: number) => childBlock.blockHeight = height"
@@ -2907,6 +3093,7 @@ const getBlockProperties = (block: Block) => {
                         @open-tag-editor="(request?: TagEditorOpenRequest) => handleTagEditorRequest(index * 100 + childIndex, request)"
                         @delete-block="removeBlock(index * 100 + childIndex)"
                         @click="(event: MouseEvent) => handleRichTextEditorClick(event, index * 100 + childIndex)"
+                        @annotation-click="(payload: { annotationId: string; event: MouseEvent }) => handleAnnotationClick(payload, index * 100 + childIndex)"
                         @line-handle-change="(payload: RichTextLineHandlePayload) => handleRichTextLineHandleChange(index * 100 + childIndex, payload)"
                         @line-handle-menu-visibility-change="(visible: boolean) => updateRichTextLineMenuVisibility(index * 100 + childIndex, visible)"
                         @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index * 100 + childIndex)"
@@ -3031,6 +3218,7 @@ const getBlockProperties = (block: Block) => {
               :content="block.content || ''"
               :editable="editable"
               :auto-focus="block.id === autoFocusBlockId"
+              :annotations="getBlockAnnotations(index)"
               @focused="autoFocusBlockId = null"
               @content-change="(content: string) => { block.content = content; emit('content-change', localBlocks); }"
               @height-change="(height: number) => block.blockHeight = height"
@@ -3040,6 +3228,7 @@ const getBlockProperties = (block: Block) => {
               @open-tag-editor="(request?: TagEditorOpenRequest) => handleTagEditorRequest(index, request)"
               @delete-block="removeBlock(index)"
               @click="(event: MouseEvent) => handleRichTextEditorClick(event, index)"
+              @annotation-click="(payload: { annotationId: string; event: MouseEvent }) => handleAnnotationClick(payload, index)"
               @line-handle-change="(payload: RichTextLineHandlePayload) => handleRichTextLineHandleChange(index, payload)"
               @line-handle-menu-visibility-change="(visible: boolean) => updateRichTextLineMenuVisibility(index, visible)"
               @lifecycle="(method: string) => handleRichTextEditorLifecycle(method, index)"
@@ -3216,6 +3405,30 @@ const getBlockProperties = (block: Block) => {
       :left="tagEditorState.left"
       @close="closeTagEditor"
       @update:selected-tags="(tags) => { if (tagEditorState.position >= 0) updateBlockTags(tagEditorState.position, tags); }"
+    />
+
+    <SelectionToolbar
+      :visible="selectionBlockIndex >= 0 && hasSelection"
+      :top="selectionToolbarPos.top"
+      :left="selectionToolbarPos.left"
+      @add-note="handleAddNoteFromSelection"
+    />
+
+    <NoteEditor
+      :visible="noteEditorVisible"
+      :annotation="editingAnnotation"
+      @save="handleSaveAnnotation"
+      @cancel="noteEditorVisible = false; editingAnnotation = undefined"
+    />
+
+    <NotePopover
+      :visible="notePopoverVisible"
+      :annotation="notePopoverAnnotation"
+      :top="notePopoverPos.top"
+      :left="notePopoverPos.left"
+      @edit="handleEditAnnotation"
+      @delete="handleDeleteAnnotation"
+      @close="notePopoverVisible = false; notePopoverAnnotation = null"
     />
 
     <!-- Toast消息容器 -->
