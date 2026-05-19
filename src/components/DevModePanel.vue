@@ -26,12 +26,15 @@ import { resetMockState } from '@/mock/store';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 const STORAGE_KEY = 'tu:dev:product-features';
+const EDITOR_STORAGE_KEY = 'tu:dev:editor-type';
 
 type FeatureDraft = Pick<ProductFeature, 'name' | 'module' | 'description' | 'status' | 'owner' | 'note'>;
+type EditorType = 'vditor' | 'tiptap';
 
 const workspaceStore = useWorkspaceStore();
 const switching = ref(false);
 const currentSource = ref<DataSource>(getDataSource());
+const currentEditor = ref<EditorType>(loadEditorType());
 const featureDrawerVisible = ref(false);
 const statusFilter = ref<ProductFeatureStatus | 'all'>('all');
 const moduleFilter = ref('all');
@@ -112,6 +115,22 @@ function getStatusLabel(status: ProductFeatureStatus) {
 
 function getStatusTone(status: ProductFeatureStatus) {
   return statusMetaMap.value.get(status)?.tone || 'info';
+}
+
+function loadEditorType(): EditorType {
+  try {
+    const saved = window.localStorage.getItem(EDITOR_STORAGE_KEY)
+    return (saved === 'tiptap' ? 'tiptap' : 'vditor') as EditorType
+  } catch {
+    return 'vditor'
+  }
+}
+
+function applyEditor(type: EditorType) {
+  if (type === currentEditor.value) return
+  window.localStorage.setItem(EDITOR_STORAGE_KEY, type)
+  currentEditor.value = type
+  ElMessage.success(`已切换到 ${type === 'vditor' ? 'Vditor' : 'TipTap'} 编辑器`)
 }
 
 async function applySource(source: DataSource) {
@@ -237,6 +256,18 @@ function resetFeatureCatalog() {
           <el-radio-button label="backend">Backend</el-radio-button>
           <el-radio-button label="mock">Mock</el-radio-button>
         </el-radio-group>
+
+        <div class="dev-mode-panel__section">
+          <span class="dev-mode-panel__label">富文本编辑器</span>
+          <el-radio-group
+            :model-value="currentEditor"
+            size="small"
+            @update:model-value="(value) => applyEditor(value as EditorType)"
+          >
+            <el-radio-button label="vditor">Vditor</el-radio-button>
+            <el-radio-button label="tiptap">TipTap</el-radio-button>
+          </el-radio-group>
+        </div>
 
         <div class="dev-mode-panel__actions">
           <el-button size="small" :loading="switching" @click="resetMock">Reset Mock</el-button>
@@ -402,6 +433,20 @@ function resetFeatureCatalog() {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.dev-mode-panel__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.dev-mode-panel__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #6b7280;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .dev-mode-panel__actions {

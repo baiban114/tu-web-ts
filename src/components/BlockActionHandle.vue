@@ -47,10 +47,6 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-.block-action-handle {
-  opacity: 0;
-}
-
 .block-action-handle--line {
   --hover-handle-item-hover-bg: #f5f5f5;
   --hover-handle-item-hover-color: #333;
