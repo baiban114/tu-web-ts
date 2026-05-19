@@ -18,7 +18,6 @@ import {
 type CellData = Record<string, any>;
 const BLUEPRINT_ANCHOR = { x: 480, y: 280 } as const;
 const TASK_FLOW_KIND = 'task-flow' as const;
-const KNOWLEDGE_ROADMAP_KIND = 'knowledge-roadmap' as const;
 
 interface GraphData {
   cells?: CellData[];
@@ -33,6 +32,8 @@ interface Props {
   width?: number;
   height?: number;
   blockActionsEnabled?: boolean;
+  sourceLoadEnabled?: boolean;
+  sourceWriteBackEnabled?: boolean;
 }
 
 type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
@@ -65,6 +66,8 @@ const props = withDefaults(defineProps<Props>(), {
   width: 960,
   height: 540,
   blockActionsEnabled: true,
+  sourceLoadEnabled: false,
+  sourceWriteBackEnabled: false,
 });
 
 interface ExtractedGraphSelectionPayload {
@@ -122,7 +125,7 @@ const edgeInlineInputRef = ref<HTMLTextAreaElement | null>(null);
 
 const isEditable = computed(() => props.editable !== false);
 const isTaskFlow = computed(() => props.graphData?.blueprintMeta?.kind === TASK_FLOW_KIND);
-const isStructureMappingGraph = computed(() => props.graphData?.blueprintMeta?.kind === KNOWLEDGE_ROADMAP_KIND);
+const hasGraphSourceActions = computed(() => props.sourceLoadEnabled || props.sourceWriteBackEnabled);
 const selectionSummary = computed(() => {
   if (selectedCellsCount.value === 0) return '未选中对象';
   if (selectedCellsCount.value > 1) return `已选中 ${selectedCellsCount.value} 个对象`;
@@ -2176,11 +2179,12 @@ defineExpose({
           同步对象模型
         </button>
       </div>
-      <div class="toolbar-group" v-if="isStructureMappingGraph">
-        <button type="button" class="tool-button" @click="syncFromSource">
+      <div class="toolbar-group" v-if="hasGraphSourceActions">
+        <span class="toolbar-summary">图源</span>
+        <button v-if="sourceLoadEnabled" type="button" class="tool-button" @click="syncFromSource">
           从源同步
         </button>
-        <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="syncToSource">
+        <button v-if="sourceWriteBackEnabled" type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="syncToSource">
           同步至源
         </button>
       </div>

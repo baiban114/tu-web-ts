@@ -136,6 +136,7 @@ watch(
         </div>
 
         <Page
+          :key="store.currentPageId"
           :contentList="store.currentBlocks"
           :page-title="store.currentPageTitle"
           :editable="true"

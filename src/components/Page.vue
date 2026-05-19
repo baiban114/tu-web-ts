@@ -19,7 +19,15 @@ import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata';
-import { createKnowledgeRoadmapGraphData } from '@/utils/roadmapGraph';
+import {
+  canLoadGraphFromSource,
+  canWriteGraphToSource,
+  createGraphFromSource,
+  createGraphSourceMetadata,
+  readGraphSourceKind,
+  type GraphSourceKind,
+  type GraphSourceMetadata,
+} from '@/utils/graphSources';
 import { ensureExternalLinkResource } from '@/api/externalResource';
 
 type LinkDisplayMode = 'link' | 'image';
@@ -583,11 +591,16 @@ const createNewX6Block = (position: number): Block => {
   };
 };
 
-const createX6BlockFromGraphData = (graphData: GraphData, title = '提取的蓝图片段（蓝图）'): Block => {
+const createX6BlockFromGraphData = (
+  graphData: GraphData,
+  title = '提取的蓝图片段（蓝图）',
+  metadata?: GraphSourceMetadata,
+): Block => {
   return {
     id: generateId(),
     type: 'x6',
     title,
+    ...(metadata ? { metadata } : {}),
     graphData,
   };
 };
@@ -603,42 +616,46 @@ const createKnowledgeRoadmapBlock = (): Block | null => {
     type: 'x6',
     title: '知识库路线图',
     metadata: {
-      sourceType: 'knowledge-roadmap',
-      sourceKbId: workspaceStore.currentKbId,
+      ...createGraphSourceMetadata('knowledge-base-pages', {
+        sourceId: workspaceStore.currentKbId,
+        syncMode: 'bidirectional',
+      }),
     },
-    graphData: createKnowledgeRoadmapGraphData(workspaceStore.pageTree),
+    graphData: createGraphFromSource('knowledge-base-pages', workspaceStore.pageTree),
   };
 };
 
-const isKnowledgeRoadmapBlock = (block: Block): boolean => {
-  return block.type === 'x6' && block.metadata?.sourceType === 'knowledge-roadmap';
+const getGraphSourceKindForBlock = (block: Block): GraphSourceKind | null => {
+  return block.type === 'x6' ? readGraphSourceKind(block.metadata) : null;
 };
 
 const getX6GraphDataForRender = (block: Block): GraphData | undefined => {
-  if (isKnowledgeRoadmapBlock(block)) {
-    return createKnowledgeRoadmapGraphData(workspaceStore.pageTree);
+  if (getGraphSourceKindForBlock(block) === 'knowledge-base-pages') {
+    return createGraphFromSource('knowledge-base-pages', workspaceStore.pageTree);
   }
   return block.graphData;
 };
 
 const updateX6GraphDataFromEditor = (block: Block, graphData: GraphData) => {
-  if (isKnowledgeRoadmapBlock(block)) return;
+  if (canLoadGraphFromSource(block.metadata)) return;
   block.graphData = graphData;
   emit('content-change', localBlocks.value);
 };
 
-const syncKnowledgeRoadmapBlockFromSource = (block: Block) => {
-  if (!isKnowledgeRoadmapBlock(block)) return;
-  block.graphData = createKnowledgeRoadmapGraphData(workspaceStore.pageTree);
+const syncGraphBlockFromSource = (block: Block) => {
+  const sourceKind = getGraphSourceKindForBlock(block);
+  if (sourceKind !== 'knowledge-base-pages' || !canLoadGraphFromSource(block.metadata)) return;
+  block.graphData = createGraphFromSource(sourceKind, workspaceStore.pageTree);
   emit('content-change', localBlocks.value);
   showToast('已从知识库结构同步路线图');
 };
 
-const syncKnowledgeRoadmapBlockToSource = async (block: Block, graphData: GraphData) => {
-  if (!isKnowledgeRoadmapBlock(block)) return;
+const syncGraphBlockToSource = async (block: Block, graphData: GraphData) => {
+  const sourceKind = getGraphSourceKindForBlock(block);
+  if (sourceKind !== 'knowledge-base-pages' || !canWriteGraphToSource(block.metadata)) return;
   try {
     const result = await workspaceStore.syncKnowledgeRoadmapToSource(graphData);
-    block.graphData = createKnowledgeRoadmapGraphData(workspaceStore.pageTree);
+    block.graphData = createGraphFromSource(sourceKind, workspaceStore.pageTree);
     emit('content-change', localBlocks.value);
     const warningText = result.warnings.length ? `，${result.warnings.join('；')}` : '';
     showToast(`已同步至知识库结构，影响 ${result.changedCount} 个节点${warningText}`);
@@ -2080,8 +2097,8 @@ watch(
 );
 
 watch(
-  () => props.pageTitle,
-  (title) => {
+  () => [workspaceStore.currentPageId, props.pageTitle] as const,
+  ([, title]) => {
     pageTitleDraft.value = title || '未命名页面';
   },
   { immediate: true },
@@ -2242,7 +2259,11 @@ const handleExtractX6Selection = async (payload: X6ExtractSelectionPayload, bloc
   if (!title) return;
 
   const insertPosition = blockIndex + 1;
-  const newBlock = createX6BlockFromGraphData(payload.graphData as GraphData, title);
+  const newBlock = createX6BlockFromGraphData(
+    createGraphFromSource('selection-blueprint', payload.graphData as GraphData),
+    title,
+    createGraphSourceMetadata('selection-blueprint', { syncMode: 'detached' }),
+  );
   autoFocusBlockId.value = null;
   insertBlock(insertPosition, newBlock);
 };
@@ -2898,11 +2919,13 @@ const getBlockProperties = (block: Block) => {
                       :ref="(el: any) => setMarkdownLinkCapableRef(el, index * 100 + childIndex)"
                       :graphData="getX6GraphDataForRender(childBlock)"
                       :editable="editable"
+                      :source-load-enabled="canLoadGraphFromSource(childBlock.metadata)"
+                      :source-write-back-enabled="canWriteGraphToSource(childBlock.metadata)"
                       @click="activeBlockIndex = index * 100 + childIndex"
                       @active="activeBlockIndex = index * 100 + childIndex"
                       @graph-data-change="(graphData: any) => updateX6GraphDataFromEditor(childBlock, graphData as GraphData)"
-                      @sync-from-source="syncKnowledgeRoadmapBlockFromSource(childBlock)"
-                      @sync-to-source="(graphData: GraphData) => syncKnowledgeRoadmapBlockToSource(childBlock, graphData)"
+                      @sync-from-source="syncGraphBlockFromSource(childBlock)"
+                      @sync-to-source="(graphData: GraphData) => syncGraphBlockToSource(childBlock, graphData)"
                       @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index * 100 + childIndex)"
                       @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index * 100 + childIndex, payload)"
                       class="block-content board-content"
@@ -3030,11 +3053,13 @@ const getBlockProperties = (block: Block) => {
             :ref="(el: any) => setMarkdownLinkCapableRef(el, index)"
             :graphData="getX6GraphDataForRender(block)"
             :editable="editable"
+            :source-load-enabled="canLoadGraphFromSource(block.metadata)"
+            :source-write-back-enabled="canWriteGraphToSource(block.metadata)"
             @click="activeBlockIndex = index"
             @active="activeBlockIndex = index"
             @graph-data-change="(graphData: any) => updateX6GraphDataFromEditor(block, graphData as GraphData)"
-            @sync-from-source="syncKnowledgeRoadmapBlockFromSource(block)"
-            @sync-to-source="(graphData: GraphData) => syncKnowledgeRoadmapBlockToSource(block, graphData)"
+            @sync-from-source="syncGraphBlockFromSource(block)"
+            @sync-to-source="(graphData: GraphData) => syncGraphBlockToSource(block, graphData)"
             @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index)"
             @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index, payload)"
             class="block-content board-content"

@@ -25,7 +25,7 @@ import {
   parseMarkdownToBlocks,
   serializeBlocksToMarkdown,
 } from '@/utils/markdownImport';
-import { parseKnowledgeRoadmapGraphData } from '@/utils/roadmapGraph';
+import { parseGraphToSourcePatch } from '@/utils/graphSources';
 
 type LocalFileSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'unsupported';
 
@@ -56,6 +56,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const pageTree = ref<PageItem[]>([]);
   const currentPageId = ref<string | null>(null);
   const currentBlocks = ref<Block[]>([]);
+  const currentPageTitleOverride = ref('');
   const focusedBlockId = ref<string | null>(null);
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
@@ -69,7 +70,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const currentPageTitle = computed(() => {
     const pageId = currentPageId.value;
-    return pageId ? findPageTitle(pageId) : '';
+    if (!pageId) return '';
+    return currentPageTitleOverride.value || findPageTitle(pageId);
   });
 
   function clearBindingTimer(binding: LocalFileBinding | undefined) {
@@ -91,6 +93,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function resetWorkspaceState() {
     currentKbId.value = null;
     currentPageId.value = null;
+    currentPageTitleOverride.value = '';
     focusedBlockId.value = null;
     pageTree.value = [];
     currentBlocks.value = [];
@@ -122,6 +125,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function selectKb(kbId: string) {
     currentKbId.value = kbId;
     currentPageId.value = null;
+    currentPageTitleOverride.value = '';
     blockSyncManager.setPageId(null);
     currentBlocks.value = [];
     registryStore.clear();
@@ -132,12 +136,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function selectPage(pageId: string) {
     currentPageId.value = pageId;
+    currentPageTitleOverride.value = '';
     focusedBlockId.value = null;
     blockSyncManager.setPageId(pageId);
     loading.value = true;
     try {
       currentBlocks.value = await getPageContent(pageId);
-      const pageTitle = findPageTitle(pageId);
+      currentPageTitleOverride.value = resolvePageTitle(pageId, currentBlocks.value);
+      const pageTitle = currentPageTitle.value;
       registryStore.registerBlocks(currentBlocks.value, pageId, pageTitle);
     } finally {
       loading.value = false;
@@ -147,7 +153,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function findPageTitle(pageId: string): string {
     const walk = (nodes: PageItem[]): string | undefined => {
       for (const n of nodes) {
-        if (n.id === pageId) return n.title;
+        if (n.id === pageId) return n.title?.trim() || undefined;
         if (n.children?.length) {
           const found = walk(n.children);
           if (found) return found;
@@ -155,6 +161,27 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
     };
     return walk(pageTree.value) ?? pageId;
+  }
+
+  function extractTitleFromBlocks(blocks: Block[]): string {
+    for (const block of blocks) {
+      if ((block.type === 'richtext' || block.type === 'richText') && typeof block.content === 'string') {
+        const match = block.content.replace(/\r\n/g, '\n').match(/^\s*#\s+(.+?)\s*#*\s*(?:\n|$)/m);
+        const title = match?.[1]?.trim();
+        if (title) return title;
+      }
+      if (block.children?.length) {
+        const childTitle = extractTitleFromBlocks(block.children);
+        if (childTitle) return childTitle;
+      }
+    }
+    return '';
+  }
+
+  function resolvePageTitle(pageId: string, blocks: Block[]): string {
+    const treeTitle = findPageTitle(pageId);
+    if (treeTitle && treeTitle !== pageId) return treeTitle;
+    return extractTitleFromBlocks(blocks);
   }
 
   function flattenPages(nodes: PageItem[]): PageItem[] {
@@ -370,7 +397,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       throw new Error('Please select a knowledge base first.');
     }
 
-    const parsed = parseKnowledgeRoadmapGraphData(graphData);
+    const parsed = parseGraphToSourcePatch('knowledge-base-pages', graphData);
     const pageById = new Map(flattenPages(pageTree.value).map((page) => [page.id, page]));
     const createdPageIdByNodeId = new Map<string, string>();
 
@@ -417,6 +444,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (currentPageId.value === id) {
       currentPageId.value = null;
+      currentPageTitleOverride.value = '';
       blockSyncManager.setPageId(null);
       currentBlocks.value = [];
     }
@@ -439,6 +467,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       pageTree.value = await getPageTree(currentKbId.value);
     }
     if (currentPageId.value === id) {
+      currentPageTitleOverride.value = title;
       registryStore.registerBlocks(currentBlocks.value, id, title);
     }
   }
