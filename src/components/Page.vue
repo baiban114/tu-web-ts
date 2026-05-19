@@ -202,7 +202,6 @@ const blockHandleStyle = {
   '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
   '--hover-handle-top': 'calc(var(--block-shell-pad-y, 20px) + 6px)',
   '--hover-handle-transform': 'translateX(-50%)',
-  '--hover-handle-z-index': 20,
 } as const;
 
 const blockHandleItems: BlockActionHandleItem[] = [
@@ -459,7 +458,6 @@ const getActionHandleStyle = (position: number) => {
       '--hover-handle-top': `${lineState.top}px`,
       '--hover-handle-height': `${Math.max(1, lineState.height ?? 28)}px`,
       '--hover-handle-transform': 'translateX(-50%)',
-      '--hover-handle-z-index': 12,
     } as const;
   }
 
@@ -1386,7 +1384,12 @@ const commitPageTitle = () => {
 const handlePageTitleKeydown = (event: KeyboardEvent) => {
   if (event.key !== 'Enter') return;
   event.preventDefault();
-  (event.currentTarget as HTMLInputElement | null)?.blur();
+  commitPageTitle();
+  insertBlock(0, createNewRichTextBlock());
+  activeBlockIndex.value = 0;
+  nextTick(() => {
+    richTextEditorRefs.value[0]?.focusEditor?.();
+  });
 };
 
 const normalizeBlockWidth = (value: unknown): string | undefined => {
@@ -2600,7 +2603,7 @@ const getBlockProperties = (block: Block) => {
       </button>
     </div>
 
-    <section class="page-title-row" aria-label="页面标题">
+    <section class="page-title-row" aria-label="页面标题" @wheel.prevent>
       <input
         v-if="editable"
         v-model="pageTitleDraft"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch, Teleport } from 'vue';
 import type { CSSProperties } from 'vue';
 
 interface HoverHandleItem {
@@ -41,8 +41,10 @@ const emit = defineEmits<{
 const rootRef = ref<HTMLElement | null>(null);
 const menuRef = ref<HTMLElement | null>(null);
 const menuVisible = ref(false);
+const menuPositioned = ref(false);
 const autoMenuStyle = ref<CSSProperties>({});
 let scheduledSyncFrame = 0;
+let hideTimeoutId: ReturnType<typeof setTimeout> | undefined;
 
 const menuStyle = computed<CSSProperties>(() => ({
   minWidth: props.menuMinWidth,
@@ -65,10 +67,12 @@ const syncMenuPosition = () => {
   const viewportWidth = window.innerWidth;
   const viewportHeight = window.innerHeight;
   const openToLeft = handleRect.right + props.menuGap + menuRect.width > viewportWidth - props.viewportPadding;
-  const left = openToLeft ? -(menuRect.width + props.menuGap) : handleRect.width + props.menuGap;
-  const centeredTop = (handleRect.height - menuRect.height) / 2;
-  const minTop = props.viewportPadding - handleRect.top;
-  const maxTop = viewportHeight - props.viewportPadding - handleRect.top - menuRect.height;
+  const left = openToLeft
+    ? handleRect.left - menuRect.width - props.menuGap
+    : handleRect.right + props.menuGap;
+  const centeredTop = handleRect.top + (handleRect.height - menuRect.height) / 2;
+  const minTop = props.viewportPadding;
+  const maxTop = viewportHeight - props.viewportPadding - menuRect.height;
   const top = Math.max(minTop, Math.min(centeredTop, maxTop));
 
   autoMenuStyle.value = {
@@ -80,6 +84,8 @@ const syncMenuPosition = () => {
     maxHeight: `${Math.max(140, viewportHeight - props.viewportPadding * 2)}px`,
     overflowY: 'auto',
   };
+
+  menuPositioned.value = true;
 };
 
 const scheduleMenuPosition = () => {
@@ -91,23 +97,50 @@ const scheduleMenuPosition = () => {
 };
 
 const setMenuVisible = (visible: boolean) => {
-  menuVisible.value = visible;
   emit('menu-visibility-change', visible);
 
   if (visible) {
-    nextTick(scheduleMenuPosition);
+    menuPositioned.value = false;
+    autoMenuStyle.value = {};
+    menuVisible.value = true;
+    nextTick(() => {
+      syncMenuPosition();
+    });
     return;
   }
 
+  menuVisible.value = false;
+  menuPositioned.value = false;
   autoMenuStyle.value = {};
+};
+
+const cancelHide = () => {
+  if (hideTimeoutId !== undefined) {
+    clearTimeout(hideTimeoutId);
+    hideTimeoutId = undefined;
+  }
 };
 
 const handleMouseEnter = () => {
   if (!props.visible) return;
+  cancelHide();
   setMenuVisible(true);
 };
 
 const handleMouseLeave = () => {
+  cancelHide();
+  hideTimeoutId = setTimeout(() => {
+    hideTimeoutId = undefined;
+    setMenuVisible(false);
+  }, 200);
+};
+
+const handleMenuMouseEnter = () => {
+  cancelHide();
+};
+
+const handleMenuMouseLeave = () => {
+  cancelHide();
   setMenuVisible(false);
 };
 
@@ -144,6 +177,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   cancelScheduledSync();
+  cancelHide();
   window.removeEventListener('resize', handleViewportChange);
   window.removeEventListener('scroll', handleViewportChange, true);
 });
@@ -160,31 +194,36 @@ onBeforeUnmount(() => {
   >
     <div class="handle-dot hover-handle__dot" :class="{ 'hover-handle__dot--drag': dragCursor }"></div>
 
-    <div
-      ref="menuRef"
-      class="handle-menu hover-handle__menu"
-      :class="{ 'hover-handle__menu--visible': menuVisible }"
-      :style="menuStyle"
-    >
-      <template v-for="item in items" :key="item.key">
-        <div v-if="item.divider" class="handle-menu-divider hover-handle__divider">
-          <span v-if="item.label" class="hover-handle__divider-label">{{ item.label }}</span>
-        </div>
-        <div
-          v-else
-          class="handle-menu-item hover-handle__item"
-          :class="{
-            'handle-menu-item--danger': item.danger,
-            'hover-handle__item--danger': item.danger,
-            delete: item.danger,
-          }"
-          @click="handleItemClick(item)"
-        >
-          <span v-if="item.icon">{{ item.icon }}</span>
-          <span>{{ item.label }}</span>
-        </div>
-      </template>
-    </div>
+    <Teleport to="body">
+      <div
+        v-if="menuVisible"
+        ref="menuRef"
+        class="handle-menu hover-handle__menu"
+        :class="{ 'hover-handle__menu--visible': menuVisible && menuPositioned }"
+        :style="menuStyle"
+        @mouseenter="handleMenuMouseEnter"
+        @mouseleave="handleMenuMouseLeave"
+      >
+        <template v-for="item in items" :key="item.key">
+          <div v-if="item.divider" class="handle-menu-divider hover-handle__divider">
+            <span v-if="item.label" class="hover-handle__divider-label">{{ item.label }}</span>
+          </div>
+          <div
+            v-else
+            class="handle-menu-item hover-handle__item"
+            :class="{
+              'handle-menu-item--danger': item.danger,
+              'hover-handle__item--danger': item.danger,
+              delete: item.danger,
+            }"
+            @click="handleItemClick(item)"
+          >
+            <span v-if="item.icon">{{ item.icon }}</span>
+            <span>{{ item.label }}</span>
+          </div>
+        </template>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -194,7 +233,7 @@ onBeforeUnmount(() => {
   left: var(--hover-handle-left, 50%);
   top: var(--hover-handle-top, 0);
   transform: var(--hover-handle-transform, translate(-50%, -50%));
-  z-index: var(--hover-handle-z-index, 100);
+  z-index: 1000002;
   width: 28px;
   height: var(--hover-handle-height, 28px);
   display: flex;
@@ -227,20 +266,18 @@ onBeforeUnmount(() => {
 }
 
 .hover-handle__menu {
-  position: absolute;
-  top: 50%;
-  left: calc(100% + 12px);
-  transform: translateY(-50%);
+  position: fixed;
+  top: 0;
+  left: 0;
   background: #fff;
   border: 1px solid #e8e8e8;
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
   padding: 6px 0;
-  margin-left: 12px;
   opacity: 0;
   visibility: hidden;
   transition: opacity 0.15s ease, visibility 0.15s ease;
-  z-index: 1;
+  z-index: 1000002;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
