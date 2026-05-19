@@ -233,7 +233,7 @@ onBeforeUnmount(() => {
   left: var(--hover-handle-left, 50%);
   top: var(--hover-handle-top, 0);
   transform: var(--hover-handle-transform, translate(-50%, -50%));
-  z-index: 1000002;
+  z-index: 25;
   width: 28px;
   height: var(--hover-handle-height, 28px);
   display: flex;
