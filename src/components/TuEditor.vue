@@ -8,6 +8,8 @@ import Highlight from '@tiptap/extension-highlight'
 import Placeholder from '@tiptap/extension-placeholder'
 import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
+import TaskList from '@tiptap/extension-task-list'
+import TaskItem from '@tiptap/extension-task-item'
 import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table'
 import type { Block, TextAnnotation } from '@/api/types'
 import {
@@ -16,6 +18,7 @@ import {
   RefBlockNode,
   SpacerBlockNode,
   ParagraphNode,
+  RichTextEnter,
   BlockActions,
   blocksToTipTap,
   tipTapToBlocks,
@@ -35,7 +38,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   'update:blocks': [blocks: Block[]]
   'content-change': [blocks: Block[]]
-  'selection-change': [hasSelection: boolean, text: string]
+  'selection-change': [hasSelection: boolean, text: string, blockIndex?: number]
   'block-click': [blockId: string, event: MouseEvent]
   'open-block-picker': [afterBlockId: string]
   'open-tag-editor': [blockId: string]
@@ -44,20 +47,25 @@ const emit = defineEmits<{
 const editorEl = ref<HTMLElement | null>(null)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let isInternalUpdate = false
+let skipNextContentSync = false
 
 const editor = useEditor({
   content: blocksToTipTap(props.blocks),
   editable: props.editable,
   autofocus: false,
   extensions: [
+    RichTextEnter,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       paragraph: false,
+      codeBlock: false,
     }),
     Image.configure({ inline: false }),
     Link.configure({ openOnClick: false }),
     Highlight.configure({ multicolor: true }),
     Underline,
+    TaskList,
+    TaskItem.configure({ nested: true }),
     TextAlign.configure({ types: ['heading', 'paragraph'] }),
     Placeholder.configure({
       placeholder: '输入 / 查看更多选项...',
@@ -105,6 +113,7 @@ const editor = useEditor({
     debounceTimer = setTimeout(() => {
       const json = editor.value!.getJSON()
       const blocks = tipTapToBlocks(json, props.blocks)
+      skipNextContentSync = true
       emit('update:blocks', blocks)
       emit('content-change', blocks)
     }, 300)
@@ -113,7 +122,17 @@ const editor = useEditor({
     if (!editor.value) return
     const { empty, from, to } = editor.value.state.selection
     const text = empty ? '' : editor.value.state.doc.textBetween(from, to, ' ')
-    emit('selection-change', !empty, text)
+    // Find block index by walking up the resolved path to find the parent blockId
+    let blockIndex: number | undefined
+    const { $from } = editor.value.state.selection
+    for (let d = $from.depth; d >= 1; d--) {
+      const node = $from.node(d)
+      if (node.attrs.blockId) {
+        blockIndex = props.blocks.findIndex(b => b.id === node.attrs.blockId)
+        if (blockIndex >= 0) break
+      }
+    }
+    emit('selection-change', !empty, text, blockIndex)
   },
 })
 
@@ -122,6 +141,12 @@ watch(
   (newBlocks, oldBlocks) => {
     if (!editor.value) return
     if (newBlocks === oldBlocks) return
+    // If the change originated from our own emit, skip redundant setContent
+    // (the editor already has the correct content)
+    if (skipNextContentSync) {
+      skipNextContentSync = false
+      return
+    }
     isInternalUpdate = true
     try {
       const content = blocksToTipTap(newBlocks)
@@ -361,8 +386,8 @@ defineExpose({
 }
 
 .tu-editor-wrapper :deep(.tiptap-block--selected) {
-  border-color: #1677ff;
-  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.1);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .tu-editor-wrapper :deep(.tiptap-block .block-action-handle) {

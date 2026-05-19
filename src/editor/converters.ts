@@ -120,8 +120,9 @@ export function tipTapToBlocks(json: JSONContent, originalBlocks: Block[]): Bloc
   }
   walk(originalBlocks)
 
-  // Track the index of richtext blocks we've emitted, so each new richtext group
-  // gets the *next* original richtext block's id (preserving order).
+  // Track the index of richtext blocks we've emitted, so each richtext section
+  // keeps the next original richtext block id without splitting normal editor
+  // paragraphs into separate blocks.
   const originalRichTextBlocks = originalBlocks.filter((b) => isRichTextBlock(b))
   let richTextEmittedCount = 0
 
@@ -165,7 +166,7 @@ function isRichTextBlock(block: Block): boolean {
 }
 
 function isTipTapRichTextNode(node: JSONContent): boolean {
-  return ['heading', 'paragraph', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'horizontalRule', 'taskList', 'image'].includes(node.type || '')
+  return ['heading', 'paragraph', 'bulletList', 'orderedList', 'blockquote', 'horizontalRule', 'taskList', 'image'].includes(node.type || '')
 }
 
 /** Convert a tiptap `table` node back to a Block with type 'table' */
@@ -267,84 +268,133 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
     }]
   }
 
-  const lines = markdown.split('\n')
+  // Split by \n\n to get paragraph blocks — this correctly preserves empty paragraphs
+  // (split by \n alone doubles empty segments due to \n\n separators)
+  const paragraphs = markdown.split('\n\n')
   const nodes: JSONContent[] = []
-  let currentLines: string[] = []
 
-  const flushParagraph = () => {
-    const text = currentLines.join('\n').trim()
-    if (text) {
+  for (const para of paragraphs) {
+    if (!para.trim()) {
+      nodes.push({ type: 'paragraph', attrs: { blockId } })
+      continue
+    }
+
+    // Each paragraph is a single line in our serialization, but handle multi-line gracefully
+    const innerLines = para.split('\n')
+    let currentLines: string[] = []
+
+    for (const line of innerLines) {
+      const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
+      if (headingMatch) {
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            attrs: { blockId },
+            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+          })
+          currentLines = []
+        }
+        nodes.push({
+          type: 'heading',
+          attrs: { level: headingMatch[1].length, blockId },
+          content: parseInlineMarkdown(headingMatch[2]),
+        })
+      } else if (line.startsWith('- [ ] ') || line.startsWith('- [x] ')) {
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            attrs: { blockId },
+            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+          })
+          currentLines = []
+        }
+        const checked = line.startsWith('- [x]')
+        const text = line.replace(/^- \[[ x]\] /, '')
+        if (!nodes.find((n) => n.type === 'taskList')) {
+          nodes.push({ type: 'taskList', attrs: { blockId } })
+        }
+        const taskList = nodes.find((n) => n.type === 'taskList')!
+        ;(taskList.content = taskList.content || []).push({
+          type: 'taskItem',
+          attrs: { checked },
+          content: [{ type: 'paragraph', content: parseInlineMarkdown(text) }],
+        })
+      } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            attrs: { blockId },
+            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+          })
+          currentLines = []
+        }
+        if (!nodes.find((n) => n.type === 'bulletList')) {
+          nodes.push({ type: 'bulletList', attrs: { blockId } })
+        }
+        const list = nodes.find((n) => n.type === 'bulletList')!
+        ;(list.content = list.content || []).push({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: parseInlineMarkdown(line.replace(/^[-*] /, '')) }],
+        })
+      } else if (/^\d+\.\s/.test(line)) {
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            attrs: { blockId },
+            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+          })
+          currentLines = []
+        }
+        if (!nodes.find((n) => n.type === 'orderedList')) {
+          nodes.push({ type: 'orderedList', attrs: { blockId } })
+        }
+        const list = nodes.find((n) => n.type === 'orderedList')!
+        ;(list.content = list.content || []).push({
+          type: 'listItem',
+          content: [{ type: 'paragraph', content: parseInlineMarkdown(line.replace(/^\d+\.\s/, '')) }],
+        })
+      } else if (line.startsWith('> ')) {
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            attrs: { blockId },
+            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+          })
+          currentLines = []
+        }
+        nodes.push({
+          type: 'blockquote',
+          attrs: { blockId },
+          content: [{ type: 'paragraph', content: parseInlineMarkdown(line.slice(2)) }],
+        })
+    } else if (line.startsWith('```')) {
+      currentLines.push(line)
+      } else if (line.startsWith('---')) {
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            attrs: { blockId },
+            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+          })
+          currentLines = []
+        }
+        nodes.push({ type: 'horizontalRule', attrs: { blockId } })
+      } else {
+        currentLines.push(line)
+      }
+    }
+
+    // Flush remaining accumulated lines
+    if (currentLines.length > 0) {
+      const text = currentLines.join('\n').trim()
       nodes.push({
         type: 'paragraph',
         attrs: { blockId },
-        content: parseInlineMarkdown(text),
+        content: text ? parseInlineMarkdown(text) : [],
       })
-    }
-    currentLines = []
-  }
-
-  for (const line of lines) {
-    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
-    if (headingMatch) {
-      flushParagraph()
-      nodes.push({
-        type: 'heading',
-        attrs: { level: headingMatch[1].length, blockId },
-        content: parseInlineMarkdown(headingMatch[2]),
-      })
-    } else if (line === '') {
-      flushParagraph()
-    } else if (line.startsWith('- [ ] ') || line.startsWith('- [x] ')) {
-      flushParagraph()
-      const checked = line.startsWith('- [x]')
-      const text = line.replace(/^- \[[ x]\] /, '')
-      if (!nodes.find((n) => n.type === 'taskList')) {
-        nodes.push({ type: 'taskList', attrs: { blockId }, content: [] })
-      }
-      const taskList = nodes.find((n) => n.type === 'taskList')!
-      ;(taskList.content = taskList.content || []).push({
-        type: 'taskItem',
-        attrs: { checked },
-        content: parseInlineMarkdown(text),
-      })
-    } else if (line.startsWith('- ') || line.startsWith('* ')) {
-      flushParagraph()
-      if (!nodes.find((n) => n.type === 'bulletList')) {
-        nodes.push({ type: 'bulletList', attrs: { blockId }, content: [] })
-      }
-      const list = nodes.find((n) => n.type === 'bulletList')!
-      ;(list.content = list.content || []).push({
-        type: 'listItem',
-        content: [{ type: 'paragraph', content: parseInlineMarkdown(line.replace(/^[-*] /, '')) }],
-      })
-    } else if (/^\d+\.\s/.test(line)) {
-      flushParagraph()
-      if (!nodes.find((n) => n.type === 'orderedList')) {
-        nodes.push({ type: 'orderedList', attrs: { blockId }, content: [] })
-      }
-      const list = nodes.find((n) => n.type === 'orderedList')!
-      ;(list.content = list.content || []).push({
-        type: 'listItem',
-        content: [{ type: 'paragraph', content: parseInlineMarkdown(line.replace(/^\d+\.\s/, '')) }],
-      })
-    } else if (line.startsWith('> ')) {
-      flushParagraph()
-      nodes.push({
-        type: 'blockquote',
-        attrs: { blockId },
-        content: [{ type: 'paragraph', content: parseInlineMarkdown(line.slice(2)) }],
-      })
-    } else if (line.startsWith('```')) {
-      flushParagraph()
-    } else if (line.startsWith('---')) {
-      flushParagraph()
-      nodes.push({ type: 'horizontalRule', attrs: { blockId } })
-    } else {
-      currentLines.push(line)
     }
   }
 
-  flushParagraph()
   return nodes.length > 0 ? nodes : [{ type: 'paragraph', attrs: { blockId } }]
 }
 
@@ -423,8 +473,6 @@ function nodeToMarkdown(node: JSONContent): string {
       return (node.content || []).map((item, i) => (i + 1) + '. ' + contentToMarkdown(item.content || [])).join('\n')
     case 'blockquote':
       return (node.content || []).map((c) => '> ' + contentToMarkdown(c.content || [])).join('\n')
-    case 'codeBlock':
-      return '```' + (node.attrs?.language || '') + '\n' + (node.content?.[0]?.text || '') + '\n```'
     case 'horizontalRule':
       return '---'
     case 'image':
@@ -453,6 +501,8 @@ function contentToMarkdown(content: JSONContent[]): string {
       return text
     }
     if (c.type === 'hardBreak') return ''
+    if (c.type === 'paragraph') return contentToMarkdown(c.content || [])
     return ''
   }).join('')
 }
+

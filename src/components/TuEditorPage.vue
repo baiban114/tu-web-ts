@@ -122,10 +122,20 @@ const handleBlocksChange = (blocks: Block[]) => {
   blockSyncManager.sync()
 }
 
+// --- Focus editor from title ---
+const focusEditorFromStart = () => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  editor.commands.focus()
+  // Move cursor to the beginning of the document
+  editor.commands.setTextSelection({ from: 1, to: 1 })
+}
+
 // --- Selection ---
-const handleSelectionChange = (selHasSelection: boolean, selText: string) => {
+const handleSelectionChange = (selHasSelection: boolean, selText: string, selBlockIndex?: number) => {
   hasSelection.value = selHasSelection
   selectedText.value = selText
+  selectionBlockIndex.value = selBlockIndex ?? -1
 
   if (selHasSelection && tuEditorRef.value) {
     const pos = tuEditorRef.value.getSelectionPosition?.()
@@ -595,6 +605,7 @@ onBeforeUnmount(() => {
         aria-label="页面标题"
         placeholder="未命名页面"
         @input="emit('page-title-change', pageTitleDraft)"
+        @keydown.enter="focusEditorFromStart"
       />
       <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>
     </section>
@@ -660,7 +671,7 @@ onBeforeUnmount(() => {
 
     <!-- 选中文本工具栏 -->
     <SelectionToolbar
-      v-if="hasSelection && selectedText"
+      v-if="hasSelection && selectedText.trim().length > 0"
       :visible="hasSelection"
       :top="selectionPosition.top"
       :left="selectionPosition.left"
