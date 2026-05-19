@@ -6,6 +6,46 @@ function generateId(): string {
   return 'tipTap-block-' + Date.now() + '-' + (++idCounter)
 }
 
+function createEmptyParagraph(blockId?: string): JSONContent {
+  return {
+    type: 'paragraph',
+    attrs: blockId ? { blockId } : undefined,
+  }
+}
+
+/** Convert a block's tableData into a proper tiptap table JSON structure */
+function tableDataToTipTapTable(
+  blockId: string,
+  tableData: NonNullable<Block['tableData']>,
+): JSONContent {
+  const { headers = [], rows = [] } = tableData
+  const tableContent: JSONContent[] = []
+
+  // Header row
+  if (headers.length > 0) {
+    const headerCells = headers.map((h) => ({
+      type: 'tableHeader' as const,
+      content: [createEmptyParagraph(blockId)],
+    }))
+    tableContent.push({ type: 'tableRow', content: headerCells })
+  }
+
+  // Data rows
+  for (const row of rows) {
+    const cells = row.map((cell) => ({
+      type: 'tableCell' as const,
+      content: [createEmptyParagraph(blockId)],
+    }))
+    tableContent.push({ type: 'tableRow', content: cells })
+  }
+
+  return {
+    type: 'table',
+    attrs: { blockId, tableData: JSON.stringify(tableData) },
+    content: tableContent,
+  }
+}
+
 export function blocksToTipTap(blocks: Block[]): JSONContent {
   const children: JSONContent[] = []
 
@@ -24,14 +64,8 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         },
       })
     } else if (block.type === 'table') {
-      children.push({
-        type: 'tableBlock',
-        attrs: {
-          blockId: block.id,
-          title: block.title || '',
-          tableData: block.tableData || { headers: [], rows: [] },
-        },
-      })
+      // Convert to proper tiptap table node structure
+      children.push(tableDataToTipTapTable(block.id, block.tableData || { headers: [], rows: [] }))
     } else if (block.type === 'line') {
       children.push({
         type: 'timelineBlock',
@@ -59,15 +93,14 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         },
       })
     } else if (block.type === 'container' && block.children) {
-      children.push({
-        type: 'containerBlock',
-        attrs: {
-          blockId: block.id,
-          layout: block.layout || 'horizontal',
-        },
-        content: [blocksToTipTap(block.children)],
-      })
+      // Flatten container children into top-level doc (no containerBlock extension)
+      children.push(...blocksToTipTap(block.children).content || [])
     }
+  }
+
+  // Ensure doc has at least one block so it's not empty
+  if (children.length === 0) {
+    children.push(createEmptyParagraph())
   }
 
   return { type: 'doc', content: children }
@@ -77,33 +110,48 @@ export function tipTapToBlocks(json: JSONContent, originalBlocks: Block[]): Bloc
   const blocks: Block[] = []
   if (!json.content) return blocks
 
-  let currentRichTextBlockId: string | null = null
+  // Build a map of original blocks keyed by id for fast lookup
+  const originalBlockMap = new Map<string, Block>()
+  const walk = (list: Block[]) => {
+    for (const b of list) {
+      originalBlockMap.set(b.id, b)
+      if (b.children) walk(b.children)
+    }
+  }
+  walk(originalBlocks)
+
+  // Track the index of richtext blocks we've emitted, so each new richtext group
+  // gets the *next* original richtext block's id (preserving order).
+  const originalRichTextBlocks = originalBlocks.filter((b) => isRichTextBlock(b))
+  let richTextEmittedCount = 0
+
   const richTextNodes: JSONContent[] = []
 
   const flushRichText = () => {
     if (richTextNodes.length > 0) {
-      const existingBlock = originalBlocks.find((b) => b.id === currentRichTextBlockId && isRichTextBlock(b))
+      const existing = originalRichTextBlocks[richTextEmittedCount]
+      const id = existing?.id || generateId()
+      richTextEmittedCount++
       blocks.push({
-        id: currentRichTextBlockId || existingBlock?.id || generateId(),
+        id,
         type: 'richtext',
         content: tipTapNodesToMarkdown(richTextNodes),
-        metadata: existingBlock?.metadata,
+        metadata: existing?.metadata,
       })
-      currentRichTextBlockId = null
       richTextNodes.length = 0
     }
   }
 
   for (const node of json.content) {
     if (isTipTapRichTextNode(node)) {
-      if (!currentRichTextBlockId) {
-        const existingRt = originalBlocks.find((b) => isRichTextBlock(b))
-        currentRichTextBlockId = existingRt?.id || null
-      }
       richTextNodes.push(node)
+    } else if (node.type === 'table') {
+      flushRichText()
+      const converted = convertTableNode(node, originalBlockMap)
+      if (converted) blocks.push(converted)
     } else {
       flushRichText()
-      const converted = convertNonRichTextNode(node, originalBlocks)
+      const converted = convertNonRichTextNode(node, originalBlockMap)
       if (converted) blocks.push(converted)
     }
   }
@@ -120,9 +168,62 @@ function isTipTapRichTextNode(node: JSONContent): boolean {
   return ['heading', 'paragraph', 'bulletList', 'orderedList', 'blockquote', 'codeBlock', 'horizontalRule', 'taskList', 'image'].includes(node.type || '')
 }
 
-function convertNonRichTextNode(node: JSONContent, originalBlocks: Block[]): Block | null {
+/** Convert a tiptap `table` node back to a Block with type 'table' */
+function convertTableNode(node: JSONContent, originalBlockMap: Map<string, Block>): Block | null {
   const blockId = node.attrs?.blockId
-  const existingBlock = blockId ? originalBlocks.find((b) => b.id === blockId) : null
+  const existingBlock = blockId ? originalBlockMap.get(blockId) : undefined
+
+  // Try to recover tableData from attrs first, then from the node content
+  let tableData: Block['tableData']
+  try {
+    tableData = node.attrs?.tableData ? JSON.parse(node.attrs.tableData as string) : undefined
+  } catch {
+    tableData = undefined
+  }
+
+  if (!tableData) {
+    // Rebuild from tiptap table structure
+    const headers: string[] = []
+    const rows: string[][] = []
+    const content = node.content || []
+    for (let ri = 0; ri < content.length; ri++) {
+      const row = content[ri]
+      const cells = row.content || []
+      if (ri === 0 && cells.every((c) => c.type === 'tableHeader')) {
+        // Header row
+        for (const cell of cells) {
+          headers.push(cell.attrs?.content as string || extractTextContent(cell) || '')
+        }
+      } else {
+        const rowData: string[] = []
+        for (const cell of cells) {
+          rowData.push(cell.attrs?.content as string || extractTextContent(cell) || '')
+        }
+        rows.push(rowData)
+      }
+    }
+    tableData = { headers, rows }
+  }
+
+  return {
+    id: blockId || existingBlock?.id || generateId(),
+    type: 'table',
+    title: existingBlock?.title,
+    tableData,
+  }
+}
+
+function extractTextContent(node: JSONContent): string {
+  if (node.text) return node.text
+  if (node.content) {
+    return node.content.map((c) => extractTextContent(c)).join(' ')
+  }
+  return ''
+}
+
+function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string, Block>): Block | null {
+  const blockId = node.attrs?.blockId
+  const existingBlock = blockId ? originalBlockMap.get(blockId) : undefined
 
   switch (node.type) {
     case 'x6Block':
@@ -132,13 +233,6 @@ function convertNonRichTextNode(node: JSONContent, originalBlocks: Block[]): Blo
         title: node.attrs?.title || existingBlock?.title,
         graphData: node.attrs?.graphData || existingBlock?.graphData,
         metadata: node.attrs?.metadata || existingBlock?.metadata,
-      }
-    case 'tableBlock':
-      return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'table',
-        title: node.attrs?.title || existingBlock?.title,
-        tableData: node.attrs?.tableData || existingBlock?.tableData,
       }
     case 'timelineBlock':
       return {
@@ -160,13 +254,6 @@ function convertNonRichTextNode(node: JSONContent, originalBlocks: Block[]): Blo
         type: 'spacer',
         spacerHeight: node.attrs?.spacerHeight || existingBlock?.spacerHeight || 40,
       }
-    case 'containerBlock':
-      return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'container',
-        layout: node.attrs?.layout || existingBlock?.layout,
-        children: tipTapToBlocks(node.content?.[0] || { type: 'doc' }, originalBlocks),
-      }
     default:
       return null
   }
@@ -177,7 +264,6 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
     return [{
       type: 'paragraph',
       attrs: { blockId },
-      content: [{ type: 'text', text: '' }],
     }]
   }
 
@@ -259,7 +345,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
   }
 
   flushParagraph()
-  return nodes.length > 0 ? nodes : [{ type: 'paragraph', attrs: { blockId }, content: [{ type: 'text', text: '' }] }]
+  return nodes.length > 0 ? nodes : [{ type: 'paragraph', attrs: { blockId } }]
 }
 
 function parseInlineMarkdown(text: string): JSONContent[] {

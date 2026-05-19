@@ -1,11 +1,19 @@
 ﻿<script setup lang="ts">
-import { ref, watch, computed } from 'vue'
-import type { Block } from '@/api/types'
+import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import type { Block, BlockTag, TextAnnotation } from '@/api/types'
 import TuEditor from './TuEditor.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
+import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
+import Toast from './Toast.vue'
+import NoteEditor from './NoteEditor.vue'
+import NotePopover from './NotePopover.vue'
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
+import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
+import { ensureExternalLinkResource } from '@/api/externalResource'
+
+type LinkDisplayMode = 'link' | 'image'
 
 interface TocItem {
   id: string
@@ -33,22 +41,60 @@ const emit = defineEmits<{
   'page-title-change': [title: string]
 }>()
 
+// --- Core state ---
 const localBlocks = ref<Block[]>([])
 const pageTitleDraft = ref('')
-const hasSelection = ref(false)
-const selectedText = ref('')
-const selectionPosition = ref({ top: 0, left: 0 })
-
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const pendingRefInsertAfterBlockId = ref<string | null>(null)
 const highlightedBlockId = ref<string | null>(null)
 const tocExpanded = ref(true)
 
+// --- Selection state ---
+const hasSelection = ref(false)
+const selectedText = ref('')
+const selectionPosition = ref({ top: 0, left: 0 })
+const selectionBlockIndex = ref(-1)
+
+// --- Toast ---
+const toastMessages = ref<Array<{ id: string; message: string }>>([])
+const toastEnabled = ref(true)
+
+// --- Link popover ---
+const linkPopoverVisible = ref(false)
+const linkPopoverTarget = ref({ top: 0, left: 0 })
+const linkPopoverUrl = ref('')
+const linkPopoverLabel = ref('')
+const linkPopoverUrlInput = ref<HTMLInputElement | null>(null)
+
+// --- Inserted link toolbar ---
+const insertedLinkToolbarVisible = ref(false)
+const insertedLinkToolbar = ref({ top: 0, left: 0, url: '', label: '', display: 'link' as LinkDisplayMode, canShowAsImage: false })
+
+// --- Tag editor ---
+const tagEditorState = ref({ visible: false, blockId: '', top: 0, left: 0 })
+const tagEditorBlockTags = ref<BlockTag[]>([])
+
+// --- Note / Annotation ---
+const noteEditorVisible = ref(false)
+const editingAnnotation = ref<TextAnnotation | undefined>()
+const pendingNoteBlockId = ref('')
+const pendingNoteSelectedText = ref('')
+const pendingNoteContextBefore = ref('')
+const pendingNoteContextAfter = ref('')
+
+const notePopoverVisible = ref(false)
+const notePopoverAnnotation = ref<TextAnnotation | null>(null)
+const notePopoverPos = ref({ top: 0, left: 0 })
+
+// --- Watchers ---
 watch(
   () => props.contentList,
-  (val) => { localBlocks.value = JSON.parse(JSON.stringify(val)) },
-  { immediate: true, deep: true },
+  (val, oldVal) => {
+    if (val === oldVal) return
+    localBlocks.value = JSON.parse(JSON.stringify(val))
+  },
+  { immediate: true },
 )
 
 watch(
@@ -57,17 +103,39 @@ watch(
   { immediate: true },
 )
 
+// --- Toast ---
+const showToast = (message: string) => {
+  if (!toastEnabled.value) return
+  const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+  toastMessages.value.push({ id, message })
+}
+
+const removeToast = (id: string) => {
+  const idx = toastMessages.value.findIndex(t => t.id === id)
+  if (idx >= 0) toastMessages.value.splice(idx, 1)
+}
+
+// --- Block sync ---
 const handleBlocksChange = (blocks: Block[]) => {
   localBlocks.value = blocks
   emit('content-change', blocks)
   blockSyncManager.sync()
 }
 
+// --- Selection ---
 const handleSelectionChange = (selHasSelection: boolean, selText: string) => {
   hasSelection.value = selHasSelection
   selectedText.value = selText
+
+  if (selHasSelection && tuEditorRef.value) {
+    const pos = tuEditorRef.value.getSelectionPosition?.()
+    if (pos) {
+      selectionPosition.value = { top: pos.top + 4, left: pos.left }
+    }
+  }
 }
 
+// --- Block picker ---
 const handleOpenBlockPicker = (afterBlockId: string) => {
   pendingRefInsertAfterBlockId.value = afterBlockId
   showBlockPicker.value = true
@@ -89,6 +157,7 @@ const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string })
   pendingRefInsertAfterBlockId.value = null
 }
 
+// --- TOC ---
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return []
@@ -125,40 +194,319 @@ const handleTocItemClick = (item: TocItem) => {
   setTimeout(() => { highlightedBlockId.value = null }, 2000)
 }
 
+// --- Link insertion ---
+const isImageUrl = (url: string): boolean => {
+  try {
+    const parsed = new URL(url)
+    return /\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(parsed.pathname + parsed.search)
+  } catch {
+    return /\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(url)
+  }
+}
+
 const handleInsertLinkButtonClick = () => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
   const { from, to } = editor.state.selection
   if (from === to) {
-    alert('请先选中文字后再插入链接')
+    showToast('请先选中文字后再插入链接')
     return
   }
-  const url = prompt('请输入链接地址:')
-  if (url) {
-    editor.chain().focus().setLink({ href: url }).run()
+
+  const label = editor.state.doc.textBetween(from, to, ' ')
+
+  // Position the popover near the selection
+  try {
+    const start = editor.view.coordsAtPos(from)
+    linkPopoverTarget.value = {
+      top: Math.max(12, Math.min(start.top - 10, window.innerHeight - 180)),
+      left: Math.max(12, Math.min(start.left, window.innerWidth - 332)),
+    }
+  } catch {
+    linkPopoverTarget.value = { top: 100, left: 100 }
+  }
+
+  linkPopoverUrl.value = ''
+  linkPopoverLabel.value = label
+  linkPopoverVisible.value = true
+  nextTick(() => linkPopoverUrlInput.value?.focus())
+}
+
+const closeLinkPopover = () => {
+  linkPopoverVisible.value = false
+  linkPopoverUrl.value = ''
+  linkPopoverLabel.value = ''
+}
+
+const submitLinkPopover = () => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || !linkPopoverUrl.value.trim()) return
+
+  const url = linkPopoverUrl.value.trim()
+  const label = linkPopoverLabel.value || url
+
+  editor.chain().focus().setLink({ href: url }).run()
+  registerExternalLinkResource(url, label)
+  showInsertedLinkToolbar(url, label)
+  closeLinkPopover()
+}
+
+const registerExternalLinkResource = (url: string, label: string) => {
+  void ensureExternalLinkResource(url, label).catch((error) => {
+    console.warn('Failed to register external link resource:', error)
+    showToast('链接已插入，但外部资源登记失败')
+  })
+}
+
+const showInsertedLinkToolbar = (url: string, label: string) => {
+  const display: LinkDisplayMode = isImageUrl(url) ? 'image' : 'link'
+  insertedLinkToolbar.value = {
+    top: linkPopoverTarget.value.top,
+    left: linkPopoverTarget.value.left,
+    url,
+    label,
+    display,
+    canShowAsImage: isImageUrl(url),
+  }
+  insertedLinkToolbarVisible.value = true
+}
+
+const closeInsertedLinkToolbar = () => {
+  insertedLinkToolbarVisible.value = false
+}
+
+const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
+  insertedLinkToolbar.value.display = display
+}
+
+// --- Paste URL detection ---
+const normalizePastedUrl = (text: string): string | null => {
+  const value = text.trim()
+  if (!value || /\s/.test(value)) return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
+  } catch {
+    return null
   }
 }
 
+// --- Extract selection ---
 const handleExtractSelectionButtonClick = () => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
   const { from, to } = editor.state.selection
   if (from === to) {
-    alert('请先选中文字后再提取')
+    showToast('请先选中文字后再提取')
     return
   }
-  const selectedText = editor.state.doc.textBetween(from, to, ' ')
-  if (selectedText) {
+  const text = editor.state.doc.textBetween(from, to, ' ')
+  if (text) {
     editor.chain()
       .focus()
-      .insertContent(`<p>${selectedText}</p>`)
+      .insertContent(`<p>${text}</p>`)
       .run()
   }
 }
+
+// --- Tag editor ---
+const handleOpenTagEditor = (blockId: string) => {
+  const block = localBlocks.value.find(b => b.id === blockId)
+  if (!block) return
+  tagEditorBlockTags.value = getBlockTags(block)
+  tagEditorState.value = {
+    visible: true,
+    blockId,
+    top: window.innerHeight / 2 - 160,
+    left: window.innerWidth / 2 - 160,
+  }
+}
+
+const closeTagEditor = () => {
+  tagEditorState.value.visible = false
+  tagEditorState.value.blockId = ''
+}
+
+const updateBlockTags = (tags: BlockTag[]) => {
+  const block = localBlocks.value.find(b => b.id === tagEditorState.value.blockId)
+  if (!block) return
+  setBlockTags(block, tags)
+  emit('content-change', localBlocks.value)
+  localBlocks.value = [...localBlocks.value]
+}
+
+const availableTags = computed(() => collectBlockTags(localBlocks.value))
+
+// --- Note / Annotation ---
+const handleAddNoteFromSelection = () => {
+  if (selectionBlockIndex.value < 0 || !selectedText.value) return
+
+  pendingNoteBlockId.value = localBlocks.value[selectionBlockIndex.value]?.id || ''
+  pendingNoteSelectedText.value = selectedText.value
+  pendingNoteContextBefore.value = ''
+  pendingNoteContextAfter.value = ''
+
+  editingAnnotation.value = undefined
+  noteEditorVisible.value = true
+}
+
+const handleSaveAnnotation = (note: string) => {
+  if (!pendingNoteBlockId.value) return
+
+  const now = Date.now()
+  const existing = editingAnnotation.value
+  const block = localBlocks.value.find(b => b.id === pendingNoteBlockId.value)
+  if (!block) return
+
+  const annotations: TextAnnotation[] = (block.metadata?.annotations as TextAnnotation[]) || []
+
+  if (existing) {
+    const idx = annotations.findIndex(a => a.id === existing.id)
+    if (idx >= 0) {
+      annotations[idx] = { ...existing, note, updatedAt: now }
+    }
+  } else {
+    const annotation: TextAnnotation = {
+      id: `annot-${now}-${Math.random().toString(36).substr(2, 6)}`,
+      selectedText: pendingNoteSelectedText.value,
+      contextBefore: pendingNoteContextBefore.value,
+      contextAfter: pendingNoteContextAfter.value,
+      note,
+      color: '#FFEB3B',
+      createdAt: now,
+      updatedAt: now,
+    }
+    annotations.push(annotation)
+  }
+
+  block.metadata = { ...(block.metadata || {}), annotations }
+  emit('content-change', localBlocks.value)
+
+  noteEditorVisible.value = false
+  editingAnnotation.value = undefined
+  hasSelection.value = false
+  selectionBlockIndex.value = -1
+  pendingNoteBlockId.value = ''
+  pendingNoteSelectedText.value = ''
+}
+
+const handleAnnotationClick = (payload: { annotationId: string; event: MouseEvent }) => {
+  const annotations = getBlockAnnotations()
+  const annotation = annotations.find(a => a.id === payload.annotationId)
+  if (!annotation) return
+  notePopoverAnnotation.value = annotation
+  notePopoverPos.value = { top: payload.event.clientY - 10, left: payload.event.clientX + 12 }
+  notePopoverVisible.value = true
+}
+
+const getBlockAnnotations = (): TextAnnotation[] => {
+  return []
+}
+
+const handleEditAnnotation = () => {
+  if (!notePopoverAnnotation.value) return
+  const target = notePopoverAnnotation.value
+  const block = localBlocks.value.find(b => {
+    const anns = b.metadata?.annotations as TextAnnotation[] | undefined
+    return anns?.some(a => a.id === target.id)
+  })
+  if (!block) return
+
+  pendingNoteBlockId.value = block.id
+  pendingNoteSelectedText.value = target.selectedText
+  pendingNoteContextBefore.value = target.contextBefore
+  pendingNoteContextAfter.value = target.contextAfter
+  editingAnnotation.value = { ...target }
+  noteEditorVisible.value = true
+  notePopoverVisible.value = false
+}
+
+const handleDeleteAnnotation = () => {
+  if (!notePopoverAnnotation.value) return
+  const target = notePopoverAnnotation.value
+  const block = localBlocks.value.find(b => {
+    const anns = b.metadata?.annotations as TextAnnotation[] | undefined
+    return anns?.some(a => a.id === target.id)
+  })
+  if (!block) return
+
+  const annotations: TextAnnotation[] = (block.metadata?.annotations as TextAnnotation[]) || []
+  const idx = annotations.findIndex(a => a.id === target.id)
+  if (idx >= 0) {
+    annotations.splice(idx, 1)
+    block.metadata = { ...(block.metadata || {}), annotations }
+    emit('content-change', localBlocks.value)
+  }
+  notePopoverAnnotation.value = null
+  notePopoverVisible.value = false
+}
+
+// --- Document tail insert ---
+const shouldShowTailInsert = computed(() => {
+  const blocks = localBlocks.value
+  if (blocks.length === 0) return true
+  const last = blocks[blocks.length - 1]
+  return last.type !== 'richtext' && last.type !== 'richText'
+})
+
+const appendRichTextBlock = () => {
+  if (!tuEditorRef.value?.editor) return
+  const newBlock: Block = {
+    id: 'block-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    type: 'richtext',
+    content: '',
+  }
+  const docSize = tuEditorRef.value.editor.state.doc.content.size
+  // Insert at end of document
+  const lastPos = Math.max(0, docSize - 1)
+  tuEditorRef.value.editor.commands.insertBlockAfter(newBlock, '')
+}
+
+// --- Paste URL detection ---
+const handleGlobalPaste = (event: ClipboardEvent) => {
+  if (!props.editable) return
+  const clipboardText = event.clipboardData?.getData('text/plain') ?? ''
+  const url = normalizePastedUrl(clipboardText)
+  if (!url) return
+
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  // If there's a text selection, apply the link to it
+  const { empty } = editor.state.selection
+  if (!empty) {
+    editor.chain().focus().setLink({ href: url }).run()
+    registerExternalLinkResource(url, url)
+    event.preventDefault()
+    event.stopPropagation()
+    showToast('链接已插入')
+  }
+}
+
+// --- Lifecycle ---
+onMounted(() => {
+  document.addEventListener('paste', handleGlobalPaste, true)
+
+  blockSyncManager.onStatusChange((status, error) => {
+    if (status === 'syncing') {
+      showToast('正在同步内容...')
+    } else if (status === 'synced') {
+      showToast('内容已同步到服务器')
+    } else if (status === 'error') {
+      showToast(`同步失败：${error || '网络错误'}`)
+    }
+  })
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('paste', handleGlobalPaste, true)
+  blockSyncManager.destroy()
+})
 </script>
 
 <template>
   <div class="tu-editor-page">
+    <!-- 工具栏 -->
     <div class="page-toolbar" v-if="editable">
       <button
         class="toolbar-button"
@@ -167,13 +515,75 @@ const handleExtractSelectionButtonClick = () => {
       >
         插入链接
       </button>
-      <button 
-        class="toolbar-button" 
+      <button
+        class="toolbar-button"
         @click="handleExtractSelectionButtonClick"
         title="提取选中文本为新块"
       >
         提取成块
       </button>
+    </div>
+
+    <!-- 链接插入弹窗 -->
+    <form
+      v-if="linkPopoverVisible"
+      class="link-popover"
+      :style="{ top: `${linkPopoverTarget.top}px`, left: `${linkPopoverTarget.left}px` }"
+      @submit.prevent="submitLinkPopover"
+      @mousedown.stop
+      @click.stop
+      @keydown.esc.prevent.stop="closeLinkPopover"
+    >
+      <label>
+        <span>链接</span>
+        <input
+          ref="linkPopoverUrlInput"
+          v-model="linkPopoverUrl"
+          type="url"
+          placeholder="https://example.com"
+          required
+        />
+      </label>
+      <label>
+        <span>文字</span>
+        <input
+          v-model="linkPopoverLabel"
+          type="text"
+          placeholder="显示文字"
+        />
+      </label>
+      <div class="link-popover__actions">
+        <button type="button" @click="closeLinkPopover">取消</button>
+        <button type="submit" :disabled="!linkPopoverUrl.trim()">插入</button>
+      </div>
+    </form>
+
+    <!-- 插入链接后工具栏 -->
+    <div
+      v-if="insertedLinkToolbarVisible"
+      class="inserted-link-toolbar"
+      :style="{ top: `${insertedLinkToolbar.top}px`, left: `${insertedLinkToolbar.left}px` }"
+      @mousedown.stop
+      @click.stop
+    >
+      <span class="inserted-link-toolbar__url">{{ insertedLinkToolbar.url }}</span>
+      <div class="inserted-link-toolbar__actions">
+        <button
+          type="button"
+          :class="{ active: insertedLinkToolbar.display === 'link' }"
+          @click="updateInsertedLinkDisplay('link')"
+        >
+          显示为链接
+        </button>
+        <button
+          type="button"
+          :disabled="!insertedLinkToolbar.canShowAsImage"
+          :class="{ active: insertedLinkToolbar.display === 'image' }"
+          @click="updateInsertedLinkDisplay('image')"
+        >
+          显示为图片
+        </button>
+      </div>
     </div>
 
     <section class="page-title-row">
@@ -196,13 +606,27 @@ const handleExtractSelectionButtonClick = () => {
           :blocks="localBlocks"
           :editable="editable"
           @update:blocks="handleBlocksChange"
-          @content-change="handleBlocksChange"
           @selection-change="handleSelectionChange"
           @open-block-picker="handleOpenBlockPicker"
+          @open-tag-editor="handleOpenTagEditor"
         />
+
+        <!-- 文档末尾插入按钮 -->
+        <button
+          v-if="editable && shouldShowTailInsert"
+          type="button"
+          class="document-tail-insert"
+          @click.stop="appendRichTextBlock"
+        >
+          点击继续输入
+        </button>
       </div>
 
-      <aside v-if="tocItems.length > 0" class="page-toc" :class="{ 'page-toc--collapsed': !tocExpanded }">
+      <aside
+        v-if="tocItems.length > 0"
+        class="page-toc"
+        :class="{ 'page-toc--collapsed': !tocExpanded }"
+      >
         <div class="page-toc__card">
           <button
             type="button"
@@ -234,13 +658,16 @@ const handleExtractSelectionButtonClick = () => {
       </aside>
     </div>
 
+    <!-- 选中文本工具栏 -->
     <SelectionToolbar
       v-if="hasSelection && selectedText"
       :visible="hasSelection"
       :top="selectionPosition.top"
       :left="selectionPosition.left"
+      @add-note="handleAddNoteFromSelection"
     />
 
+    <!-- 引用块选择器 -->
     <BlockPicker
       :visible="showBlockPicker"
       :pages="workspaceStore.pageTree"
@@ -248,6 +675,46 @@ const handleExtractSelectionButtonClick = () => {
       @select="handleBlockPickerSelect"
       @update:visible="showBlockPicker = $event"
     />
+
+    <!-- 标签编辑器 -->
+    <BlockMetadataTagEditor
+      :visible="tagEditorState.visible"
+      :selected-tags="tagEditorBlockTags"
+      :available-tags="availableTags"
+      :top="tagEditorState.top"
+      :left="tagEditorState.left"
+      @close="closeTagEditor"
+      @update:selected-tags="updateBlockTags"
+    />
+
+    <!-- 笔记编辑器 -->
+    <NoteEditor
+      :visible="noteEditorVisible"
+      :annotation="editingAnnotation"
+      @save="handleSaveAnnotation"
+      @cancel="noteEditorVisible = false; editingAnnotation = undefined"
+    />
+
+    <!-- 笔记弹窗 -->
+    <NotePopover
+      :visible="notePopoverVisible"
+      :annotation="notePopoverAnnotation"
+      :top="notePopoverPos.top"
+      :left="notePopoverPos.left"
+      @edit="handleEditAnnotation"
+      @delete="handleDeleteAnnotation"
+      @close="notePopoverVisible = false; notePopoverAnnotation = null"
+    />
+
+    <!-- Toast 消息 -->
+    <div class="toast-container">
+      <Toast
+        v-for="toast in toastMessages"
+        :key="toast.id"
+        :message="toast.message"
+        @close="removeToast(toast.id)"
+      />
+    </div>
   </div>
 </template>
 

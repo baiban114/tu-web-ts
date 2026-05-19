@@ -119,14 +119,17 @@ const editor = useEditor({
 
 watch(
   () => props.blocks,
-  (newBlocks) => {
+  (newBlocks, oldBlocks) => {
     if (!editor.value) return
+    if (newBlocks === oldBlocks) return
     isInternalUpdate = true
-    const content = blocksToTipTap(newBlocks)
-    editor.value.commands.setContent(content, { emitUpdate: false })
-    isInternalUpdate = false
+    try {
+      const content = blocksToTipTap(newBlocks)
+      editor.value.commands.setContent(content, { emitUpdate: false })
+    } finally {
+      isInternalUpdate = false
+    }
   },
-  { deep: true }
 )
 
 watch(
@@ -209,6 +212,27 @@ defineExpose({
     const { from, to, empty } = editor.value.state.selection
     if (empty) return ''
     return editor.value.state.doc.textBetween(from, to, '\n')
+  },
+  getSelectionPosition: () => {
+    if (!editorEl.value || !editor.value) return undefined
+    const { from, to } = editor.value.state.selection
+    if (from === to) return undefined
+    try {
+      const start = editor.value.view.coordsAtPos(from)
+      const end = editor.value.view.coordsAtPos(to)
+      return {
+        top: Math.min(start.top, end.top),
+        left: (start.left + end.left) / 2,
+      }
+    } catch {
+      return undefined
+    }
+  },
+  getSelectionJSON: () => {
+    if (!editor.value) return null
+    const { from, to, empty } = editor.value.state.selection
+    if (empty) return null
+    return editor.value.state.doc.slice(from, to).toJSON()
   },
   focus: () => editor.value?.commands.focus(),
 })
