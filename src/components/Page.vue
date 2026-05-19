@@ -202,6 +202,7 @@ const blockHandleStyle = {
   '--hover-handle-left': 'calc(var(--block-handle-gutter, 36px) / 2)',
   '--hover-handle-top': 'calc(var(--block-shell-pad-y, 20px) + 6px)',
   '--hover-handle-transform': 'translateX(-50%)',
+  '--hover-handle-z-index': 20,
 } as const;
 
 const blockHandleItems: BlockActionHandleItem[] = [
@@ -2918,6 +2919,7 @@ const getBlockProperties = (block: Block) => {
                       v-else-if="childBlock.type === 'x6'"
                       :ref="(el: any) => setMarkdownLinkCapableRef(el, index * 100 + childIndex)"
                       :graphData="getX6GraphDataForRender(childBlock)"
+                      :graph-source-kind="getGraphSourceKindForBlock(childBlock)"
                       :editable="editable"
                       :source-load-enabled="canLoadGraphFromSource(childBlock.metadata)"
                       :source-write-back-enabled="canWriteGraphToSource(childBlock.metadata)"
@@ -3052,6 +3054,7 @@ const getBlockProperties = (block: Block) => {
             v-else-if="block.type === 'x6'"
             :ref="(el: any) => setMarkdownLinkCapableRef(el, index)"
             :graphData="getX6GraphDataForRender(block)"
+            :graph-source-kind="getGraphSourceKindForBlock(block)"
             :editable="editable"
             :source-load-enabled="canLoadGraphFromSource(block.metadata)"
             :source-write-back-enabled="canWriteGraphToSource(block.metadata)"

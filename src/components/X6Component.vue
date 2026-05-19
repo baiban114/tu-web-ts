@@ -28,6 +28,7 @@ interface GraphData {
 
 interface Props {
   graphData?: GraphData;
+  graphSourceKind?: string | null;
   editable?: boolean;
   width?: number;
   height?: number;
@@ -62,6 +63,7 @@ type SelectedCellState =
 
 const props = withDefaults(defineProps<Props>(), {
   graphData: undefined,
+  graphSourceKind: null,
   editable: true,
   width: 960,
   height: 540,
@@ -110,11 +112,16 @@ const objectModelStore = useObjectModelStore();
 const editingNodeId = ref<string | null>(null);
 const nodeOverlays = ref<Array<{
   id: string;
-  style: Record<string, string>;
+  style: Record<string, string>; 
   textMode: 'plain' | 'rich';
   label: string;
   richContent: string;
 }>>([]);
+const graphSourceRegion = ref<{
+  kind: string;
+  label: string;
+  style: Record<string, string>;
+} | null>(null);
 
 // Edge inline editing state (kept here, edge editing not split into sub-component)
 const edgeInlineEditing = ref(false);
@@ -883,8 +890,55 @@ function getNodeOverlayStyle(node: Node): Record<string, string> {
   };
 }
 
+function getGraphSourceRegionLabel(kind: string): string {
+  if (kind === 'knowledge-base-pages') return '知识库路线图';
+  if (kind === 'selection-blueprint') return '蓝图';
+  if (kind === 'knowledge-roadmap') return '知识库路线图';
+  if (kind === 'blueprint') return '蓝图';
+  if (kind === TASK_FLOW_KIND) return '任务流';
+  return kind;
+}
+
+function updateGraphSourceRegion() {
+  const kind = props.graphSourceKind ?? props.graphData?.blueprintMeta?.kind;
+  if (!graph || !kind) {
+    graphSourceRegion.value = null;
+    return;
+  }
+
+  const nodes = graph.getNodes();
+  if (nodes.length === 0) {
+    graphSourceRegion.value = null;
+    return;
+  }
+
+  const zoom = graph.zoom();
+  const { tx, ty } = graph.translate();
+  const boxes = nodes.map((node) => node.getBBox());
+  const minX = Math.min(...boxes.map((box) => box.x));
+  const minY = Math.min(...boxes.map((box) => box.y));
+  const maxX = Math.max(...boxes.map((box) => box.x + box.width));
+  const maxY = Math.max(...boxes.map((box) => box.y + box.height));
+  const padding = 28;
+
+  graphSourceRegion.value = {
+    kind,
+    label: getGraphSourceRegionLabel(kind),
+    style: {
+      left: `${(minX - padding) * zoom + tx}px`,
+      top: `${(minY - padding) * zoom + ty}px`,
+      width: `${(maxX - minX + padding * 2) * zoom}px`,
+      height: `${(maxY - minY + padding * 2) * zoom}px`,
+    },
+  };
+}
+
 function updateNodeOverlays() {
-  if (!graph) { nodeOverlays.value = []; return; }
+  if (!graph) {
+    nodeOverlays.value = [];
+    graphSourceRegion.value = null;
+    return;
+  }
   nodeOverlays.value = graph.getNodes().map(node => {
     const data = node.getData<Record<string, any>>() ?? {};
     return {
@@ -895,6 +949,7 @@ function updateNodeOverlays() {
       richContent: data.richContent ?? '',
     };
   });
+  updateGraphSourceRegion();
 }
 
 // Handlers called by X6NodeOverlay emit events
@@ -2179,16 +2234,6 @@ defineExpose({
           同步对象模型
         </button>
       </div>
-      <div class="toolbar-group" v-if="hasGraphSourceActions">
-        <span class="toolbar-summary">图源</span>
-        <button v-if="sourceLoadEnabled" type="button" class="tool-button" @click="syncFromSource">
-          从源同步
-        </button>
-        <button v-if="sourceWriteBackEnabled" type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="syncToSource">
-          同步至源
-        </button>
-      </div>
-
       <div class="toolbar-group">
         <button type="button" class="tool-button" :disabled="selectedCellsCount === 0" @click="copySelection">
           复制
@@ -2241,6 +2286,36 @@ defineExpose({
     <div class="x6-workspace">
       <div ref="stageRef" class="x6-stage" :style="{ minHeight: `${height}px` }">
         <div ref="containerRef" class="x6-canvas"></div>
+
+        <div
+          v-if="graphSourceRegion"
+          class="x6-source-region"
+          :class="`x6-source-region--${graphSourceRegion.kind}`"
+          :style="graphSourceRegion.style"
+        >
+          <div class="x6-source-region__header">
+            <span class="x6-source-region__label">{{ graphSourceRegion.label }}</span>
+            <div v-if="hasGraphSourceActions" class="x6-source-region__actions">
+              <button
+                v-if="sourceLoadEnabled"
+                type="button"
+                class="x6-source-region__button"
+                @click.stop="syncFromSource"
+              >
+                从源同步
+              </button>
+              <button
+                v-if="sourceWriteBackEnabled"
+                type="button"
+                class="x6-source-region__button x6-source-region__button--primary"
+                :disabled="!isEditable"
+                @click.stop="syncToSource"
+              >
+                同步至源
+              </button>
+            </div>
+          </div>
+        </div>
 
         <!-- Node overlays: plain text editing + rich text preview/editing -->
         <X6NodeOverlay
@@ -2527,6 +2602,7 @@ defineExpose({
 .x6-stage {
   position: relative;
   min-width: 0;
+  overflow: hidden;
   border-right: 1px solid #e3e7ef;
   background:
     radial-gradient(circle at top left, rgba(22, 119, 255, 0.08), transparent 28%),
@@ -2534,8 +2610,104 @@ defineExpose({
 }
 
 .x6-canvas {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 100%;
+}
+
+.x6-source-region {
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  box-sizing: border-box;
+  border: 2px dashed rgba(22, 119, 255, 0.78);
+  border-radius: 16px;
+  background: rgba(22, 119, 255, 0.05);
+  box-shadow:
+    0 0 0 4px rgba(22, 119, 255, 0.08),
+    0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.x6-source-region--selection-blueprint,
+.x6-source-region--blueprint {
+  border-color: rgba(114, 46, 209, 0.75);
+  background: rgba(114, 46, 209, 0.05);
+  box-shadow:
+    0 0 0 4px rgba(114, 46, 209, 0.08),
+    0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.x6-source-region--task-flow {
+  border-color: rgba(82, 196, 26, 0.78);
+  background: rgba(82, 196, 26, 0.05);
+  box-shadow:
+    0 0 0 4px rgba(82, 196, 26, 0.08),
+    0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.x6-source-region__header {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  pointer-events: auto;
+}
+
+.x6-source-region__label {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #0958d9;
+  border: 1px solid rgba(22, 119, 255, 0.28);
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.x6-source-region__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.x6-source-region__button {
+  min-height: 24px;
+  padding: 2px 8px;
+  border: 1px solid rgba(22, 119, 255, 0.26);
+  border-radius: 999px;
+  background: #ffffff;
+  color: #0958d9;
+  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.1);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.x6-source-region__button:hover:not(:disabled) {
+  border-color: #1677ff;
+  background: #f0f7ff;
+}
+
+.x6-source-region__button:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.x6-source-region__button--primary {
+  border-color: #1677ff;
+  background: #1677ff;
+  color: #ffffff;
+}
+
+.x6-source-region__button--primary:hover:not(:disabled) {
+  background: #0958d9;
 }
 
 /* Inline text editor overlay */
