@@ -138,3 +138,26 @@ export interface KnowledgeBase {
   icon?: string;
   description?: string;
 }
+
+export interface RoadmapNode {
+  title?: string;
+  name?: string;
+  description?: string;
+  content?: string;
+  children?: RoadmapNode[];
+}
+
+export interface ImportRoadmapPayload {
+  name?: string;
+  icon?: string;
+  description?: string;
+  root?: RoadmapNode;
+  pages?: RoadmapNode[];
+  roadmap?: RoadmapNode | RoadmapNode[] | unknown;
+}
+
+export interface ImportRoadmapResult {
+  knowledgeBase: KnowledgeBase;
+  pages: PageItem[];
+  pageCount: number;
+}

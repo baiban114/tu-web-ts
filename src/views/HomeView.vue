@@ -86,6 +86,11 @@ function onContentChange(blocks: Block[]) {
   void store.saveCurrentPage(blocks);
 }
 
+function onPageTitleChange(title: string) {
+  if (!store.currentPageId) return;
+  void store.renameCurrentPage(store.currentPageId, title);
+}
+
 watch(
   () => [route.query.pageId, route.query.blockId],
   async ([nextPageId, nextBlockId]) => {
@@ -132,7 +137,9 @@ watch(
 
         <Page
           :contentList="store.currentBlocks"
+          :page-title="store.currentPageTitle"
           :editable="true"
+          @page-title-change="onPageTitleChange"
           @content-change="onContentChange"
         />
       </div>

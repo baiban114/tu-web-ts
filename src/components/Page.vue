@@ -19,6 +19,7 @@ import { blockSyncManager } from '@/utils/blockSyncManager';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata';
+import { createKnowledgeRoadmapGraphData } from '@/utils/roadmapGraph';
 import { ensureExternalLinkResource } from '@/api/externalResource';
 
 type LinkDisplayMode = 'link' | 'image';
@@ -26,6 +27,7 @@ type ReferenceTarget = { type: 'block' | 'page'; id: string };
 
 interface Props {
   contentList: Block[];
+  pageTitle?: string;
   editable?: boolean;
 }
 
@@ -86,11 +88,13 @@ interface TocItem {
 type BlockPickerTypeFilter = 'all' | 'text' | 'x6';
 
 const props = withDefaults(defineProps<Props>(), {
+  pageTitle: '',
   editable: true
 });
 
 const emit = defineEmits<{
   (e: 'content-change', contentList: Block[]): void;
+  (e: 'page-title-change', title: string): void;
 }>();
 
 const registryStore = useBlockRegistryStore();
@@ -99,6 +103,7 @@ const blockDragHandle = '.block-handle .handle-dot';
 
 // 本地列表：VueDraggable 使用 v-model 操作此 ref，避免直接 mutate prop
 const localBlocks = ref<Block[]>([]);
+const pageTitleDraft = ref('');
 const referencedPageBlocks = ref<Record<string, Block[]>>({});
 const referencedPageLoading = ref<Record<string, boolean>>({});
 const referencedPageErrors = ref<Record<string, string>>({});
@@ -196,6 +201,7 @@ const blockHandleItems: BlockActionHandleItem[] = [
   { key: 'insert-ref', icon: '🔖', label: '插入引用块' },
   { key: 'insert-line', icon: '🕒', label: '插入时间轴' },
   { key: 'insert-x6', icon: '🧩', label: '插入画板' },
+  { key: 'insert-kb-roadmap', icon: '🗺️', label: '生成知识库路线图' },
   { key: 'insert-table', icon: '▦', label: '插入表格' },
   { key: 'insert-container', icon: '📦', label: '插入容器' },
   { key: 'insert-task-panel', icon: '✅', label: '插入任务面板' },
@@ -236,6 +242,7 @@ const richTextLineActionItems: BlockActionHandleItem[] = [
   { key: 'line-insert-ref', icon: '🔖', label: '在当前行后插入引用块' },
   { key: 'line-insert-line', icon: '🕒', label: '在当前行后插入时间轴' },
   { key: 'line-insert-x6', icon: '🧩', label: '在当前行后插入画板' },
+  { key: 'line-insert-kb-roadmap', icon: '🗺️', label: '在当前行后生成知识库路线图' },
   { key: 'line-insert-table', icon: '▦', label: '在当前行后插入表格' },
   { key: 'line-insert-container', icon: '📦', label: '在当前行后插入容器' },
   { key: 'block-scope', label: '整个块', divider: true },
@@ -583,6 +590,61 @@ const createX6BlockFromGraphData = (graphData: GraphData, title = '提取的蓝�
     title,
     graphData,
   };
+};
+
+const createKnowledgeRoadmapBlock = (): Block | null => {
+  if (!workspaceStore.pageTree.length) {
+    showToast('当前知识库没有页面，无法生成路线图');
+    return null;
+  }
+
+  return {
+    id: generateId(),
+    type: 'x6',
+    title: '知识库路线图',
+    metadata: {
+      sourceType: 'knowledge-roadmap',
+      sourceKbId: workspaceStore.currentKbId,
+    },
+    graphData: createKnowledgeRoadmapGraphData(workspaceStore.pageTree),
+  };
+};
+
+const isKnowledgeRoadmapBlock = (block: Block): boolean => {
+  return block.type === 'x6' && block.metadata?.sourceType === 'knowledge-roadmap';
+};
+
+const getX6GraphDataForRender = (block: Block): GraphData | undefined => {
+  if (isKnowledgeRoadmapBlock(block)) {
+    return createKnowledgeRoadmapGraphData(workspaceStore.pageTree);
+  }
+  return block.graphData;
+};
+
+const updateX6GraphDataFromEditor = (block: Block, graphData: GraphData) => {
+  if (isKnowledgeRoadmapBlock(block)) return;
+  block.graphData = graphData;
+  emit('content-change', localBlocks.value);
+};
+
+const syncKnowledgeRoadmapBlockFromSource = (block: Block) => {
+  if (!isKnowledgeRoadmapBlock(block)) return;
+  block.graphData = createKnowledgeRoadmapGraphData(workspaceStore.pageTree);
+  emit('content-change', localBlocks.value);
+  showToast('已从知识库结构同步路线图');
+};
+
+const syncKnowledgeRoadmapBlockToSource = async (block: Block, graphData: GraphData) => {
+  if (!isKnowledgeRoadmapBlock(block)) return;
+  try {
+    const result = await workspaceStore.syncKnowledgeRoadmapToSource(graphData);
+    block.graphData = createKnowledgeRoadmapGraphData(workspaceStore.pageTree);
+    emit('content-change', localBlocks.value);
+    const warningText = result.warnings.length ? `，${result.warnings.join('；')}` : '';
+    showToast(`已同步至知识库结构，影响 ${result.changedCount} 个节点${warningText}`);
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '同步至源失败');
+  }
 };
 
 const createTaskFlowGraphData = (): GraphData => {
@@ -1214,6 +1276,11 @@ const isRichTextBlock = (block: Block): boolean => {
   return block != null && (block.type === 'richtext' || block.type === 'richText');
 };
 
+const shouldShowDocumentTailInsert = computed(() => {
+  const lastBlock = localBlocks.value[localBlocks.value.length - 1];
+  return !isRichTextBlock(lastBlock);
+});
+
 const extractMarkdownHeadings = (content: string, blockId: string): TocItem[] => {
   const items: TocItem[] = [];
   const lines = content.replace(/\r\n/g, '\n').split('\n');
@@ -1267,6 +1334,7 @@ const isEmptyRichTextBlock = (block: Block | undefined): boolean => {
 };
 
 const tocItems = computed(() => collectTocItems(localBlocks.value));
+const tocExpanded = ref(true);
 
 const handleTocItemClick = (item: TocItem) => {
   void scrollToBlockId(item.blockId);
@@ -1286,6 +1354,21 @@ const getBlockDisplayTitle = (block: Block, index: number): string => {
 const updateBlockTitle = (block: Block, title: string) => {
   block.title = title;
   emit('content-change', localBlocks.value);
+};
+
+const commitPageTitle = () => {
+  if (!props.editable) return;
+  const nextTitle = pageTitleDraft.value.trim() || '未命名页面';
+  pageTitleDraft.value = nextTitle;
+  if (nextTitle !== props.pageTitle) {
+    emit('page-title-change', nextTitle);
+  }
+};
+
+const handlePageTitleKeydown = (event: KeyboardEvent) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  (event.currentTarget as HTMLInputElement | null)?.blur();
 };
 
 const normalizeBlockWidth = (value: unknown): string | undefined => {
@@ -1798,6 +1881,13 @@ const handleBlockHandleSelect = (action: string, position: number) => {
     case 'insert-x6':
       insertBlock(insertPosition, createNewX6Block(insertPosition));
       return;
+    case 'insert-kb-roadmap': {
+      const block = createKnowledgeRoadmapBlock();
+      if (block) {
+        insertBlock(insertPosition, block);
+      }
+      return;
+    }
     case 'insert-table':
       insertBlock(insertPosition, createNewTableBlock());
       return;
@@ -1987,6 +2077,14 @@ watch(
     syncLocalBlocksFromSource(newList);
   },
   { immediate: true }
+);
+
+watch(
+  () => props.pageTitle,
+  (title) => {
+    pageTitleDraft.value = title || '未命名页面';
+  },
+  { immediate: true },
 );
 
 watch(
@@ -2371,6 +2469,23 @@ const createBlankAreaRichTextBlock = (widthPx?: number): Block => {
   return block;
 };
 
+const focusExistingRichTextBlock = async (position: number) => {
+  autoFocusBlockId.value = localBlocks.value[position]?.id ?? null;
+  await nextTick();
+  richTextEditorRefs.value[position]?.focusEditor?.();
+};
+
+const appendRichTextBlockFromPageTail = () => {
+  const lastIndex = localBlocks.value.length - 1;
+  const lastBlock = localBlocks.value[lastIndex];
+  if (isRichTextBlock(lastBlock)) {
+    void focusExistingRichTextBlock(lastIndex);
+    return;
+  }
+
+  insertBlock(localBlocks.value.length, createNewRichTextBlock());
+};
+
 const getBlankAreaInsertTarget = (event: MouseEvent): { position: number; widthPx?: number } | null => {
   const rects = getTopLevelBlockRects();
   if (rects.length === 0) return { position: 0 };
@@ -2415,6 +2530,11 @@ const handleContentContainerClick = (event: MouseEvent) => {
 
   const insertTarget = getBlankAreaInsertTarget(event);
   if (insertTarget) {
+    if (insertTarget.position === localBlocks.value.length) {
+      appendRichTextBlockFromPageTail();
+      return;
+    }
+
     insertBlock(insertTarget.position, createBlankAreaRichTextBlock(insertTarget.widthPx));
     return;
   }
@@ -2457,6 +2577,20 @@ const getBlockProperties = (block: Block) => {
         提取成块
       </button>
     </div>
+
+    <section class="page-title-row" aria-label="页面标题">
+      <input
+        v-if="editable"
+        v-model="pageTitleDraft"
+        class="page-title-input"
+        type="text"
+        aria-label="页面标题"
+        placeholder="未命名页面"
+        @blur="commitPageTitle"
+        @keydown="handlePageTitleKeydown"
+      />
+      <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>
+    </section>
 
     <form
       v-if="linkPopoverState.visible"
@@ -2762,11 +2896,13 @@ const getBlockProperties = (block: Block) => {
                     <X6Component
                       v-else-if="childBlock.type === 'x6'"
                       :ref="(el: any) => setMarkdownLinkCapableRef(el, index * 100 + childIndex)"
-                      :graphData="childBlock.graphData"
+                      :graphData="getX6GraphDataForRender(childBlock)"
                       :editable="editable"
                       @click="activeBlockIndex = index * 100 + childIndex"
                       @active="activeBlockIndex = index * 100 + childIndex"
-                      @graph-data-change="(graphData: any) => { childBlock.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
+                      @graph-data-change="(graphData: any) => updateX6GraphDataFromEditor(childBlock, graphData as GraphData)"
+                      @sync-from-source="syncKnowledgeRoadmapBlockFromSource(childBlock)"
+                      @sync-to-source="(graphData: GraphData) => syncKnowledgeRoadmapBlockToSource(childBlock, graphData)"
                       @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index * 100 + childIndex)"
                       @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index * 100 + childIndex, payload)"
                       class="block-content board-content"
@@ -2892,11 +3028,13 @@ const getBlockProperties = (block: Block) => {
           <X6Component
             v-else-if="block.type === 'x6'"
             :ref="(el: any) => setMarkdownLinkCapableRef(el, index)"
-            :graphData="block.graphData"
+            :graphData="getX6GraphDataForRender(block)"
             :editable="editable"
             @click="activeBlockIndex = index"
             @active="activeBlockIndex = index"
-            @graph-data-change="(graphData: any) => { block.graphData = graphData as GraphData; emit('content-change', localBlocks); }"
+            @graph-data-change="(graphData: any) => updateX6GraphDataFromEditor(block, graphData as GraphData)"
+            @sync-from-source="syncKnowledgeRoadmapBlockFromSource(block)"
+            @sync-to-source="(graphData: GraphData) => syncKnowledgeRoadmapBlockToSource(block, graphData)"
             @extract-selection="(payload: X6ExtractSelectionPayload) => handleExtractX6Selection(payload, index)"
             @request-insert-ref="(payload: X6InsertRefRequestPayload) => requestX6RefInsert(index, payload)"
             class="block-content board-content"
@@ -2989,32 +3127,43 @@ const getBlockProperties = (block: Block) => {
         </div>
         </VueDraggable>
         <button
-          v-if="editable"
+          v-if="editable && shouldShowDocumentTailInsert"
           type="button"
           class="document-tail-insert"
-          @click.stop="insertBlock(localBlocks.length, createNewRichTextBlock())"
+          @click.stop="appendRichTextBlockFromPageTail"
         >
           点击继续输入
         </button>
       </div>
 
-      <aside v-if="tocItems.length > 0" class="page-toc">
+      <aside v-if="tocItems.length > 0" class="page-toc" :class="{ 'page-toc--collapsed': !tocExpanded }">
         <div class="page-toc__card">
-          <div class="page-toc__title">目录</div>
           <button
-            v-for="item in tocItems"
-            :key="item.id"
             type="button"
-            class="page-toc__item"
-            :class="{
-              'page-toc__item--active': highlightedBlockId === item.blockId,
-              [`page-toc__item--level-${item.level}`]: true,
-            }"
-            @click="handleTocItemClick(item)"
+            class="page-toc__header"
+            :aria-expanded="tocExpanded"
+            @click="tocExpanded = !tocExpanded"
           >
-            <span class="page-toc__bullet">H{{ item.level }}</span>
-            <span class="page-toc__text">{{ item.text }}</span>
+            <span class="page-toc__title">目录</span>
+            <span class="page-toc__meta">{{ tocItems.length }}</span>
+            <span class="page-toc__toggle">{{ tocExpanded ? '收起' : '展开' }}</span>
           </button>
+          <div v-show="tocExpanded" class="page-toc__list">
+            <button
+              v-for="item in tocItems"
+              :key="item.id"
+              type="button"
+              class="page-toc__item"
+              :class="{
+                'page-toc__item--active': highlightedBlockId === item.blockId,
+                [`page-toc__item--level-${item.level}`]: true,
+              }"
+              @click="handleTocItemClick(item)"
+            >
+              <span class="page-toc__bullet">H{{ item.level }}</span>
+              <span class="page-toc__text">{{ item.text }}</span>
+            </button>
+          </div>
         </div>
       </aside>
     </div>
@@ -3053,7 +3202,7 @@ const getBlockProperties = (block: Block) => {
 <style scoped>
 .page-container {
   position: relative;
-  min-height: 100%;
+  min-height: max(100%, max-content);
   display: flex;
   flex-direction: column;
 }
@@ -3092,6 +3241,44 @@ const getBlockProperties = (block: Block) => {
   background-color: #d9d9d9;
   cursor: not-allowed;
   color: #999;
+}
+
+.page-title-row {
+  flex: 0 0 auto;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 22px;
+  padding: 8px 0 4px;
+  cursor: text;
+}
+
+.page-title-input,
+.page-title-heading {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  color: #111827;
+  font: inherit;
+  font-size: clamp(30px, 4vw, 44px);
+  font-weight: 760;
+  line-height: 1.12;
+  letter-spacing: -0.04em;
+}
+
+.page-title-input {
+  padding: 8px 0;
+  outline: none;
+}
+
+.page-title-input::placeholder {
+  color: #9ca3af;
+}
+
+.page-title-input:focus {
+  box-shadow: inset 0 -2px 0 rgba(22, 119, 255, 0.28);
 }
 
 .link-popover {
@@ -3216,7 +3403,7 @@ const getBlockProperties = (block: Block) => {
   align-items: flex-start;
   gap: 20px;
   width: 100%;
-  min-height: 100%;
+  min-height: 0;
 }
 
 .content-container {
@@ -3260,30 +3447,90 @@ const getBlockProperties = (block: Block) => {
 
 .page-toc {
   position: sticky;
-  top: 20px;
+  top: 72px;
   flex: 0 0 248px;
   width: 248px;
   align-self: flex-start;
+  z-index: 24;
+  transition: flex-basis 0.2s ease, width 0.2s ease;
+}
+
+.page-toc--collapsed {
+  flex-basis: 112px;
+  width: 112px;
 }
 
 .page-toc__card {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   max-height: calc(100vh - 40px);
-  overflow: auto;
-  padding: 14px 12px;
+  overflow: hidden;
+  padding: 10px;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
-  background: linear-gradient(180deg, #fcfdff 0%, #f7faff 100%);
-  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
+  background: rgba(252, 253, 255, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 14px 32px rgba(15, 23, 42, 0.12);
+}
+
+.page-toc__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #1f2937;
+  cursor: pointer;
+  text-align: left;
+}
+
+.page-toc__header:hover {
+  background: rgba(22, 119, 255, 0.08);
 }
 
 .page-toc__title {
-  margin-bottom: 4px;
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   font-weight: 700;
-  color: #1f2937;
+}
+
+.page-toc__meta {
+  flex: 0 0 auto;
+  min-width: 20px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(22, 119, 255, 0.12);
+  color: #1677ff;
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.page-toc__toggle {
+  flex: 0 0 auto;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.page-toc--collapsed .page-toc__header {
+  justify-content: center;
+}
+
+.page-toc--collapsed .page-toc__title,
+.page-toc--collapsed .page-toc__meta {
+  display: none;
+}
+
+.page-toc__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+  overflow: auto;
 }
 
 .page-toc__item {
@@ -3868,6 +4115,11 @@ const getBlockProperties = (block: Block) => {
   .page-toc {
     position: static;
     order: -1;
+    width: 100%;
+    flex-basis: auto;
+  }
+
+  .page-toc--collapsed {
     width: 100%;
     flex-basis: auto;
   }

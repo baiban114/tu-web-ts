@@ -4,6 +4,7 @@ import {
   listKnowledgeBases,
   createKnowledgeBase,
   deleteKnowledgeBase,
+  importRoadmap,
   type KnowledgeBase,
 } from '@/api/knowledge';
 import {
@@ -14,9 +15,9 @@ import {
   deletePage,
   movePage,
   renamePage,
-  type PageItem,
 } from '@/api/page';
-import type { Block } from '@/api/types';
+import type { Block, GraphData, PageItem } from '@/api/types';
+import type { ImportRoadmapPayload } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import {
@@ -24,6 +25,7 @@ import {
   parseMarkdownToBlocks,
   serializeBlocksToMarkdown,
 } from '@/utils/markdownImport';
+import { parseKnowledgeRoadmapGraphData } from '@/utils/roadmapGraph';
 
 type LocalFileSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'unsupported';
 
@@ -63,6 +65,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const pageId = currentPageId.value;
     if (!pageId) return null;
     return localFileBindings.value[pageId] ?? null;
+  });
+
+  const currentPageTitle = computed(() => {
+    const pageId = currentPageId.value;
+    return pageId ? findPageTitle(pageId) : '';
   });
 
   function clearBindingTimer(binding: LocalFileBinding | undefined) {
@@ -148,6 +155,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
     };
     return walk(pageTree.value) ?? pageId;
+  }
+
+  function flattenPages(nodes: PageItem[]): PageItem[] {
+    const result: PageItem[] = [];
+    const visit = (items: PageItem[]) => {
+      items.forEach((item) => {
+        result.push(item);
+        if (item.children?.length) visit(item.children);
+      });
+    };
+    visit(nodes);
+    return result;
   }
 
   function bindLocalFileToPage(
@@ -336,6 +355,60 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     await selectPage(page.id);
   }
 
+  async function importRoadmapJson(payload: ImportRoadmapPayload) {
+    const result = await importRoadmap(payload);
+    kbList.value = await listKnowledgeBases();
+    if (!kbList.value.some((kb) => kb.id === result.knowledgeBase.id)) {
+      kbList.value.push(result.knowledgeBase);
+    }
+    await selectKb(result.knowledgeBase.id);
+    return result;
+  }
+
+  async function syncKnowledgeRoadmapToSource(graphData: GraphData) {
+    if (!currentKbId.value) {
+      throw new Error('Please select a knowledge base first.');
+    }
+
+    const parsed = parseKnowledgeRoadmapGraphData(graphData);
+    const pageById = new Map(flattenPages(pageTree.value).map((page) => [page.id, page]));
+    const createdPageIdByNodeId = new Map<string, string>();
+
+    for (const node of parsed.nodes) {
+      if (node.pageId) continue;
+      const parentId = node.parentNodeId
+        ? createdPageIdByNodeId.get(node.parentNodeId) ?? node.parentPageId
+        : null;
+      const page = await createPage(currentKbId.value, parentId, node.title);
+      createdPageIdByNodeId.set(node.nodeId, page.id);
+    }
+
+    for (const node of parsed.nodes) {
+      const pageId = node.pageId ?? createdPageIdByNodeId.get(node.nodeId);
+      if (!pageId) continue;
+      const existing = pageById.get(pageId);
+      if (existing && existing.title !== node.title) {
+        await renamePage(pageId, node.title);
+      }
+    }
+
+    for (const node of parsed.nodes) {
+      const pageId = node.pageId ?? createdPageIdByNodeId.get(node.nodeId);
+      if (!pageId) continue;
+      const parentId = node.parentNodeId
+        ? createdPageIdByNodeId.get(node.parentNodeId) ?? node.parentPageId
+        : null;
+      await movePage(pageId, parentId, node.order);
+    }
+
+    pageTree.value = await getPageTree(currentKbId.value);
+    return {
+      createdCount: createdPageIdByNodeId.size,
+      changedCount: parsed.nodes.length,
+      warnings: parsed.warnings,
+    };
+  }
+
   async function removePage(id: string) {
     await deletePage(id);
     clearLocalFileBinding(id);
@@ -365,6 +438,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (currentKbId.value) {
       pageTree.value = await getPageTree(currentKbId.value);
     }
+    if (currentPageId.value === id) {
+      registryStore.registerBlocks(currentBlocks.value, id, title);
+    }
   }
 
   return {
@@ -373,6 +449,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pageTree,
     currentPageId,
     currentBlocks,
+    currentPageTitle,
     focusedBlockId,
     loading,
     currentLocalFileBinding,
@@ -387,6 +464,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     removeKb,
     addPage,
     importMarkdownFile,
+    importRoadmapJson,
+    syncKnowledgeRoadmapToSource,
     removePage,
     reorderPage,
     renameCurrentPage,

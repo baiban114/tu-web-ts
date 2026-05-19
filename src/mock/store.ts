@@ -1,4 +1,13 @@
-import type { Block, BlockWithMeta, KnowledgeBase, PageContent, PageItem } from '@/api/types';
+import type {
+  Block,
+  BlockWithMeta,
+  ImportRoadmapPayload,
+  ImportRoadmapResult,
+  KnowledgeBase,
+  PageContent,
+  PageItem,
+  RoadmapNode,
+} from '@/api/types';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
@@ -117,6 +126,13 @@ function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function firstText(...values: Array<string | undefined>): string | null {
+  for (const value of values) {
+    if (value && value.trim()) return value.trim();
+  }
+  return null;
+}
+
 function sortPages(pages: Array<Omit<PageItem, 'children'>>): Array<Omit<PageItem, 'children'>> {
   return [...pages].sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
 }
@@ -209,6 +225,83 @@ export function createKnowledgeBaseMock(name: string): KnowledgeBase {
   state.knowledgeBases.push(kb);
   persistState();
   return cloneState(kb);
+}
+
+function convertUnknownRoadmapNode(value: unknown): RoadmapNode {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Roadmap node must be an object.');
+  }
+  return value as RoadmapNode;
+}
+
+function resolveRoadmapRoots(payload: ImportRoadmapPayload): RoadmapNode[] {
+  if (payload.root) return [payload.root];
+  if (payload.pages?.length) return payload.pages;
+  if (Array.isArray(payload.roadmap)) return payload.roadmap.map(convertUnknownRoadmapNode);
+  if (payload.roadmap) return [convertUnknownRoadmapNode(payload.roadmap)];
+  throw new Error('Roadmap JSON is required.');
+}
+
+function countRoadmapNodes(nodes: RoadmapNode[]): number {
+  return nodes.reduce((total, node) => total + 1 + countRoadmapNodes(node.children ?? []), 0);
+}
+
+function createRoadmapPageMock(kbId: string, parentId: string | null, node: RoadmapNode, order: number): PageItem {
+  const title = firstText(node.title, node.name);
+  if (!title) {
+    throw new Error('Roadmap node title is required.');
+  }
+
+  const page: Omit<PageItem, 'children'> = {
+    id: nextId('p'),
+    kbId,
+    parentId,
+    title: title.slice(0, 128),
+    order,
+  };
+  state.pages.push(page);
+
+  const body = firstText(node.content, node.description);
+  state.contents[page.id] = [
+    {
+      id: nextId('b'),
+      type: 'richtext',
+      content: `# ${page.title}${body ? `\n\n${body}` : ''}`,
+    },
+  ];
+
+  (node.children ?? []).forEach((child, index) => createRoadmapPageMock(kbId, page.id, child, index));
+  return { ...cloneState(page), children: [] };
+}
+
+export function importRoadmapMock(payload: ImportRoadmapPayload): ImportRoadmapResult {
+  const roots = resolveRoadmapRoots(payload);
+  const pageCount = countRoadmapNodes(roots);
+  if (pageCount === 0) {
+    throw new Error('Roadmap contains no pages.');
+  }
+  if (pageCount > 500) {
+    throw new Error('Roadmap page count exceeds 500.');
+  }
+
+  const kbName = firstText(payload.name, roots.length === 1 ? firstText(roots[0].title, roots[0].name) ?? undefined : undefined)
+    ?? `Roadmap ${Date.now()}`;
+  const kb: KnowledgeBase = {
+    id: nextId('kb'),
+    name: kbName,
+    icon: payload.icon || '📚',
+    description: payload.description,
+  };
+  state.knowledgeBases.push(kb);
+
+  roots.forEach((root, index) => createRoadmapPageMock(kb.id, null, root, index));
+  persistState();
+
+  return {
+    knowledgeBase: cloneState(kb),
+    pages: cloneState(buildPageTree(kb.id)),
+    pageCount,
+  };
 }
 
 export function deleteKnowledgeBaseMock(id: string): void {

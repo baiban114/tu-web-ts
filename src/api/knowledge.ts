@@ -2,11 +2,12 @@ import { isMockDataSource } from '@/dev/dataSource';
 import {
   createKnowledgeBaseMock,
   deleteKnowledgeBaseMock,
+  importRoadmapMock,
   listKnowledgeBasesMock,
   renameKnowledgeBaseMock,
 } from '@/mock/store';
 import { request } from './http';
-import type { KnowledgeBase } from './types';
+import type { ImportRoadmapPayload, ImportRoadmapResult, KnowledgeBase } from './types';
 
 export type { KnowledgeBase } from './types';
 
@@ -43,5 +44,15 @@ export async function renameKnowledgeBase(id: string, name: string): Promise<Kno
   return request<KnowledgeBase>(`/api/kbs/${id}`, {
     method: 'PATCH',
     body: JSON.stringify({ name }),
+  });
+}
+
+export async function importRoadmap(payload: ImportRoadmapPayload): Promise<ImportRoadmapResult> {
+  if (isMockDataSource()) {
+    return importRoadmapMock(payload);
+  }
+  return request<ImportRoadmapResult>('/api/kbs/import-roadmap', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }

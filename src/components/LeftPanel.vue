@@ -13,6 +13,7 @@ import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
 import AuthPanel from './AuthPanel.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
+import RoadmapImportButton from './RoadmapImportButton.vue';
 
 const store = useWorkspaceStore();
 
@@ -147,14 +148,17 @@ function onDocumentClick() {
     <div class="section">
       <div class="section-header">
         <span class="section-title">知识库</span>
-        <el-button
-          link
-          size="small"
-          title="新建知识库"
-          @click.stop="showAddKbDialog = true"
-        >
-          +
-        </el-button>
+        <div class="section-actions">
+          <RoadmapImportButton />
+          <el-button
+            link
+            size="small"
+            title="新建知识库"
+            @click.stop="showAddKbDialog = true"
+          >
+            +
+          </el-button>
+        </div>
       </div>
 
       <el-scrollbar class="kb-list">
