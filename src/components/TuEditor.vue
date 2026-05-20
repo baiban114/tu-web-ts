@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, watch, onBeforeUnmount, onMounted, ref } from 'vue'
+import { watch, onBeforeUnmount, ref } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
 import Image from '@tiptap/extension-image'
@@ -18,8 +18,6 @@ import {
   RefBlockNode,
   SpacerBlockNode,
   ParagraphNode,
-  RichTextEnter,
-  BlockActions,
   blocksToTipTap,
   tipTapToBlocks,
 } from '@/editor'
@@ -38,7 +36,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   'update:blocks': [blocks: Block[]]
   'content-change': [blocks: Block[]]
-  'selection-change': [hasSelection: boolean, text: string, blockIndex?: number]
+  'selection-change': [hasSelection: boolean, text: string]
   'block-click': [blockId: string, event: MouseEvent]
   'open-block-picker': [afterBlockId: string]
   'open-tag-editor': [blockId: string]
@@ -54,7 +52,6 @@ const editor = useEditor({
   editable: props.editable,
   autofocus: false,
   extensions: [
-    RichTextEnter,
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
       paragraph: false,
@@ -79,33 +76,14 @@ const editor = useEditor({
     RefBlockNode,
     SpacerBlockNode,
     ParagraphNode,
-    BlockActions,
   ],
   editorProps: {
     attributes: {
       class: 'tu-editor-content',
     },
   },
-  onCreate: ({ editor }) => {
-    (editor.storage as any).blockActions = {
-      blocks: props.blocks,
-      onBlockAction: (action: string, blockId: string) => handleBlockAction(editor, action, blockId),
-      getBlockPosition: (blockId: string) => {
-        let foundPos: number | null = null
-        editor.state.doc.descendants((node, pos) => {
-          if (node.attrs?.blockId === blockId) {
-            foundPos = pos
-            return false
-          }
-          return true
-        })
-        return foundPos
-      },
-      getBlockById: (blockId: string) => {
-        return props.blocks.find(b => b.id === blockId) || null
-      },
-      createBlock: (type: string) => createBlockByType(type),
-    }
+  onCreate: () => {
+    isInternalUpdate = false
   },
   onUpdate: () => {
     if (isInternalUpdate || !editor.value) return
@@ -122,17 +100,7 @@ const editor = useEditor({
     if (!editor.value) return
     const { empty, from, to } = editor.value.state.selection
     const text = empty ? '' : editor.value.state.doc.textBetween(from, to, ' ')
-    // Find block index by walking up the resolved path to find the parent blockId
-    let blockIndex: number | undefined
-    const { $from } = editor.value.state.selection
-    for (let d = $from.depth; d >= 1; d--) {
-      const node = $from.node(d)
-      if (node.attrs.blockId) {
-        blockIndex = props.blocks.findIndex(b => b.id === node.attrs.blockId)
-        if (blockIndex >= 0) break
-      }
-    }
-    emit('selection-change', !empty, text, blockIndex)
+    emit('selection-change', !empty, text)
   },
 })
 
@@ -163,67 +131,6 @@ watch(
     editor.value?.setEditable(val)
   },
 )
-
-function createBlockByType(type: string): Block | null {
-  const id = 'block-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)
-  switch (type) {
-    case 'richtext':
-      return { id, type: 'richtext', content: '' }
-    case 'x6':
-      return {
-        id, type: 'x6', title: '新的画板',
-        graphData: {
-          nodes: [
-            { id: `${id}-node-1`, x: 100, y: 100, width: 80, height: 40, label: '节点 1' },
-            { id: `${id}-node-2`, x: 300, y: 100, width: 80, height: 40, label: '节点 2' },
-          ],
-          edges: [{ id: `${id}-edge-1`, source: `${id}-node-1`, target: `${id}-node-2` }],
-        },
-      }
-    case 'line':
-      return { id, type: 'line', title: '新的时间轴', timelineData: [] }
-    case 'table':
-      return { id, type: 'table', tableData: { headers: ['列 1', '列 2'], rows: [['', '']] } }
-    case 'spacer':
-      return { id, type: 'spacer', spacerHeight: 40 }
-    default:
-      return null
-  }
-}
-
-function handleBlockAction(ed: any, action: string, blockId: string) {
-  switch (action) {
-    case 'insert-richtext': {
-      const block = createBlockByType('richtext')
-      if (block) ed.commands.insertBlockAfter(block, blockId)
-      break
-    }
-    case 'insert-x6': {
-      const block = createBlockByType('x6')
-      if (block) ed.commands.insertBlockAfter(block, blockId)
-      break
-    }
-    case 'insert-line': {
-      const block = createBlockByType('line')
-      if (block) ed.commands.insertBlockAfter(block, blockId)
-      break
-    }
-    case 'insert-table': {
-      const block = createBlockByType('table')
-      if (block) ed.commands.insertBlockAfter(block, blockId)
-      break
-    }
-    case 'insert-ref':
-      emit('open-block-picker', blockId)
-      break
-    case 'delete':
-      ed.commands.deleteBlock(blockId)
-      break
-    case 'edit-tags':
-      emit('open-tag-editor', blockId)
-      break
-  }
-}
 
 onBeforeUnmount(() => {
   if (debounceTimer) clearTimeout(debounceTimer)
@@ -371,81 +278,6 @@ defineExpose({
 .tu-editor-wrapper :deep(.tu-editor-content th) {
   background: #f5f5f5;
   font-weight: 600;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block) {
-  position: relative;
-  margin: 8px 0;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  transition: border-color 0.15s ease;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block:hover) {
-  border-color: #e0e0e0;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block--selected) {
-  border-color: transparent;
-  box-shadow: none;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block .block-action-handle) {
-  opacity: 0 !important;
-  transition: opacity 0.15s ease;
-  z-index: 25;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block:hover .block-action-handle) {
-  opacity: 1 !important;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block .hover-handle) {
-  position: absolute;
-  left: var(--hover-handle-left, calc(var(--block-handle-gutter, 36px) / 2));
-  top: var(--hover-handle-top, calc(var(--block-shell-pad-y, 20px) + 6px));
-  transform: var(--hover-handle-transform, translateX(-50%));
-  width: 28px;
-  height: var(--hover-handle-height, 28px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block__header) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #f9f9f9;
-  border-radius: 8px 8px 0 0;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block__title) {
-  font-size: 13px;
-  font-weight: 600;
-  color: #666;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block__type-badge) {
-  font-size: 11px;
-  padding: 2px 6px;
-  background: #e0e0e0;
-  border-radius: 4px;
-  color: #666;
-}
-
-.tu-editor-wrapper :deep(.tiptap-block--spacer) {
-  border: 1px dashed #e0e0e0;
-  background: #fafafa;
-}
-
-.tu-editor-wrapper :deep(.ProseMirror-selectednode) {
-  outline: 2px solid #1677ff;
-}
-
-.tu-editor-wrapper :deep([data-drag-handle]) {
-  cursor: grab;
 }
 
 .tu-editor-wrapper :deep(.is-editor-empty:first-child::before) {
