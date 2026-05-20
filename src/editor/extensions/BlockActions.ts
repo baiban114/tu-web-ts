@@ -1,4 +1,5 @@
-﻿import { Extension, type CommandProps } from '@tiptap/core'
+import { Extension, type CommandProps } from '@tiptap/core'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { Block } from '@/api/types'
 
 export interface BlockActionsStorage {
@@ -15,6 +16,8 @@ declare module '@tiptap/core' {
       insertBlockAfter: (block: Block, afterBlockId: string) => ReturnType
       insertBlockBefore: (block: Block, beforeBlockId: string) => ReturnType
       deleteBlock: (blockId: string) => ReturnType
+      insertExternalBlockAfterPos: (block: Block, pos: number) => ReturnType
+      insertExternalBlockAtSelection: (block: Block) => ReturnType
     }
   }
 }
@@ -35,14 +38,12 @@ export const BlockActions = Extension.create({
   addCommands() {
     return {
       insertBlockAfter: (block: Block, afterBlockId: string) => ({ tr, dispatch }: CommandProps) => {
-        const pos = this.storage.getBlockPosition(afterBlockId)
+        const pos = afterBlockId ? findNodePositionByBlockId(tr.doc, afterBlockId) : findLastTopLevelNodePosition(tr.doc)
         if (pos === null) return false
 
-        const $pos = tr.doc.resolve(pos)
-        const insertPos = $pos.after()
-
         const tipTapNode = blockToTipTapNode(block, this.editor)
-        if (!tipTapNode) return false
+        const insertPos = getTopLevelInsertPosAfter(tr.doc, pos)
+        if (!tipTapNode || insertPos === null) return false
 
         if (dispatch) {
           tr.insert(insertPos, tipTapNode)
@@ -52,11 +53,9 @@ export const BlockActions = Extension.create({
       },
 
       insertBlockBefore: (block: Block, beforeBlockId: string) => ({ tr, dispatch }: CommandProps) => {
-        const pos = this.storage.getBlockPosition(beforeBlockId)
-        if (pos === null) return false
-
+        const pos = findNodePositionByBlockId(tr.doc, beforeBlockId)
         const tipTapNode = blockToTipTapNode(block, this.editor)
-        if (!tipTapNode) return false
+        if (pos === null || !tipTapNode) return false
 
         if (dispatch) {
           tr.insert(pos, tipTapNode)
@@ -66,13 +65,38 @@ export const BlockActions = Extension.create({
       },
 
       deleteBlock: (blockId: string) => ({ tr, dispatch }: CommandProps) => {
-        const pos = this.storage.getBlockPosition(blockId)
+        const pos = findNodePositionByBlockId(tr.doc, blockId)
         if (pos === null) return false
 
-        const $pos = tr.doc.resolve(pos)
+        const node = tr.doc.nodeAt(pos)
+        if (!node) return false
 
         if (dispatch) {
-          tr.delete($pos.before(), $pos.after())
+          tr.delete(pos, pos + node.nodeSize)
+          tr.scrollIntoView()
+        }
+        return true
+      },
+
+      insertExternalBlockAfterPos: (block: Block, pos: number) => ({ tr, dispatch }: CommandProps) => {
+        const tipTapNode = blockToTipTapNode(block, this.editor)
+        const insertPos = getTopLevelInsertPosAfter(tr.doc, pos)
+        if (!tipTapNode || insertPos === null) return false
+
+        if (dispatch) {
+          tr.insert(insertPos, tipTapNode)
+          tr.scrollIntoView()
+        }
+        return true
+      },
+
+      insertExternalBlockAtSelection: (block: Block) => ({ tr, dispatch }: CommandProps) => {
+        const tipTapNode = blockToTipTapNode(block, this.editor)
+        const insertPos = getTopLevelInsertPosAfter(tr.doc, tr.selection.from)
+        if (!tipTapNode || insertPos === null) return false
+
+        if (dispatch) {
+          tr.insert(insertPos, tipTapNode)
           tr.scrollIntoView()
         }
         return true
@@ -81,14 +105,14 @@ export const BlockActions = Extension.create({
   },
 })
 
-function blockToTipTapNode(block: Block, editor: any) {
+export function blockToTipTapNode(block: Block, editor: any) {
   const schema = editor.schema
   const attrs = { blockId: block.id, title: block.title || '' }
 
   switch (block.type) {
     case 'richtext':
     case 'richText':
-      return schema.nodes.paragraph.create(attrs, schema.text(block.content || ''))
+      return schema.nodes.paragraph.create(attrs, block.content ? schema.text(block.content) : undefined)
 
     case 'x6':
       return schema.nodes.x6Block.create({
@@ -117,12 +141,74 @@ function blockToTipTapNode(block: Block, editor: any) {
       })
 
     case 'table':
-      return schema.nodes.tableBlock.create({
-        ...attrs,
-        tableData: block.tableData || { headers: [], rows: [] },
-      })
+      return createTableNode(block, editor)
 
     default:
-      return schema.nodes.paragraph.create(attrs, schema.text(''))
+      return schema.nodes.paragraph.create(attrs)
   }
+}
+
+function createTableNode(block: Block, editor: any) {
+  const schema = editor.schema
+  const source = block.tableData || { headers: ['列 1', '列 2'], rows: [['', '']] }
+  const rows = source.rows?.length ? source.rows : [['', '']]
+  const headers = source.headers?.length ? source.headers : rows[0].map((_, index) => `列 ${index + 1}`)
+  const columnCount = Math.max(headers.length, ...rows.map((row) => row.length), 1)
+  const tableData = {
+    headers: Array.from({ length: columnCount }, (_, index) => headers[index] ?? `列 ${index + 1}`),
+    rows: rows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] ?? '')),
+  }
+
+  const createCellContent = (text = '') => [
+    schema.nodes.paragraph.create(
+      { blockId: block.id },
+      text ? schema.text(text) : undefined,
+    ),
+  ]
+
+  const tableRows = [
+    schema.nodes.tableRow.create(null, tableData.headers.map((text) => (
+      schema.nodes.tableHeader.create(null, createCellContent(text))
+    ))),
+    ...tableData.rows.map((row) => schema.nodes.tableRow.create(null, row.map((text) => (
+      schema.nodes.tableCell.create(null, createCellContent(text))
+    )))),
+  ]
+
+  return schema.nodes.table.create(
+    { blockId: block.id, tableData: JSON.stringify(tableData) },
+    tableRows,
+  )
+}
+
+function findNodePositionByBlockId(doc: ProseMirrorNode, blockId: string): number | null {
+  let found: number | null = null
+  doc.descendants((node, pos) => {
+    if (found !== null) return false
+    if (node.attrs?.blockId === blockId) {
+      found = pos
+      return false
+    }
+    return true
+  })
+  return found
+}
+
+function findLastTopLevelNodePosition(doc: ProseMirrorNode): number | null {
+  if (!doc.childCount) return null
+  let pos = 0
+  for (let index = 0; index < doc.childCount - 1; index += 1) {
+    pos += doc.child(index).nodeSize
+  }
+  return pos
+}
+
+function getTopLevelInsertPosAfter(doc: ProseMirrorNode, pos: number): number | null {
+  const clamped = Math.max(0, Math.min(pos, doc.content.size))
+  const resolved = doc.resolve(clamped)
+  if (resolved.depth < 1) {
+    const node = resolved.nodeAfter
+    return node ? resolved.pos + node.nodeSize : doc.content.size
+  }
+  return resolved.after(1)
 }

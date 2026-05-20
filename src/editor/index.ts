@@ -1,4 +1,7 @@
-﻿export { SlashCommand } from './extensions/SlashCommand'
+export { SlashCommand } from './extensions/SlashCommand'
+export { BlockActions, blockToTipTapNode } from './extensions/BlockActions'
+export { AnnotationDecorations, annotationDecorationsKey } from './extensions/AnnotationDecorations'
+export { SelectionDecorations, selectionDecorationsKey } from './extensions/SelectionDecorations'
 
 export { ParagraphNode } from './extensions/ParagraphNode'
 export { X6BlockNode } from './extensions/X6BlockNode'

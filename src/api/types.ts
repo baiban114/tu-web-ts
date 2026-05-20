@@ -76,6 +76,12 @@ export interface TextAnnotation {
   color: string;
   createdAt: number;
   updatedAt: number;
+  from?: number;
+  to?: number;
+  blockId?: string;
+  anchorVersion?: number;
+  lastResolvedAt?: number;
+  unresolved?: boolean;
 }
 
 export interface BlockMetadata {

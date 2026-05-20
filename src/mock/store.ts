@@ -7,7 +7,9 @@ import type {
   PageContent,
   PageItem,
   RoadmapNode,
+  TextAnnotation,
 } from '@/api/types';
+import type { ReferenceItem, ListReferencesParams } from '@/api/reference';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
@@ -440,4 +442,80 @@ export function updateBlockMock(pageId: string, blockId: string, nextBlock: Bloc
 
 export function syncBlocksMock(pageId: string, blocks: Block[]): void {
   savePageContentMock(pageId, blocks);
+}
+
+export function deleteAnnotationReferenceMock(pageId: string, blockId: string, annotationId: string): void {
+  const blocks = state.contents[pageId];
+  if (!blocks) throw new Error(`Page not found: ${pageId}`);
+  const block = blocks.find((b) => b.id === blockId);
+  if (!block) throw new Error(`Block not found: ${blockId}`);
+  const annotations = (block.metadata?.annotations || []) as TextAnnotation[];
+  const filtered = annotations.filter((a) => a.id !== annotationId);
+  if (filtered.length === annotations.length) throw new Error(`Annotation not found: ${annotationId}`);
+  block.metadata = { ...(block.metadata || {}), annotations: filtered };
+  persistState();
+}
+
+function findPageTitle(pageId: string): string {
+  const page = state.pages.find((p) => p.id === pageId);
+  return page?.title || pageId;
+}
+
+export function listReferencesMock(params: ListReferencesParams = {}): ReferenceItem[] {
+  const results: ReferenceItem[] = [];
+  const now = Date.now();
+
+  const targetPages = params.pageId
+    ? [params.pageId]
+    : Object.keys(state.contents);
+
+  for (const pageId of targetPages) {
+    const blocks = state.contents[pageId] || [];
+    const pageTitle = findPageTitle(pageId);
+
+    for (const block of blocks) {
+      const annotations = (block.metadata?.annotations || []) as TextAnnotation[];
+      for (const ann of annotations) {
+        if (params.q) {
+          const q = params.q.toLowerCase();
+          const text = `${ann.selectedText} ${ann.note} ${ann.contextBefore} ${ann.contextAfter}`.toLowerCase();
+          if (!text.includes(q)) continue;
+        }
+
+        results.push({
+          id: ann.id,
+          category: 'annotation',
+          editable: true,
+          source: {
+            pageId,
+            pageTitle,
+            blockId: block.id,
+            blockType: block.type || 'richtext',
+            sourceKind: 'annotation',
+            sourceLocator: ann.id,
+          },
+          target: {
+            kind: 'annotation',
+            blockPreview: ann.selectedText,
+            resourceItemTitle: ann.note || '(无备注)',
+          },
+          status: 'ok',
+          citation: {
+            displayText: ann.selectedText,
+            note: ann.note,
+          },
+        });
+      }
+    }
+  }
+
+  if (params.category && params.category !== 'all' && params.category !== 'annotation') {
+    return results.filter((r) => r.category === params.category);
+  }
+
+  if (params.category === 'annotation') {
+    return results;
+  }
+
+  return results;
 }

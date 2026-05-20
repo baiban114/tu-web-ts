@@ -46,7 +46,6 @@ const localBlocks = ref<Block[]>([])
 const pageTitleDraft = ref('')
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
-const pendingRefInsertAfterBlockId = ref<string | null>(null)
 const highlightedBlockId = ref<string | null>(null)
 const tocExpanded = ref(true)
 
@@ -55,6 +54,9 @@ const hasSelection = ref(false)
 const selectedText = ref('')
 const selectionPosition = ref({ top: 0, left: 0 })
 const selectionBlockIndex = ref(-1)
+const selectionBlockId = ref('')
+const selectionFrom = ref(0)
+const selectionTo = ref(0)
 
 // --- Toast ---
 const toastMessages = ref<Array<{ id: string; message: string }>>([])
@@ -82,9 +84,13 @@ const pendingNoteBlockId = ref('')
 const pendingNoteSelectedText = ref('')
 const pendingNoteContextBefore = ref('')
 const pendingNoteContextAfter = ref('')
+const pendingNoteFrom = ref(0)
+const pendingNoteTo = ref(0)
+let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 
 const notePopoverVisible = ref(false)
 const notePopoverAnnotation = ref<TextAnnotation | null>(null)
+const notePopoverAnnotations = ref<TextAnnotation[]>([])
 const notePopoverPos = ref({ top: 0, left: 0 })
 
 // --- Watchers ---
@@ -119,7 +125,6 @@ const removeToast = (id: string) => {
 const handleBlocksChange = (blocks: Block[]) => {
   localBlocks.value = blocks
   emit('content-change', blocks)
-  blockSyncManager.sync()
 }
 
 // --- Focus editor from title ---
@@ -132,10 +137,19 @@ const focusEditorFromStart = () => {
 }
 
 // --- Selection ---
-const handleSelectionChange = (selHasSelection: boolean, selText: string, selBlockIndex?: number) => {
+const handleSelectionChange = (
+  selHasSelection: boolean,
+  selText: string,
+  selFrom?: number,
+  selTo?: number,
+  selBlockId?: string,
+) => {
   hasSelection.value = selHasSelection
   selectedText.value = selText
-  selectionBlockIndex.value = selBlockIndex ?? -1
+  selectionFrom.value = selFrom ?? 0
+  selectionTo.value = selTo ?? 0
+  selectionBlockIndex.value = -1
+  selectionBlockId.value = selBlockId ?? ''
 
   if (selHasSelection && tuEditorRef.value) {
     const pos = tuEditorRef.value.getSelectionPosition?.()
@@ -146,25 +160,24 @@ const handleSelectionChange = (selHasSelection: boolean, selText: string, selBlo
 }
 
 // --- Block picker ---
-const handleOpenBlockPicker = (afterBlockId: string) => {
-  pendingRefInsertAfterBlockId.value = afterBlockId
+const handleOpenBlockPicker = () => {
   showBlockPicker.value = true
 }
 
-const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string }) => {
-  if (!pendingRefInsertAfterBlockId.value || !tuEditorRef.value?.editor) return
-
-  const refBlock: Block = {
-    id: 'block-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-    type: 'ref',
-    refId: target.id,
-    refType: target.type,
+const getSelectionContext = (from: number, to: number) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return { before: '', after: '' }
+  const start = Math.max(0, from - 50)
+  const end = Math.min(editor.state.doc.content.size, to + 50)
+  return {
+    before: editor.state.doc.textBetween(start, from, ''),
+    after: editor.state.doc.textBetween(to, end, ''),
   }
+}
 
-  tuEditorRef.value.editor.commands.insertBlockAfter(refBlock, pendingRefInsertAfterBlockId.value)
-
+const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string }) => {
+  tuEditorRef.value?.completePendingRefInsert?.(target.id, target.type)
   showBlockPicker.value = false
-  pendingRefInsertAfterBlockId.value = null
 }
 
 // --- TOC ---
@@ -346,15 +359,35 @@ const updateBlockTags = (tags: BlockTag[]) => {
 }
 
 const availableTags = computed(() => collectBlockTags(localBlocks.value))
+const editorAnnotations = computed<Record<string, TextAnnotation[]>>(() => {
+  const result: Record<string, TextAnnotation[]> = {}
+  for (const block of localBlocks.value) {
+    const annotations = block.metadata?.annotations as TextAnnotation[] | undefined
+    if (annotations?.length) {
+      result[block.id] = annotations
+    }
+  }
+  return result
+})
+const allAnnotations = computed(() => Object.values(editorAnnotations.value).flat())
 
 // --- Note / Annotation ---
 const handleAddNoteFromSelection = () => {
-  if (selectionBlockIndex.value < 0 || !selectedText.value) return
+  if (!selectedText.value) return
 
-  pendingNoteBlockId.value = localBlocks.value[selectionBlockIndex.value]?.id || ''
+  const blockIndex = selectionBlockIndex.value >= 0 ? selectionBlockIndex.value : 0
+  const targetBlock = selectionBlockId.value
+    ? localBlocks.value.find(block => block.id === selectionBlockId.value)
+    : localBlocks.value[blockIndex]
+  if (!targetBlock) return
+
+  pendingNoteBlockId.value = targetBlock.id || ''
   pendingNoteSelectedText.value = selectedText.value
-  pendingNoteContextBefore.value = ''
-  pendingNoteContextAfter.value = ''
+  const context = getSelectionContext(selectionFrom.value, selectionTo.value)
+  pendingNoteContextBefore.value = context.before
+  pendingNoteContextAfter.value = context.after
+  pendingNoteFrom.value = selectionFrom.value
+  pendingNoteTo.value = selectionTo.value
 
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
@@ -385,37 +418,77 @@ const handleSaveAnnotation = (note: string) => {
       color: '#FFEB3B',
       createdAt: now,
       updatedAt: now,
+      from: pendingNoteFrom.value,
+      to: pendingNoteTo.value,
+      blockId: pendingNoteBlockId.value,
+      anchorVersion: 1,
+      lastResolvedAt: now,
+      unresolved: false,
     }
     annotations.push(annotation)
   }
 
   block.metadata = { ...(block.metadata || {}), annotations }
   emit('content-change', localBlocks.value)
+  localBlocks.value = [...localBlocks.value]
 
   noteEditorVisible.value = false
   editingAnnotation.value = undefined
   hasSelection.value = false
   selectionBlockIndex.value = -1
+  selectionBlockId.value = ''
   pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = ''
+  pendingNoteFrom.value = 0
+  pendingNoteTo.value = 0
 }
 
-const handleAnnotationClick = (payload: { annotationId: string; event: MouseEvent }) => {
+const sortAnnotationsByTimeDesc = (annotations: TextAnnotation[]) => {
+  return [...annotations].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
+}
+
+const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }) => {
   const annotations = getBlockAnnotations()
-  const annotation = annotations.find(a => a.id === payload.annotationId)
+  const ids = payload.annotationIds?.length ? payload.annotationIds : [payload.annotationId]
+  const idSet = new Set(ids)
+  const matched = sortAnnotationsByTimeDesc(annotations.filter(a => idSet.has(a.id)))
+  const annotation = matched[0] ?? annotations.find(a => a.id === payload.annotationId)
   if (!annotation) return
   notePopoverAnnotation.value = annotation
+  notePopoverAnnotations.value = matched.length ? matched : [annotation]
   notePopoverPos.value = { top: payload.event.clientY - 10, left: payload.event.clientX + 12 }
   notePopoverVisible.value = true
 }
 
 const getBlockAnnotations = (): TextAnnotation[] => {
-  return []
+  return allAnnotations.value
 }
 
-const handleEditAnnotation = () => {
-  if (!notePopoverAnnotation.value) return
-  const target = notePopoverAnnotation.value
+const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
+  if (annotationPersistTimer) clearTimeout(annotationPersistTimer)
+  annotationPersistTimer = setTimeout(() => {
+    annotationPersistTimer = null
+    const byId = new Map(mappedAnnotations.map((annotation) => [annotation.id, annotation]))
+    let changed = false
+    for (const block of localBlocks.value) {
+      const annotations = block.metadata?.annotations as TextAnnotation[] | undefined
+      if (!annotations?.length) continue
+      const next = annotations.map((annotation) => byId.get(annotation.id) ?? annotation)
+      if (next.some((annotation, index) => annotation !== annotations[index])) {
+        block.metadata = { ...(block.metadata || {}), annotations: next }
+        changed = true
+      }
+    }
+    if (changed) {
+      emit('content-change', localBlocks.value)
+      localBlocks.value = [...localBlocks.value]
+    }
+  }, 400)
+}
+
+const handleEditAnnotation = (annotation?: TextAnnotation) => {
+  const target = annotation ?? notePopoverAnnotation.value
+  if (!target) return
   const block = localBlocks.value.find(b => {
     const anns = b.metadata?.annotations as TextAnnotation[] | undefined
     return anns?.some(a => a.id === target.id)
@@ -431,9 +504,9 @@ const handleEditAnnotation = () => {
   notePopoverVisible.value = false
 }
 
-const handleDeleteAnnotation = () => {
-  if (!notePopoverAnnotation.value) return
-  const target = notePopoverAnnotation.value
+const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
+  const target = annotation ?? notePopoverAnnotation.value
+  if (!target) return
   const block = localBlocks.value.find(b => {
     const anns = b.metadata?.annotations as TextAnnotation[] | undefined
     return anns?.some(a => a.id === target.id)
@@ -447,8 +520,9 @@ const handleDeleteAnnotation = () => {
     block.metadata = { ...(block.metadata || {}), annotations }
     emit('content-change', localBlocks.value)
   }
-  notePopoverAnnotation.value = null
-  notePopoverVisible.value = false
+  notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
+  notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
+  notePopoverVisible.value = notePopoverAnnotations.value.length > 0
 }
 
 // --- Document tail insert ---
@@ -466,9 +540,6 @@ const appendRichTextBlock = () => {
     type: 'richtext',
     content: '',
   }
-  const docSize = tuEditorRef.value.editor.state.doc.content.size
-  // Insert at end of document
-  const lastPos = Math.max(0, docSize - 1)
   tuEditorRef.value.editor.commands.insertBlockAfter(newBlock, '')
 }
 
@@ -509,6 +580,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (annotationPersistTimer) {
+    clearTimeout(annotationPersistTimer)
+    annotationPersistTimer = null
+  }
   document.removeEventListener('paste', handleGlobalPaste, true)
   blockSyncManager.destroy()
 })
@@ -616,8 +691,11 @@ onBeforeUnmount(() => {
           ref="tuEditorRef"
           :blocks="localBlocks"
           :editable="editable"
+          :annotations="editorAnnotations"
           @update:blocks="handleBlocksChange"
           @selection-change="handleSelectionChange"
+          @annotation-click="handleAnnotationClick"
+          @annotations-mapped="handleAnnotationsMapped"
           @open-block-picker="handleOpenBlockPicker"
           @open-tag-editor="handleOpenTagEditor"
         />
@@ -710,11 +788,12 @@ onBeforeUnmount(() => {
     <NotePopover
       :visible="notePopoverVisible"
       :annotation="notePopoverAnnotation"
+      :annotations="notePopoverAnnotations"
       :top="notePopoverPos.top"
       :left="notePopoverPos.left"
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
-      @close="notePopoverVisible = false; notePopoverAnnotation = null"
+      @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []"
     />
 
     <!-- Toast 消息 -->

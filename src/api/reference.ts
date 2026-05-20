@@ -1,4 +1,9 @@
 import { request } from './http';
+import { isMockDataSource } from '@/dev/dataSource';
+import {
+  listReferencesMock,
+  deleteAnnotationReferenceMock,
+} from '@/mock/store';
 
 export interface ReferenceCitation {
   displayText?: string | null;
@@ -63,6 +68,9 @@ function query(params: Record<string, string | undefined>): string {
 }
 
 export function listReferences(params: ListReferencesParams = {}): Promise<ReferenceItem[]> {
+  if (isMockDataSource()) {
+    return Promise.resolve(listReferencesMock(params));
+  }
   return request<ReferenceItem[]>(`/api/references${query({
     category: params.category,
     pageId: params.pageId,
@@ -81,4 +89,11 @@ export function updateExternalReference(id: string, payload: UpdateExternalRefer
 
 export function rebuildReferences(): Promise<void> {
   return request<void>('/api/references/rebuild', { method: 'POST' });
+}
+
+export function deleteAnnotationReference(pageId: string, blockId: string, annotationId: string): Promise<void> {
+  if (isMockDataSource()) {
+    return Promise.resolve(deleteAnnotationReferenceMock(pageId, blockId, annotationId));
+  }
+  return request<void>(`/api/pages/${pageId}/blocks/${blockId}/annotations/${annotationId}`, { method: 'DELETE' });
 }

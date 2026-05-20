@@ -22,12 +22,13 @@ import {
   listReferences,
   rebuildReferences,
   updateExternalReference,
+  deleteAnnotationReference,
   type ReferenceItem,
 } from '@/api/reference';
 import { useObjectModelStore } from '@/stores/objectModel';
 
 type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'objects';
-type ReferenceCategoryFilter = 'all' | 'internal' | 'external';
+type ReferenceCategoryFilter = 'all' | 'internal' | 'external' | 'annotation';
 type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
 
 const route = useRoute();
@@ -531,6 +532,27 @@ function goToReferenceSource(item: ReferenceItem) {
   });
 }
 
+function categoryLabel(category: string): string {
+  return (
+    {
+      annotation: '标注',
+      internal: '内部引用',
+      external: '外部引用',
+    }[category] || category
+  );
+}
+
+async function deleteAnnotation(item: ReferenceItem) {
+  if (!confirm(`确定删除标注「${item.target.blockPreview || item.target.resourceItemTitle}」？`)) return;
+  try {
+    await deleteAnnotationReference(item.source.pageId, item.source.blockId, item.source.sourceLocator);
+    showSuccess('标注已删除');
+    await refreshReferences();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 function setActiveTab(tab: ResourceTab) {
   activeTab.value = tab;
   void router.replace({
@@ -604,6 +626,7 @@ watch(
           引用类别
           <select v-model="selectedReferenceCategory" @change="refreshReferences">
             <option value="all">全部</option>
+            <option value="annotation">标注引用</option>
             <option value="internal">内部引用</option>
             <option value="external">外部引用</option>
           </select>
@@ -678,14 +701,25 @@ watch(
         <article v-for="item in references" :key="item.id" class="resource-row">
           <div class="reference-row__content">
             <div class="row-title">
-              <span class="reference-badge" :class="`reference-badge--${item.category}`">{{ item.category }}</span>
+              <span class="reference-badge" :class="`reference-badge--${item.category}`">{{ categoryLabel(item.category) }}</span>
               <span class="reference-status" :class="`reference-status--${item.status}`">{{ item.status }}</span>
             </div>
-            <div class="row-meta">来源页面：{{ item.source.pageTitle }} · 块 {{ item.source.blockId }} · {{ item.source.sourceKind }}</div>
+            <div class="row-meta">
+              来源：
+              <template v-if="item.category === 'annotation'">
+                {{ item.source.pageTitle }} · {{ item.target.blockPreview || item.target.resourceItemTitle }}
+              </template>
+              <template v-else>
+                页面 {{ item.source.pageTitle }} · 块 {{ item.source.blockId }} · {{ item.source.sourceKind }}
+              </template>
+            </div>
             <div class="row-meta">
               目标：
               <template v-if="item.category === 'internal'">
                 {{ item.target.kind }} {{ item.target.pageTitle || item.target.pageId || item.target.blockId }}
+              </template>
+              <template v-else-if="item.category === 'annotation'">
+                {{ item.citation.note || '(无备注)' }}
               </template>
               <template v-else>
                 {{ item.target.resourceItemTitle || '未绑定资源' }}
@@ -693,7 +727,7 @@ watch(
               </template>
             </div>
             <p v-if="item.target.url" class="reference-url">{{ item.target.url }}</p>
-            <p v-if="item.target.blockPreview" class="reference-preview">{{ item.target.blockPreview }}</p>
+            <p v-if="item.target.blockPreview && item.category !== 'annotation'" class="reference-preview">{{ item.target.blockPreview }}</p>
             <p v-if="item.citation.displayText || item.citation.locator || item.citation.note" class="reference-preview">
               {{ item.citation.displayText || '未设置显示文案' }}
               <span v-if="item.citation.locator"> · {{ item.citation.locator }}</span>
@@ -702,9 +736,10 @@ watch(
           </div>
           <div class="row-actions">
             <button @click="goToReferenceSource(item)">打开来源</button>
-            <button v-if="item.editable" @click="editReference(item)">编辑</button>
-            <button v-if="item.editable" class="secondary" @click="setReferenceBinding(item, 'auto')">自动匹配</button>
-            <button v-if="item.editable" class="danger" @click="setReferenceBinding(item, 'manual_unbound')">解绑</button>
+            <button v-if="item.editable && item.category !== 'annotation'" @click="editReference(item)">编辑</button>
+            <button v-if="item.editable && item.category !== 'annotation'" class="secondary" @click="setReferenceBinding(item, 'auto')">自动匹配</button>
+            <button v-if="item.editable && item.category !== 'annotation'" class="danger" @click="setReferenceBinding(item, 'manual_unbound')">解绑</button>
+            <button v-if="item.editable && item.category === 'annotation'" class="danger" @click="deleteAnnotation(item)">删除</button>
           </div>
         </article>
         <p v-if="!references.length && !referencesLoading" class="empty">暂无引用记录</p>
