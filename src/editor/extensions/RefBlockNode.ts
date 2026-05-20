@@ -15,6 +15,8 @@ export const RefBlockNode = Node.create({
       blockId: { default: '' },
       refId: { default: '' },
       refType: { default: 'block' },
+      width: { default: null },
+      height: { default: null },
     }
   },
 

@@ -1,15 +1,15 @@
 <script setup lang="ts">
 interface Props {
-  visible: boolean;
-  top: number;
-  left: number;
+  visible: boolean
+  top: number
+  left: number
 }
 
-defineProps<Props>();
+defineProps<Props>()
 
 const emit = defineEmits<{
-  (e: 'add-note'): void;
-}>();
+  (e: 'add-note'): void
+}>()
 </script>
 
 <template>
@@ -18,10 +18,15 @@ const emit = defineEmits<{
       v-if="visible"
       class="selection-toolbar"
       :style="{ top: `${top}px`, left: `${left}px` }"
-      @mousedown.stop
+      @mousedown.prevent.stop
       @click.stop
     >
-      <button type="button" class="selection-toolbar__btn" @click="emit('add-note')">
+      <button
+        type="button"
+        class="selection-toolbar__btn"
+        @mousedown.prevent.stop
+        @click="emit('add-note')"
+      >
         添加笔记
       </button>
     </div>
@@ -34,9 +39,11 @@ const emit = defineEmits<{
   z-index: 1000002;
   transform: translateX(-50%);
   margin-top: 6px;
+  pointer-events: none;
 }
 
 .selection-toolbar__btn {
+  pointer-events: auto;
   padding: 6px 14px;
   border: 1px solid #d0d7de;
   border-radius: 8px;

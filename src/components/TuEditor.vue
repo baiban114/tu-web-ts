@@ -46,6 +46,7 @@ const emit = defineEmits<{
   'update:blocks': [blocks: Block[]]
   'content-change': [blocks: Block[]]
   'selection-change': [hasSelection: boolean, text: string, from?: number, to?: number, blockId?: string]
+  'selection-pointer-change': [active: boolean]
   'annotation-click': [payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }]
   'annotations-mapped': [annotations: TextAnnotation[]]
   'block-click': [blockId: string, event: MouseEvent]
@@ -71,6 +72,8 @@ let isInternalUpdate = false
 let skipNextContentSync = false
 let isMounted = false
 let pendingRefInsertPos: number | null = null
+let selectionPointerDown = false
+let lastDocSignature = ''
 
 // --- Hover Handle ---
 const LINE_NODE_TYPES = ['paragraph', 'heading', 'list_item', 'blockquote', 'bullet_list', 'ordered_list', 'task_list', 'task_item']
@@ -141,6 +144,11 @@ const getBlockIdAtPos = (pos: number): string | undefined => {
   const topLevel = resolved.depth >= 1 ? resolved.node(1) : resolved.nodeAfter
   const blockId = topLevel?.attrs?.blockId
   return typeof blockId === 'string' && blockId ? blockId : undefined
+}
+
+const getDocSignature = (): string => {
+  if (!editor.value) return ''
+  return JSON.stringify(editor.value.getJSON())
 }
 
 const getBlockRange = (resolved: any) => {
@@ -316,6 +324,18 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   clearHideHandle()
 }
 
+const handleEditorMouseDown = (event: MouseEvent) => {
+  if (!props.editable || event.button !== 0) return
+  selectionPointerDown = true
+  emit('selection-pointer-change', true)
+}
+
+const handleDocumentMouseUp = () => {
+  if (!selectionPointerDown) return
+  selectionPointerDown = false
+  emit('selection-pointer-change', false)
+}
+
 const handleEditorMouseLeave = () => {
   scheduleHideHandle()
 }
@@ -486,10 +506,16 @@ const editor = useEditor({
     if (editor.value) {
       editor.value.view.dom.addEventListener('mousemove', handleEditorMouseMove)
       editor.value.view.dom.addEventListener('mouseleave', handleEditorMouseLeave)
+      editor.value.view.dom.addEventListener('mousedown', handleEditorMouseDown)
+      document.addEventListener('mouseup', handleDocumentMouseUp, true)
+      lastDocSignature = getDocSignature()
     }
   },
   onUpdate: () => {
     if (isInternalUpdate || !editor.value) return
+    const currentSignature = getDocSignature()
+    if (currentSignature === lastDocSignature) return
+    lastDocSignature = currentSignature
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
       if (!isMounted || !editor.value) return
@@ -523,6 +549,7 @@ watch(
     try {
       const content = blocksToTipTap(newBlocks)
       editor.value.commands.setContent(content, { emitUpdate: false })
+      lastDocSignature = JSON.stringify(content)
     } finally {
       isInternalUpdate = false
     }
@@ -563,6 +590,8 @@ onBeforeUnmount(() => {
       if (view) {
         view.dom.removeEventListener('mousemove', handleEditorMouseMove)
         view.dom.removeEventListener('mouseleave', handleEditorMouseLeave)
+        view.dom.removeEventListener('mousedown', handleEditorMouseDown)
+        document.removeEventListener('mouseup', handleDocumentMouseUp, true)
       }
     } catch {
       // view already destroyed by Tiptap internal cleanup

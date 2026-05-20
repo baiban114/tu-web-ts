@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
+import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import ReferencedBlockRenderer from '@/components/ReferencedBlockRenderer.vue'
 import VditorRichEditor from '@/components/VditorRichEditor.vue'
 import X6Component from '@/components/X6Component.vue'
@@ -65,6 +66,10 @@ const openReferencedPage = async () => {
   }
 }
 
+const onResize = (width: number | null, _height: number | null) => {
+  props.updateAttributes({ width })
+}
+
 watch([refId, refType], () => {
   pageBlocks.value = []
   error.value = ''
@@ -78,6 +83,13 @@ onMounted(() => {
 
 <template>
   <node-view-wrapper class="ref-block-view">
+    <ResizableBlockWrapper
+      :selected="selected"
+      :resizable-axes="{ width: true, height: false }"
+      :min-width="200"
+      block-type-label="引用"
+      @resize="onResize"
+    >
     <div v-if="refType === 'page'" class="ref-page-card">
       <button type="button" class="ref-page-card__header" @click="openReferencedPage">
         <span class="ref-page-card__label">页面引用</span>
@@ -130,15 +142,11 @@ onMounted(() => {
         class="ref-block-card__content"
       />
     </div>
+    </ResizableBlockWrapper>
   </node-view-wrapper>
 </template>
 
 <style scoped>
-.ref-block-view {
-  display: block;
-  margin: 10px 0;
-}
-
 .ref-page-card,
 .ref-block-card {
   overflow: hidden;

@@ -53,10 +53,12 @@ const tocExpanded = ref(true)
 const hasSelection = ref(false)
 const selectedText = ref('')
 const selectionPosition = ref({ top: 0, left: 0 })
+const selectionToolbarVisible = ref(false)
 const selectionBlockIndex = ref(-1)
 const selectionBlockId = ref('')
 const selectionFrom = ref(0)
 const selectionTo = ref(0)
+let selectionToolbarTimer: ReturnType<typeof setTimeout> | null = null
 
 // --- Toast ---
 const toastMessages = ref<Array<{ id: string; message: string }>>([])
@@ -144,6 +146,11 @@ const handleSelectionChange = (
   selTo?: number,
   selBlockId?: string,
 ) => {
+  if (selectionToolbarTimer !== null) {
+    clearTimeout(selectionToolbarTimer)
+    selectionToolbarTimer = null
+  }
+
   hasSelection.value = selHasSelection
   selectedText.value = selText
   selectionFrom.value = selFrom ?? 0
@@ -156,6 +163,12 @@ const handleSelectionChange = (
     if (pos) {
       selectionPosition.value = { top: pos.top + 4, left: pos.left }
     }
+    selectionToolbarTimer = setTimeout(() => {
+      selectionToolbarTimer = null
+      selectionToolbarVisible.value = hasSelection.value && selectedText.value.trim().length > 0
+    }, 120)
+  } else {
+    selectionToolbarVisible.value = false
   }
 }
 
@@ -435,6 +448,7 @@ const handleSaveAnnotation = (note: string) => {
   noteEditorVisible.value = false
   editingAnnotation.value = undefined
   hasSelection.value = false
+  selectionToolbarVisible.value = false
   selectionBlockIndex.value = -1
   selectionBlockId.value = ''
   pendingNoteBlockId.value = ''
@@ -580,6 +594,10 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  if (selectionToolbarTimer !== null) {
+    clearTimeout(selectionToolbarTimer)
+    selectionToolbarTimer = null
+  }
   if (annotationPersistTimer) {
     clearTimeout(annotationPersistTimer)
     annotationPersistTimer = null
@@ -749,8 +767,8 @@ onBeforeUnmount(() => {
 
     <!-- 选中文本工具栏 -->
     <SelectionToolbar
-      v-if="hasSelection && selectedText.trim().length > 0"
-      :visible="hasSelection"
+      v-if="selectionToolbarVisible"
+      :visible="selectionToolbarVisible"
       :top="selectionPosition.top"
       :left="selectionPosition.left"
       @add-note="handleAddNoteFromSelection"

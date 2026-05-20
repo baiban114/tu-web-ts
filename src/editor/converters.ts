@@ -59,6 +59,8 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         attrs: {
           blockId: block.id,
           title: block.title || '',
+          width: block.width ?? null,
+          height: block.height ?? null,
           graphData: block.graphData || { nodes: [], edges: [] },
           metadata: block.metadata || {},
         },
@@ -72,6 +74,8 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         attrs: {
           blockId: block.id,
           title: block.title || '',
+          width: block.width ?? null,
+          height: block.height ?? null,
           timelineData: block.timelineData || [],
         },
       })
@@ -82,6 +86,8 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
           blockId: block.id,
           refId: block.refId || '',
           refType: block.refType || 'block',
+          width: block.width ?? null,
+          height: block.height ?? null,
         },
       })
     } else if (block.type === 'spacer') {
@@ -89,6 +95,8 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         type: 'spacerBlock',
         attrs: {
           blockId: block.id,
+          width: undefined,
+          height: block.spacerHeight || 40,
           spacerHeight: block.spacerHeight || 40,
         },
       })
@@ -232,6 +240,8 @@ function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string,
         id: blockId || existingBlock?.id || generateId(),
         type: 'x6',
         title: node.attrs?.title || existingBlock?.title,
+        width: node.attrs?.width ?? existingBlock?.width,
+        height: node.attrs?.height ?? existingBlock?.height,
         graphData: node.attrs?.graphData || existingBlock?.graphData,
         metadata: node.attrs?.metadata || existingBlock?.metadata,
       }
@@ -240,6 +250,8 @@ function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string,
         id: blockId || existingBlock?.id || generateId(),
         type: 'line',
         title: node.attrs?.title || existingBlock?.title,
+        width: node.attrs?.width ?? existingBlock?.width,
+        height: node.attrs?.height ?? existingBlock?.height,
         timelineData: node.attrs?.timelineData || existingBlock?.timelineData,
       }
     case 'refBlock':
@@ -248,12 +260,16 @@ function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string,
         type: 'ref',
         refId: node.attrs?.refId || existingBlock?.refId,
         refType: node.attrs?.refType || existingBlock?.refType,
+        width: node.attrs?.width ?? existingBlock?.width,
+        height: node.attrs?.height ?? existingBlock?.height,
       }
     case 'spacerBlock':
       return {
         id: blockId || existingBlock?.id || generateId(),
         type: 'spacer',
-        spacerHeight: node.attrs?.spacerHeight || existingBlock?.spacerHeight || 40,
+        spacerHeight: node.attrs?.height ?? node.attrs?.spacerHeight ?? existingBlock?.spacerHeight ?? 40,
+        width: undefined,
+        height: node.attrs?.height ?? node.attrs?.spacerHeight ?? existingBlock?.spacerHeight ?? 40,
       }
     default:
       return null

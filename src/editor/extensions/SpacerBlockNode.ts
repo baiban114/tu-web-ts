@@ -14,6 +14,8 @@ export const SpacerBlockNode = Node.create({
     return {
       blockId: { default: '' },
       spacerHeight: { default: 40 },
+      width: { default: null },
+      height: { default: 40 },
     }
   },
 

@@ -1,0 +1,238 @@
+<script setup lang="ts">
+import { computed, onBeforeUnmount, ref } from 'vue'
+
+interface ResizableAxes {
+  width?: boolean
+  height?: boolean
+}
+
+const props = defineProps({
+  selected: { type: Boolean, default: false },
+  resizableAxes: { type: Object as () => ResizableAxes, default: () => ({ width: true, height: true }) },
+  minWidth: { type: Number, default: 100 },
+  minHeight: { type: Number, default: 40 },
+  maxWidth: { type: Number, default: undefined },
+  maxHeight: { type: Number, default: undefined },
+  blockTypeLabel: { type: String, default: '' },
+})
+
+const emit = defineEmits<{
+  resize: [width: number | null, height: number | null]
+}>()
+
+const wrapper = ref<HTMLElement | null>(null)
+const dragging = ref<'right' | 'bottom' | 'corner' | null>(null)
+const hovered = ref(false)
+const dragWidth = ref<number | null>(null)
+const dragHeight = ref<number | null>(null)
+
+const showHandles = computed(() => props.selected || hovered.value)
+
+const wrapperStyle = computed(() => {
+  const style: Record<string, string> = {}
+  if (dragWidth.value != null) style.width = `${dragWidth.value}px`
+  if (dragHeight.value != null) style.height = `${dragHeight.value}px`
+  return style
+})
+
+const handleMouseDown = (direction: 'right' | 'bottom' | 'corner', event: MouseEvent) => {
+  event.preventDefault()
+  event.stopPropagation()
+  dragging.value = direction
+
+  const el = wrapper.value
+  if (!el) return
+
+  const rect = el.getBoundingClientRect()
+  const startX = event.clientX
+  const startY = event.clientY
+  const startW = rect.width
+  const startH = rect.height
+
+  const onMouseMove = (e: MouseEvent) => {
+    let newW = startW
+    let newH = startH
+
+    if (direction === 'right' || direction === 'corner') {
+      newW = startW + (e.clientX - startX)
+      if (props.minWidth != null) newW = Math.max(props.minWidth, newW)
+      if (props.maxWidth != null) newW = Math.min(props.maxWidth, newW)
+      if (!props.resizableAxes.width) newW = startW
+    }
+
+    if (direction === 'bottom' || direction === 'corner') {
+      newH = startH + (e.clientY - startY)
+      if (props.minHeight != null) newH = Math.max(props.minHeight, newH)
+      if (props.maxHeight != null) newH = Math.min(props.maxHeight, newH)
+      if (!props.resizableAxes.height) newH = startH
+    }
+
+    if (e.shiftKey && direction === 'corner' && startH > 0 && startW > 0) {
+      const ratio = startW / startH
+      const maxDim = Math.max(newW / ratio, newH)
+      newW = maxDim * ratio
+      newH = maxDim
+    }
+
+    const clampedW = newW != null ? Math.round(newW) : null
+    const clampedH = newH != null ? Math.round(newH) : null
+
+    dragWidth.value = clampedW
+    dragHeight.value = clampedH
+    emit('resize', clampedW, clampedH)
+  }
+
+  const onMouseUp = () => {
+    dragging.value = null
+    document.removeEventListener('mousemove', onMouseMove)
+    document.removeEventListener('mouseup', onMouseUp)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+  }
+
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = direction === 'right' ? 'ew-resize' : direction === 'bottom' ? 'ns-resize' : 'nwse-resize'
+  document.addEventListener('mousemove', onMouseMove)
+  document.addEventListener('mouseup', onMouseUp)
+}
+
+onBeforeUnmount(() => {
+  document.body.style.userSelect = ''
+  document.body.style.cursor = ''
+})
+</script>
+
+<template>
+  <div
+    ref="wrapper"
+    class="resizable-block-wrapper"
+    :class="{
+      'resizable-block-wrapper--selected': selected,
+      'resizable-block-wrapper--dragging': dragging != null,
+    }"
+    :style="wrapperStyle"
+    @mouseenter="hovered = true"
+    @mouseleave="hovered = false"
+  >
+    <div v-if="blockTypeLabel" class="resizable-block-wrapper__header">
+      <span class="resizable-block-wrapper__type-badge">{{ blockTypeLabel }}</span>
+    </div>
+
+    <slot />
+
+    <div
+      v-if="showHandles && resizableAxes.width"
+      class="resizable-handle resizable-handle--right"
+      @mousedown.prevent.stop="handleMouseDown('right', $event)"
+    />
+
+    <div
+      v-if="showHandles && resizableAxes.height"
+      class="resizable-handle resizable-handle--bottom"
+      @mousedown.prevent.stop="handleMouseDown('bottom', $event)"
+    />
+
+    <div
+      v-if="showHandles && resizableAxes.width && resizableAxes.height"
+      class="resizable-handle resizable-handle--corner"
+      @mousedown.prevent.stop="handleMouseDown('corner', $event)"
+    />
+  </div>
+</template>
+
+<style scoped>
+.resizable-block-wrapper {
+  position: relative;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.resizable-block-wrapper:hover {
+  border-color: #d1d5db;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.resizable-block-wrapper--selected {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.14);
+}
+
+.resizable-block-wrapper--dragging {
+  transition: none;
+}
+
+.resizable-block-wrapper__header {
+  padding: 6px 10px;
+  font-size: 11px;
+  color: #6b7280;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+  border-radius: 6px 6px 0 0;
+}
+
+.resizable-block-wrapper__type-badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-weight: 600;
+}
+
+.resizable-handle {
+  position: absolute;
+  z-index: 10;
+  background: rgba(22, 119, 255, 0.08);
+  border: 1px solid rgba(22, 119, 255, 0.3);
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.resizable-handle:hover,
+.resizable-handle--active {
+  background: rgba(22, 119, 255, 0.2);
+  border-color: #1677ff;
+  box-shadow: 0 0 4px rgba(22, 119, 255, 0.3);
+}
+
+.resizable-handle--right {
+  top: 50%;
+  right: -6px;
+  width: 12px;
+  height: 44px;
+  transform: translateY(-50%);
+  cursor: ew-resize;
+  border-radius: 4px;
+}
+
+.resizable-handle--bottom {
+  bottom: -6px;
+  left: 50%;
+  width: 54px;
+  height: 12px;
+  transform: translateX(-50%);
+  cursor: ns-resize;
+  border-radius: 4px;
+}
+
+.resizable-handle--corner {
+  right: -9px;
+  bottom: -9px;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  border-radius: 4px;
+}
+
+.resizable-handle--corner::after {
+  content: '';
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid #1677ff;
+  border-bottom: 2px solid #1677ff;
+}
+</style>

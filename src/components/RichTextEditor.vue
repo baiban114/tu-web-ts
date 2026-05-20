@@ -90,6 +90,7 @@ const lastEmittedContent = ref(props.content);
 const pendingExternalContent = ref<string | null>(null);
 const pendingFocusAfterReady = ref(false);
 let savedMarkdownLinkRange: Range | null = null;
+let pendingPreviewClickRange: Range | null = null;
 let lastInsertedResourceLink: InsertedResourceLink | null = null;
 const activeLineElement = ref<HTMLElement | null>(null);
 const lineHandleMode = ref<LineHandleMode>(null);
@@ -1531,6 +1532,12 @@ const initEditor = () => {
 
           pendingFocusAfterReady.value = false;
           editorInstance.value?.focus();
+          if (pendingPreviewClickRange) {
+            const selection = window.getSelection();
+            selection?.removeAllRanges();
+            selection?.addRange(pendingPreviewClickRange);
+            pendingPreviewClickRange = null;
+          }
           scheduleEditorHandleSync(2);
           emit('focused');
         });
@@ -1565,6 +1572,12 @@ const activateEditor = (shouldFocus = false) => {
 
     if (shouldFocus && isReady.value) {
       editorInstance.value?.focus();
+      if (pendingPreviewClickRange) {
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(pendingPreviewClickRange);
+        pendingPreviewClickRange = null;
+      }
       pendingFocusAfterReady.value = false;
     }
   });
@@ -1688,6 +1701,18 @@ const handlePreviewClick = (event: MouseEvent) => {
     return;
   }
   if (!props.editable) return;
+  const contentRoot = getEditorContentRoot();
+  const selection = window.getSelection();
+  const hasRangeSelection = Boolean(selection && selection.rangeCount > 0 && !selection.isCollapsed);
+  if (contentRoot && selection && selection.rangeCount > 0) {
+    const range = selection.getRangeAt(0).cloneRange();
+    if (contentRoot.contains(range.commonAncestorContainer)) {
+      pendingPreviewClickRange = range;
+    }
+  }
+  if (hasRangeSelection) {
+    return;
+  }
   activateEditor(true);
 };
 

@@ -118,6 +118,8 @@ export interface Block {
   }>;
   blockHeight?: number;
   spacerHeight?: number;
+  width?: number | string;
+  height?: number;
   layout?: 'horizontal' | 'vertical' | 'free';
   containerPosition?: {
     x: number;
@@ -125,7 +127,6 @@ export interface Block {
     z?: number;
   };
   children?: Block[];
-  width?: string;
   [key: string]: unknown;
 }
 

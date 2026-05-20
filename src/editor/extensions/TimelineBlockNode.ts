@@ -14,6 +14,8 @@ export const TimelineBlockNode = Node.create({
     return {
       blockId: { default: '' },
       title: { default: '' },
+      width: { default: null },
+      height: { default: null },
       timelineData: { default: [] },
     }
   },
