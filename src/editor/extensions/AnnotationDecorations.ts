@@ -5,6 +5,7 @@ import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { EditorView } from '@tiptap/pm/view'
 import type { TextAnnotation } from '@/api/types'
+import { normalizeAnnotationAnchor, resolveAnnotationRange } from '@/editor/annotationText'
 
 export interface AnnotationDecorationsOptions {
   annotations: TextAnnotation[]
@@ -15,18 +16,6 @@ export interface AnnotationDecorationsOptions {
 interface AnnotationPluginState {
   annotations: TextAnnotation[]
   decorations: DecorationSet
-}
-
-interface TextSegment {
-  textStart: number
-  textEnd: number
-  from: number
-  to: number
-}
-
-interface IndexedDocText {
-  text: string
-  segments: TextSegment[]
 }
 
 export const annotationDecorationsKey = new PluginKey<AnnotationPluginState>('annotationDecorations')
@@ -48,18 +37,24 @@ export const AnnotationDecorations = Extension.create<AnnotationDecorationsOptio
       new Plugin<AnnotationPluginState>({
         key: annotationDecorationsKey,
         state: {
-          init: (_, state) => buildPluginState(state.doc, extension.options.annotations),
+          init: (_, state) => {
+            const pluginState = buildPluginState(state.doc, extension.options.annotations)
+            notifyMappedIfChanged(extension.options.annotations, pluginState.annotations, extension.options.onAnnotationsMapped)
+            return pluginState
+          },
           apply: (tr, previous, _oldState, newState) => {
             const meta = tr.getMeta(annotationDecorationsKey)
             if (meta?.annotations) {
-              return buildPluginState(newState.doc, meta.annotations)
+              const pluginState = buildPluginState(newState.doc, meta.annotations)
+              notifyMappedIfChanged(meta.annotations, pluginState.annotations, extension.options.onAnnotationsMapped)
+              return pluginState
             }
 
             if (!tr.docChanged) return previous
 
             const mapped = previous.annotations.map((annotation) => mapAnnotation(annotation, tr.mapping))
             const resolved = resolveAnnotations(newState.doc, mapped)
-            window.setTimeout(() => extension.options.onAnnotationsMapped(resolved), 0)
+            notifyMappedIfChanged(previous.annotations, resolved, extension.options.onAnnotationsMapped)
             return buildPluginState(newState.doc, resolved)
           },
         },
@@ -107,6 +102,47 @@ function buildPluginState(doc: ProseMirrorNode, annotations: TextAnnotation[]): 
   }
 }
 
+function notifyMappedIfChanged(
+  previous: TextAnnotation[],
+  next: TextAnnotation[],
+  callback: (annotations: TextAnnotation[]) => void,
+) {
+  if (!annotationsChanged(previous, next)) return
+  window.setTimeout(() => callback(next), 0)
+}
+
+function annotationsChanged(previous: TextAnnotation[], next: TextAnnotation[]): boolean {
+  if (previous.length !== next.length) return true
+  return next.some((annotation, index) => {
+    const prev = previous[index]
+    if (!prev || prev.id !== annotation.id) return true
+    const nextIsOnlyRuntimeUnresolved = annotation.unresolved === true
+      && prev.from === annotation.from
+      && prev.to === annotation.to
+      && prev.anchorVersion === annotation.anchorVersion
+      && prev.lastResolvedAt === annotation.lastResolvedAt
+      && prev.blockId === annotation.blockId
+      && prev.contextBefore === annotation.contextBefore
+      && prev.contextAfter === annotation.contextAfter
+      && prev.scope === annotation.scope
+      && JSON.stringify(prev.spannedBlockIds ?? []) === JSON.stringify(annotation.spannedBlockIds ?? [])
+      && JSON.stringify(prev.spannedBlockMetadata ?? []) === JSON.stringify(annotation.spannedBlockMetadata ?? [])
+    if (nextIsOnlyRuntimeUnresolved) return false
+
+    return prev.from !== annotation.from
+      || prev.to !== annotation.to
+      || prev.unresolved !== annotation.unresolved
+      || prev.anchorVersion !== annotation.anchorVersion
+      || prev.lastResolvedAt !== annotation.lastResolvedAt
+      || prev.blockId !== annotation.blockId
+      || prev.contextBefore !== annotation.contextBefore
+      || prev.contextAfter !== annotation.contextAfter
+      || prev.scope !== annotation.scope
+      || JSON.stringify(prev.spannedBlockIds ?? []) !== JSON.stringify(annotation.spannedBlockIds ?? [])
+      || JSON.stringify(prev.spannedBlockMetadata ?? []) !== JSON.stringify(annotation.spannedBlockMetadata ?? [])
+  })
+}
+
 function rangesOverlap(a: TextAnnotation, b: TextAnnotation): boolean {
   if (
     typeof a.from !== 'number'
@@ -120,6 +156,9 @@ function rangesOverlap(a: TextAnnotation, b: TextAnnotation): boolean {
 }
 
 function mapAnnotation(annotation: TextAnnotation, mapping: Mapping): TextAnnotation {
+  if (annotation.scope === 'block' || (annotation.scope === 'compound' && typeof annotation.from !== 'number')) {
+    return annotation
+  }
   if (typeof annotation.from !== 'number' || typeof annotation.to !== 'number') {
     return annotation
   }
@@ -153,17 +192,17 @@ function resolveAnnotations(doc: ProseMirrorNode, annotations: TextAnnotation[])
 }
 
 function resolveAnnotation(doc: ProseMirrorNode, annotation: TextAnnotation): TextAnnotation {
+  if (annotation.scope === 'block' || (annotation.scope === 'compound' && !annotation.selectedText)) {
+    return annotation.unresolved === false ? annotation : { ...annotation, unresolved: false }
+  }
+
   const selectedText = annotation.selectedText ?? ''
   if (!selectedText) return markUnresolved(annotation)
 
-  const validRange = validateRange(doc, annotation)
-  if (validRange) {
-    return markResolved(annotation, validRange, false)
-  }
-
-  const relocated = relocateByText(doc, annotation)
-  if (relocated) {
-    return markResolved(annotation, relocated, true)
+  const resolvedRange = resolveAnnotationRange(doc, annotation)
+  if (resolvedRange) {
+    const relocated = annotation.from !== resolvedRange.from || annotation.to !== resolvedRange.to
+    return normalizeAnnotationAnchor(doc, markResolved(annotation, resolvedRange, relocated))
   }
 
   return markUnresolved(annotation)
@@ -192,125 +231,11 @@ function markResolved(
 }
 
 function markUnresolved(annotation: TextAnnotation): TextAnnotation {
-  if (annotation.unresolved === true) return annotation
   return {
     ...annotation,
     unresolved: true,
     lastResolvedAt: annotation.lastResolvedAt,
   }
-}
-
-function validateRange(
-  doc: ProseMirrorNode,
-  annotation: TextAnnotation,
-): { from: number; to: number } | null {
-  const from = annotation.from
-  const to = annotation.to
-  if (
-    typeof from !== 'number'
-    || typeof to !== 'number'
-    || from < 0
-    || to <= from
-    || to > doc.content.size
-  ) {
-    return null
-  }
-
-  const text = doc.textBetween(from, to, '')
-  return text === annotation.selectedText ? { from, to } : null
-}
-
-function relocateByText(
-  doc: ProseMirrorNode,
-  annotation: TextAnnotation,
-): { from: number; to: number } | null {
-  const indexed = indexDocText(doc)
-  const text = indexed.text
-  const selected = annotation.selectedText
-  const before = annotation.contextBefore ?? ''
-  const after = annotation.contextAfter ?? ''
-  const oldFrom = typeof annotation.from === 'number'
-    ? docPosToTextOffset(indexed.segments, annotation.from) ?? 0
-    : 0
-
-  const candidates: Array<{ from: number; to: number; score: number }> = []
-  const addMatches = (query: string, offset: number, score: number) => {
-    if (!query) return
-    let index = text.indexOf(query)
-    while (index >= 0) {
-      const from = index + offset
-      const to = from + selected.length
-      if (from >= 0 && text.slice(from, to) === selected) {
-        candidates.push({ from, to, score: score - Math.abs(from - oldFrom) / 100000 })
-      }
-      index = text.indexOf(query, index + 1)
-    }
-  }
-
-  addMatches(before + selected + after, before.length, 4)
-  addMatches(before + selected, before.length, 3)
-  addMatches(selected + after, 0, 2)
-  addMatches(selected, 0, 1)
-
-  candidates.sort((a, b) => b.score - a.score)
-  const best = candidates[0]
-  if (!best) return null
-
-  const from = textOffsetToDocPos(indexed.segments, best.from, 1)
-  const to = textOffsetToDocPos(indexed.segments, best.to, -1)
-  if (from === null || to === null || to <= from) return null
-  return { from, to }
-}
-
-function indexDocText(doc: ProseMirrorNode): IndexedDocText {
-  let text = ''
-  const segments: TextSegment[] = []
-
-  doc.descendants((node, pos) => {
-    if (!node.isText || !node.text) return true
-    const textStart = text.length
-    text += node.text
-    segments.push({
-      textStart,
-      textEnd: text.length,
-      from: pos,
-      to: pos + node.text.length,
-    })
-    return true
-  })
-
-  return { text, segments }
-}
-
-function textOffsetToDocPos(
-  segments: TextSegment[],
-  offset: number,
-  assoc: -1 | 1,
-): number | null {
-  if (!segments.length) return null
-
-  for (const segment of segments) {
-    const within = assoc > 0
-      ? offset >= segment.textStart && offset < segment.textEnd
-      : offset > segment.textStart && offset <= segment.textEnd
-    if (within) {
-      return segment.from + offset - segment.textStart
-    }
-  }
-
-  if (offset === 0) return segments[0].from
-  const last = segments[segments.length - 1]
-  if (offset === last.textEnd) return last.to
-  return null
-}
-
-function docPosToTextOffset(segments: TextSegment[], pos: number): number | null {
-  for (const segment of segments) {
-    if (pos >= segment.from && pos <= segment.to) {
-      return segment.textStart + pos - segment.from
-    }
-  }
-  return null
 }
 
 function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]): DecorationSet {
@@ -332,7 +257,13 @@ function createDecorations(doc: ProseMirrorNode, annotations: TextAnnotation[]):
     decorations.push(Decoration.inline(from, to, {
       class: 'tu-tiptap-annotation',
       'data-tu-annotation-id': annotation.id,
-      style: `background:${annotation.color || '#FFEB3B'};cursor:pointer;border-radius:2px;`,
+      style: [
+        `--tu-annotation-color:${annotation.color || '#FFEB3B'}`,
+        `background:${annotation.color || '#FFEB3B'}`,
+        'box-shadow:0 0 0 2px rgba(255,193,7,0.55)',
+        'cursor:pointer',
+        'border-radius:3px',
+      ].join(';'),
     }))
   }
   return DecorationSet.create(doc, decorations)

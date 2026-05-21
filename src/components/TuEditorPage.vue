@@ -12,6 +12,7 @@ import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
 import { ensureExternalLinkResource } from '@/api/externalResource'
+import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 
 type LinkDisplayMode = 'link' | 'image'
 
@@ -202,15 +203,17 @@ const handleOpenBlockPicker = () => {
   showBlockPicker.value = true
 }
 
-const getSelectionContext = (from: number, to: number) => {
+const getSelectionAnnotationPayload = (from: number, to: number) => {
   const editor = tuEditorRef.value?.editor
-  if (!editor) return { before: '', after: '' }
-  const start = Math.max(0, from - 50)
-  const end = Math.min(editor.state.doc.content.size, to + 50)
-  return {
-    before: editor.state.doc.textBetween(start, from, ''),
-    after: editor.state.doc.textBetween(to, end, ''),
+  if (!editor) return {
+    selectedText: '',
+    contextBefore: '',
+    contextAfter: '',
+    from: undefined,
+    to: undefined,
+    blockId: undefined,
   }
+  return getAnnotationSelectionPayload(editor.state.doc, from, to)
 }
 
 const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string }) => {
@@ -411,7 +414,8 @@ const allAnnotations = computed(() => Object.values(editorAnnotations.value).fla
 
 // --- Note / Annotation ---
 const handleAddNoteFromSelection = () => {
-  const hasText = !!selectedText.value
+  const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
+  const hasText = !!payload.selectedText
   const hasBlocks = selectionSpannedBlockIds.value.length > 0
   if (!hasText && !hasBlocks) return
 
@@ -422,12 +426,11 @@ const handleAddNoteFromSelection = () => {
   if (!targetBlock) return
 
   pendingNoteBlockId.value = targetBlock.id || ''
-  pendingNoteSelectedText.value = selectedText.value
-  const context = getSelectionContext(selectionFrom.value, selectionTo.value)
-  pendingNoteContextBefore.value = context.before
-  pendingNoteContextAfter.value = context.after
-  pendingNoteFrom.value = selectionFrom.value
-  pendingNoteTo.value = selectionTo.value
+  pendingNoteSelectedText.value = payload.selectedText
+  pendingNoteContextBefore.value = payload.contextBefore
+  pendingNoteContextAfter.value = payload.contextAfter
+  pendingNoteFrom.value = payload.from ?? selectionFrom.value
+  pendingNoteTo.value = payload.to ?? selectionTo.value
   pendingNoteSpannedBlockIds.value = selectionSpannedBlockIds.value
   pendingNoteSpannedBlockMetadata.value = selectionSpannedBlockMetadata.value
 
@@ -455,6 +458,9 @@ const handleSaveAnnotation = (note: string) => {
     const hasSpannedBlocks = pendingNoteSpannedBlockIds.value.length > 0
     const isBlockOnly = !hasText && hasSpannedBlocks
     const scope: 'text' | 'block' | 'compound' = isBlockOnly ? 'block' : hasSpannedBlocks ? 'compound' : 'text'
+    const spannedBlockMetadata = hasSpannedBlocks
+      ? normalizeSpannedBlockMetadata(pendingNoteSpannedBlockIds.value, pendingNoteSpannedBlockMetadata.value)
+      : undefined
     const annotation: TextAnnotation = {
       id: `annot-${now}-${Math.random().toString(36).substr(2, 6)}`,
       selectedText: pendingNoteSelectedText.value,
@@ -472,7 +478,7 @@ const handleSaveAnnotation = (note: string) => {
       unresolved: false,
       scope,
       spannedBlockIds: hasSpannedBlocks ? pendingNoteSpannedBlockIds.value : undefined,
-      spannedBlockMetadata: hasSpannedBlocks ? pendingNoteSpannedBlockMetadata.value : undefined,
+      spannedBlockMetadata,
     }
     annotations.push(annotation)
   }
@@ -516,12 +522,49 @@ const getBlockAnnotations = (): TextAnnotation[] => {
   return allAnnotations.value
 }
 
+const findBlockById = (blockId: string): Block | undefined => {
+  return localBlocks.value.find(block => block.id === blockId)
+}
+
+const getBlockDisplayType = (block: Block | undefined, fallback: string): string => {
+  if (!block) return fallback
+  if (block.type === 'x6') return 'x6Block'
+  if (block.type === 'line') return 'timelineBlock'
+  if (block.type === 'ref') return 'refBlock'
+  if (block.type === 'spacer') return 'spacerBlock'
+  if (block.type === 'table') return 'tableBlock'
+  if (block.type === 'richtext' || block.type === 'richText') return 'paragraph'
+  return block.type || fallback
+}
+
+const normalizeSpannedBlockMetadata = (
+  blockIds: string[],
+  metadata: SpannedBlockInfo[],
+): SpannedBlockInfo[] => {
+  const byId = new Map(metadata.map(item => [item.blockId, item]))
+  return blockIds.map((blockId) => {
+    const block = findBlockById(blockId)
+    const existing = byId.get(blockId)
+    return {
+      blockId,
+      blockType: getBlockDisplayType(block, existing?.blockType || 'block'),
+      title: existing?.title || block?.title,
+    }
+  })
+}
+
 const hasAnnotationAnchorChange = (previous: TextAnnotation, next: TextAnnotation): boolean => {
   return previous.from !== next.from
     || previous.to !== next.to
+    || previous.contextBefore !== next.contextBefore
+    || previous.contextAfter !== next.contextAfter
     || previous.unresolved !== next.unresolved
     || previous.anchorVersion !== next.anchorVersion
+    || previous.lastResolvedAt !== next.lastResolvedAt
     || previous.blockId !== next.blockId
+    || previous.scope !== next.scope
+    || JSON.stringify(previous.spannedBlockIds ?? []) !== JSON.stringify(next.spannedBlockIds ?? [])
+    || JSON.stringify(previous.spannedBlockMetadata ?? []) !== JSON.stringify(next.spannedBlockMetadata ?? [])
 }
 
 const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
@@ -547,10 +590,15 @@ const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
 }
 
 const handleCompoundBadgeClick = (blockId: string, annotationId: string, clientY: number, clientX: number) => {
-  const annotation = allAnnotations.value.find(a => a.id === annotationId)
+  const related = sortAnnotationsByTimeDesc(allAnnotations.value.filter(annotation => (
+    annotation.id === annotationId
+    || annotation.spannedBlockIds?.includes(blockId)
+    || annotation.blockId === blockId
+  )))
+  const annotation = related.find(a => a.id === annotationId) ?? related[0]
   if (!annotation) return
   notePopoverAnnotation.value = annotation
-  notePopoverAnnotations.value = [annotation]
+  notePopoverAnnotations.value = related.length ? related : [annotation]
   notePopoverPos.value = { top: clientY - 10, left: clientX + 12 }
   notePopoverVisible.value = true
 }

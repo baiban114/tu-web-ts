@@ -70,7 +70,7 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         type: 'spacerBlock',
         attrs: {
           blockId: block.id,
-          width: undefined,
+          width: null,
           height: block.spacerHeight || 40,
           spacerHeight: block.spacerHeight || 40,
         },
@@ -103,31 +103,35 @@ export function tipTapToBlocks(json: JSONContent, originalBlocks: Block[]): Bloc
   }
   walk(originalBlocks)
 
-  // Track the index of richtext blocks we've emitted, so each richtext section
-  // keeps the next original richtext block id without splitting normal editor
-  // paragraphs into separate blocks.
-  const originalRichTextBlocks = originalBlocks.filter((b) => isRichTextBlock(b))
-  let richTextEmittedCount = 0
-
   const richTextNodes: JSONContent[] = []
+  let currentRichTextBlockId: string | null = null
 
   const flushRichText = () => {
-    if (richTextNodes.length > 0) {
-      const existing = originalRichTextBlocks[richTextEmittedCount]
-      const id = existing?.id || generateId()
-      richTextEmittedCount++
-      blocks.push({
-        id,
-        type: 'richtext',
-        content: tipTapNodesToMarkdown(richTextNodes),
-        metadata: existing?.metadata,
-      })
-      richTextNodes.length = 0
-    }
+    if (richTextNodes.length === 0) return
+    const id = currentRichTextBlockId || generateId()
+    const existing = originalBlockMap.get(id)
+    blocks.push({
+      id,
+      type: 'richtext',
+      content: tipTapNodesToMarkdown(richTextNodes),
+      metadata: existing?.metadata,
+    })
+    richTextNodes.length = 0
+    currentRichTextBlockId = null
   }
 
   for (const node of json.content) {
     if (isTipTapRichTextNode(node)) {
+      const nodeBlockId = node.attrs?.blockId
+      const nodeBlockIdStr: string = typeof nodeBlockId === 'string' ? nodeBlockId : ''
+      const curIdStr: string = currentRichTextBlockId ?? ''
+
+      if (nodeBlockIdStr !== curIdStr && richTextNodes.length > 0) {
+        flushRichText()
+      }
+      if (richTextNodes.length === 0) {
+        currentRichTextBlockId = nodeBlockIdStr || null
+      }
       richTextNodes.push(node)
     } else {
       flushRichText()
@@ -157,27 +161,27 @@ function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string,
       return {
         id: blockId || existingBlock?.id || generateId(),
         type: 'x6',
-        title: node.attrs?.title || existingBlock?.title,
+        title: node.attrs?.title ?? existingBlock?.title ?? '',
         width: node.attrs?.width ?? existingBlock?.width,
         height: node.attrs?.height ?? existingBlock?.height,
-        graphData: node.attrs?.graphData || existingBlock?.graphData,
-        metadata: node.attrs?.metadata || existingBlock?.metadata,
+        graphData: node.attrs?.graphData ?? existingBlock?.graphData ?? { nodes: [], edges: [] },
+        metadata: node.attrs?.metadata ?? existingBlock?.metadata,
       }
     case 'timelineBlock':
       return {
         id: blockId || existingBlock?.id || generateId(),
         type: 'line',
-        title: node.attrs?.title || existingBlock?.title,
+        title: node.attrs?.title ?? existingBlock?.title ?? '',
         width: node.attrs?.width ?? existingBlock?.width,
         height: node.attrs?.height ?? existingBlock?.height,
-        timelineData: node.attrs?.timelineData || existingBlock?.timelineData,
+        timelineData: node.attrs?.timelineData ?? existingBlock?.timelineData ?? [],
       }
     case 'refBlock':
       return {
         id: blockId || existingBlock?.id || generateId(),
         type: 'ref',
-        refId: node.attrs?.refId || existingBlock?.refId,
-        refType: node.attrs?.refType || existingBlock?.refType,
+        refId: node.attrs?.refId ?? existingBlock?.refId ?? '',
+        refType: node.attrs?.refType ?? existingBlock?.refType ?? 'block',
         width: node.attrs?.width ?? existingBlock?.width,
         height: node.attrs?.height ?? existingBlock?.height,
       }
@@ -185,17 +189,16 @@ function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string,
       return {
         id: blockId || existingBlock?.id || generateId(),
         type: 'table',
-        title: node.attrs?.title || existingBlock?.title,
+        title: node.attrs?.title ?? existingBlock?.title ?? '',
         width: node.attrs?.width ?? existingBlock?.width,
         height: node.attrs?.height ?? existingBlock?.height,
-        tableData: node.attrs?.tableData || existingBlock?.tableData || { headers: [], rows: [] },
+        tableData: node.attrs?.tableData ?? existingBlock?.tableData ?? { headers: [], rows: [] },
       }
     case 'spacerBlock':
       return {
         id: blockId || existingBlock?.id || generateId(),
         type: 'spacer',
         spacerHeight: node.attrs?.height ?? node.attrs?.spacerHeight ?? existingBlock?.spacerHeight ?? 40,
-        width: undefined,
         height: node.attrs?.height ?? node.attrs?.spacerHeight ?? existingBlock?.spacerHeight ?? 40,
       }
     default:

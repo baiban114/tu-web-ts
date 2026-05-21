@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { computed, inject } from 'vue'
+import { computed, inject, unref, type Ref } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import Line from '@/components/line.vue'
@@ -11,11 +11,11 @@ interface CompoundBadge {
   color: string
 }
 
-const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]>>('compoundAnnotationBadges', {})
+const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]> | Ref<Record<string, CompoundBadge[]>>>('compoundAnnotationBadges', {})
 const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
 
 const blockId = computed(() => props.node.attrs.blockId || '')
-const compoundBadges = computed(() => compoundAnnotationBadges[blockId.value] || [])
+const compoundBadges = computed(() => unref(compoundAnnotationBadges)[blockId.value] || [])
 
 const timelineData = computed({
   get: () => props.node.attrs.timelineData,

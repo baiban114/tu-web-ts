@@ -27,6 +27,7 @@ import {
   blocksToTipTap,
   tipTapToBlocks,
 } from '@/editor'
+import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
 import { useWorkspaceStore } from '@/stores/workspace'
 import HoverHandle from './HoverHandle.vue'
@@ -137,7 +138,7 @@ const compoundAnnotationBadges = computed(() => {
   const map: Record<string, { annotationId: string; color: string }[]> = {}
   for (const annotations of Object.values(props.annotations)) {
     for (const ann of annotations) {
-      if (ann.scope === 'compound' && ann.spannedBlockIds?.length) {
+      if ((ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
         for (const bid of ann.spannedBlockIds) {
           if (!map[bid]) map[bid] = []
           map[bid].push({ annotationId: ann.id, color: ann.color || '#FFEB3B' })
@@ -169,6 +170,51 @@ const getBlockIdAtPos = (pos: number): string | undefined => {
   const topLevel = resolved.depth >= 1 ? resolved.node(1) : resolved.nodeAfter
   const blockId = topLevel?.attrs?.blockId
   return typeof blockId === 'string' && blockId ? blockId : undefined
+}
+
+const TEXT_BLOCK_NODE_TYPES = new Set([
+  'paragraph',
+  'heading',
+  'bulletList',
+  'orderedList',
+  'blockquote',
+  'horizontalRule',
+  'taskList',
+  'image',
+])
+
+const collectSelectionBlockInfo = (from: number, to: number): {
+  ids: string[]
+  metadata: SpannedBlockInfo[]
+} => {
+  if (!editor.value) return { ids: [], metadata: [] }
+  const seen = new Set<string>()
+  const ids: string[] = []
+  const metadata: SpannedBlockInfo[] = []
+  let hasNonTextBlock = false
+
+  editor.value.state.doc.nodesBetween(from, to, (node) => {
+    const blockId = node.attrs?.blockId
+    if (!blockId || seen.has(blockId)) return true
+    if (!node.isBlock && !node.type.isAtom) return true
+
+    const blockType = node.type.name
+    if (!TEXT_BLOCK_NODE_TYPES.has(blockType)) {
+      hasNonTextBlock = true
+    }
+    seen.add(blockId)
+    ids.push(blockId)
+    metadata.push({
+      blockId,
+      blockType,
+      title: typeof node.attrs?.title === 'string' && node.attrs.title ? node.attrs.title : undefined,
+    })
+    return true
+  })
+
+  return ids.length > 1 || hasNonTextBlock
+    ? { ids, metadata }
+    : { ids: [], metadata: [] }
 }
 
 const getDocSignature = (): string => {
@@ -399,7 +445,21 @@ const handleHandleSelect = (key: HandleAction) => {
     }
     case 'duplicate': {
       const slice = editor.value.state.doc.slice(from, to)
-      editor.value.chain().focus().insertContentAt(to, slice.toJSON()).run()
+      const json = slice.toJSON()
+      if (json) {
+        const assignNewId = (node: Record<string, any>) => {
+          if (node.attrs?.blockId) {
+            node.attrs.blockId = generateBlockId()
+          }
+          if (node.content) {
+            for (const child of node.content) {
+              assignNewId(child)
+            }
+          }
+        }
+        assignNewId(json)
+      }
+      editor.value.chain().focus().insertContentAt(to, json).run()
       break
     }
     case 'clear-formatting':
@@ -551,22 +611,10 @@ const editor = useEditor({
   onSelectionUpdate: () => {
     if (!isMounted || !editor.value) return
     const { empty, from, to } = editor.value.state.selection
-    const text = empty ? '' : editor.value.state.doc.textBetween(from, to, ' ')
-    const spannedBlockIds: string[] = []
-    const spannedBlockMetadata: { blockId: string; blockType: string }[] = []
-    if (!empty) {
-      const seen = new Set<string>()
-      editor.value.state.doc.nodesBetween(from!, to!, (node) => {
-        const bid = node.attrs?.blockId
-        if (node.type.isAtom && bid && !seen.has(bid) && node.type.name !== 'paragraph') {
-          seen.add(bid)
-          spannedBlockIds.push(bid)
-          spannedBlockMetadata.push({ blockId: bid, blockType: node.type.name })
-        }
-        return true
-      })
-    }
-    emit('selection-change', !empty, text, from, to, getBlockIdAtPos(from), spannedBlockIds.length ? spannedBlockIds : undefined, spannedBlockMetadata.length ? spannedBlockMetadata : undefined)
+    const payload = empty ? null : getAnnotationSelectionPayload(editor.value.state.doc, from, to)
+    const text = payload?.selectedText ?? ''
+    const spanned = empty ? { ids: [], metadata: [] } : collectSelectionBlockInfo(from, to)
+    emit('selection-change', !empty, text, from, to, payload?.blockId ?? getBlockIdAtPos(from), spanned.ids.length ? spanned.ids : undefined, spanned.metadata.length ? spanned.metadata : undefined)
   },
 })
 
@@ -687,7 +735,22 @@ defineExpose({
         left: (start.left + end.left) / 2,
       }
     } catch {
-      return undefined
+      let rect: DOMRect | undefined
+      editor.value.state.doc.nodesBetween(from, to, (node, pos) => {
+        if (rect || !node.attrs?.blockId) return false
+        const dom = editor.value?.view.nodeDOM(pos)
+        if (dom instanceof HTMLElement) {
+          rect = dom.getBoundingClientRect()
+          return false
+        }
+        return true
+      })
+      const fallbackRect = rect
+      if (!fallbackRect) return undefined
+      return {
+        top: fallbackRect.top,
+        left: fallbackRect.left + fallbackRect.width / 2,
+      }
     }
   },
   getSelectionJSON: () => {
