@@ -681,7 +681,7 @@ defineExpose({
       :style="handlePositionStyle"
       :menu-min-width="'140px'"
       :menu-gap="4"
-      @select="handleHandleSelect"
+      @select="(key: string) => handleHandleSelect(key as HandleAction)"
       @menu-visibility-change="handleHandleMenuVisibilityChange"
     />
   </div>

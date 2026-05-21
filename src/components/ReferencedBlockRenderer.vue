@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import RichTextEditor from './RichTextEditor.vue';
+import TuEditor from './TuEditor.vue';
 import Line from './line.vue';
 import TableBlock from './TableBlock.vue';
 import X6Component from './X6Component.vue';
-import type { Block, GraphData, TableBlockData } from '@/api/types';
+import type { Block, TableBlockData } from '@/api/types';
 import { ref } from 'vue';
 
 type ResizeEdge = 'right' | 'bottom' | 'corner';
@@ -161,14 +161,13 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
 
 <template>
   <div v-if="block" class="referenced-block-renderer">
-    <RichTextEditor
+    <TuEditor
       v-if="isRichTextBlock(block)"
       :key="`ref-richtext-${block.id}`"
-      :content="block.content ?? ''"
+      :blocks="[block]"
       :editable="editable"
-      :line-handle-enabled="false"
       class="block-content"
-      @content-change="(content: string) => updateBlock({ content })"
+      @update:blocks="([updated]: Block[]) => updateBlock({ content: updated.content })"
     />
     <X6Component
       v-else-if="block.type === 'x6'"
@@ -177,7 +176,7 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
       :editable="editable"
       :block-actions-enabled="false"
       class="block-content board-content"
-      @graph-data-change="(graphData: GraphData) => updateBlock({ graphData })"
+      @graph-data-change="(graphData: any) => updateBlock({ graphData })"
     />
     <TableBlock
       v-else-if="block.type === 'table'"

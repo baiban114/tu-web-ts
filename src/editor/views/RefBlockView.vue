@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import ReferencedBlockRenderer from '@/components/ReferencedBlockRenderer.vue'
-import VditorRichEditor from '@/components/VditorRichEditor.vue'
+import TuEditor from '@/components/TuEditor.vue'
 import X6Component from '@/components/X6Component.vue'
 import TableBlock from '@/components/TableBlock.vue'
 import { getPageContent } from '@/api/page'
@@ -100,9 +100,9 @@ onMounted(() => {
       <div v-else class="ref-page-content">
         <div v-if="pageBlocks.length === 0" class="ref-page-card__status">空页面</div>
         <template v-for="block in pageBlocks" :key="block.id">
-          <VditorRichEditor
+          <TuEditor
             v-if="isRichTextBlock(block)"
-            :model-value="block.content ?? ''"
+            :blocks="[block]"
             :editable="false"
             class="ref-page-content__block"
           />

@@ -5,24 +5,15 @@ import { useRoute, useRouter } from 'vue-router';
 import type { Block } from '@/api/types';
 import DevModePanel from '@/components/DevModePanel.vue';
 import LeftPanel from '@/components/LeftPanel.vue';
-import Page from '@/components/Page.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
 import { useWorkspaceStore } from '@/stores/workspace';
-
-const EDITOR_STORAGE_KEY = 'tu:dev:editor-type';
 
 const store = useWorkspaceStore();
 const route = useRoute();
 const router = useRouter();
 
-const editorType = ref<'vditor' | 'tiptap'>('vditor');
-
 onMounted(() => {
   void initializeWorkspace();
-  const savedEditor = localStorage.getItem(EDITOR_STORAGE_KEY)
-  if (savedEditor === 'tiptap') {
-    editorType.value = 'tiptap'
-  }
 });
 
 async function initializeWorkspace() {
@@ -144,20 +135,8 @@ watch(
           <div class="local-file-status__message">{{ localFileStatusText }}</div>
         </div>
 
-        <!-- Vditor 编辑器 -->
-        <Page
-          v-if="editorType === 'vditor'"
-          :key="store.currentPageId"
-          :contentList="store.currentBlocks"
-          :page-title="store.currentPageTitle"
-          :editable="true"
-          @page-title-change="onPageTitleChange"
-          @content-change="onContentChange"
-        />
-
         <!-- TipTap 编辑器 -->
         <TuEditorPage
-          v-else
           :key="store.currentPageId"
           :contentList="store.currentBlocks"
           :page-title="store.currentPageTitle"

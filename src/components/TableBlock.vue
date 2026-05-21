@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
-import RichTextEditor from './RichTextEditor.vue';
+import TuEditor from './TuEditor.vue';
+import type { Block } from '@/api/types';
+import type { Editor } from '@tiptap/core';
 
 export interface TableBlockData {
   textMode?: 'plain' | 'rich';
@@ -58,6 +60,7 @@ const resizing = ref<ResizeState | null>(null);
 const tableBlockRef = ref<HTMLElement | null>(null);
 const cellRefs = ref<Record<string, HTMLTextAreaElement>>({});
 const richCellRefs = ref<Record<string, {
+  editor: Editor | null;
   getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
   insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
   updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
@@ -107,6 +110,7 @@ function setRichCellRef(el: unknown, row: number, column: number) {
   const key = cellKey(row, column);
   if (el) {
     richCellRefs.value[key] = el as {
+      editor: Editor | null;
       getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
       insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
       updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
@@ -119,6 +123,11 @@ function setRichCellRef(el: unknown, row: number, column: number) {
 
 function focusCell(row: number, column: number) {
   nextTick(() => {
+    if (isRichMode.value) {
+      const ed = richCellRefs.value[cellKey(row, column)]?.editor;
+      (ed as any)?.commands?.focus?.();
+      return;
+    }
     const textarea = cellRefs.value[cellKey(row, column)];
     textarea?.focus();
     textarea?.setSelectionRange(textarea.value.length, textarea.value.length);
@@ -583,29 +592,31 @@ function activateCell(row: number, column: number) {
   focusCell(row, column);
 }
 
-function insertMarkdownLink(label: string, url: string, display: 'link' | 'image' = 'link'): boolean {
+function insertMarkdownLink(label: string, url: string, _display: 'link' | 'image' = 'link'): boolean {
   if (!props.editable || !isRichMode.value || !activeCell.value) return false;
   const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
-  editor?.insertMarkdownLink?.(label, url, display);
-  return Boolean(editor?.insertMarkdownLink);
+  const ed = editor?.editor;
+  if (!ed) return false;
+  ed.chain().focus().insertContent(label).setLink({ href: url }).run();
+  return true;
 }
 
 function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
   if (!isRichMode.value || !activeCell.value) return undefined;
   const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
-  return editor?.getMarkdownLinkAnchor?.();
+  const ed = editor?.editor;
+  if (!ed) return undefined;
+  const { from } = ed.state.selection;
+  const coords = ed.view.coordsAtPos(from);
+  return coords ? { top: coords.top, left: coords.left } : undefined;
 }
 
-function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
-  if (!isRichMode.value || !activeCell.value) return false;
-  const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
-  return editor?.updateInsertedLinkDisplay?.(display) ?? false;
+function updateInsertedLinkDisplay(_display: 'link' | 'image'): boolean {
+  return false;
 }
 
-function updateInsertedImageWidth(widthPercent: number): boolean {
-  if (!isRichMode.value || !activeCell.value) return false;
-  const editor = richCellRefs.value[cellKey(activeCell.value.row, activeCell.value.column)];
-  return editor?.updateInsertedImageWidth?.(widthPercent) ?? false;
+function updateInsertedImageWidth(_widthPercent: number): boolean {
+  return false;
 }
 
 defineExpose({
@@ -710,19 +721,16 @@ defineExpose({
               @mousemove="handleCellMouseMove($event, rowIndex, columnIndex)"
             >
               <div class="table-block__cell-wrap" :class="borderClass(rowIndex, columnIndex)">
-                <RichTextEditor
+                <TuEditor
                   v-if="isRichMode"
                   :ref="(el: unknown) => setRichCellRef(el, rowIndex, columnIndex)"
-                  :content="cell"
+                  :blocks="[{ id: `table-cell-${rowIndex}-${columnIndex}`, type: 'richtext' as const, content: cell }]"
                   :editable="editable"
-                  :auto-focus="isCellActive(rowIndex, columnIndex)"
-                  :line-handle-enabled="false"
-                  compact
+                  :hover-handle="false"
                   class="table-block__rich-editor"
-                  @content-change="(value: string) => updateCell(rowIndex, columnIndex, value)"
+                  @update:blocks="(blocks: Block[]) => updateCell(rowIndex, columnIndex, (blocks as Block[])[0]?.content ?? '')"
                   @click.stop="activateCell(rowIndex, columnIndex)"
-                  @blur="activeCell = null"
-                  @focused="handleCellFocus(rowIndex, columnIndex)"
+                  @focusout="activeCell = null"
                 />
                 <textarea
                   v-else-if="shouldEditCell(rowIndex, columnIndex)"
@@ -924,11 +932,11 @@ span {
   min-height: 38px;
 }
 
-.table-block :deep(.table-block__rich-editor .vditor-reset p) {
+.table-block :deep(.table-block__rich-editor .tu-editor-content p) {
   margin: 0;
 }
 
-.table-block :deep(.table-block__rich-editor .vditor-reset p + p) {
+.table-block :deep(.table-block__rich-editor .tu-editor-content p + p) {
   margin-top: 6px;
 }
 

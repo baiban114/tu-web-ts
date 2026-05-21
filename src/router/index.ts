@@ -9,11 +9,7 @@ const router = createRouter({
       name: 'home',
       component: HomeView,
     },
-    {
-      path: '/vditor-test',
-      name: 'vditor-test',
-      component: () => import('../components/VditorTest.vue'),
-    },
+
     {
       path: '/resources',
       name: 'resources',
