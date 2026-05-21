@@ -550,7 +550,25 @@ watch(
     isInternalUpdate = true
     try {
       const content = blocksToTipTap(newBlocks)
+      // Capture caret state before setContent rebuilds the doc — without this,
+      // ProseMirror's selection mapping over a full doc replace clamps the
+      // caret to the doc end whenever the new structure differs even slightly
+      // from the live one (e.g. table cells re-rendered from saved data).
+      const prevSelection = editor.value.state.selection
+      const wasFocused = editor.value.isFocused
       editor.value.commands.setContent(content, { emitUpdate: false })
+      const docSize = editor.value.state.doc.content.size
+      const from = Math.min(prevSelection.from, docSize)
+      const to = Math.min(prevSelection.to, docSize)
+      if (from <= docSize && to <= docSize && from >= 0) {
+        try {
+          editor.value.commands.setTextSelection({ from, to })
+        } catch {
+          // Position may land inside a non-text node after the rebuild; let
+          // Tiptap fall back to its default selection in that case.
+        }
+      }
+      if (wasFocused) editor.value.commands.focus(undefined, { scrollIntoView: false })
       lastDocSignature = JSON.stringify(content)
     } finally {
       isInternalUpdate = false

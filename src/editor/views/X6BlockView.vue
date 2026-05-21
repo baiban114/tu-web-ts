@@ -28,7 +28,7 @@ const onResize = (width: number | null, height: number | null) => {
     >
       <X6Component
         :graph-data="graphData"
-        @update:graph-data="graphData = $event"
+        @graph-data-change="graphData = $event"
       />
     </ResizableBlockWrapper>
   </node-view-wrapper>
