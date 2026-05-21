@@ -11,10 +11,13 @@ import type { Block } from '@/api/types';
 
 export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   const registry = reactive(new Map<string, BlockWithMeta>());
+  /** Track full block lists per pageId for TOC and other use-cases */
+  const pageBlocks = reactive(new Map<string, Block[]>());
 
   async function loadAll() {
     const items = await listAllBlocks();
     registry.clear();
+    pageBlocks.clear();
     for (const item of items) {
       registry.set(item.block.id, { ...item, block: { ...item.block } });
     }
@@ -25,10 +28,15 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
       if (block.type === 'ref' || block.type === 'spacer') continue;
       registry.set(block.id, { block: { ...block }, pageId, pageTitle });
     }
+    pageBlocks.set(pageId, blocks);
   }
 
   function getBlock(id: string): Block | undefined {
     return registry.get(id)?.block;
+  }
+
+  function getPageBlocks(pageId: string): Block[] {
+    return pageBlocks.get(pageId) ?? [];
   }
 
   function getMeta(id: string): BlockWithMeta | undefined {
@@ -63,6 +71,7 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
 
   function clear() {
     registry.clear();
+    pageBlocks.clear();
   }
 
   return {
@@ -70,6 +79,7 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     loadAll,
     registerBlocks,
     getBlock,
+    getPageBlocks,
     getMeta,
     updateBlock,
     updateContent,
