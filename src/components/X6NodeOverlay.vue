@@ -179,12 +179,6 @@ defineExpose({
   overflow-y: auto;
 }
 
-.x6-node-tu-editor :deep(.tu-editor-wrapper) {
-  min-height: auto;
-  height: 100%;
-  overflow-y: auto;
-}
-
 .x6-node-tu-editor :deep(.tu-editor-content) {
   min-height: 0;
   height: auto;

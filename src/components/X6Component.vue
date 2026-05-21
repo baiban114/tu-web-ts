@@ -988,6 +988,7 @@ function handleRichChange(nodeId: string, markdown: string) {
   if (node && graph?.isNode(node)) {
     node.updateData({ richContent: markdown });
   }
+  updateNodeOverlays();
   scheduleSync();
 }
 

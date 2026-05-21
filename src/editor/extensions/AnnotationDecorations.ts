@@ -127,13 +127,17 @@ function mapAnnotation(annotation: TextAnnotation, mapping: Mapping): TextAnnota
   const from = mapping.mapResult(annotation.from, 1)
   const to = mapping.mapResult(annotation.to, -1)
   if (from.deleted && to.deleted) {
-    return { ...annotation, unresolved: true }
+    return markUnresolved(annotation)
   }
 
   const nextFrom = from.pos
   const nextTo = to.pos
   if (nextTo <= nextFrom) {
-    return { ...annotation, unresolved: true }
+    return markUnresolved(annotation)
+  }
+
+  if (annotation.from === nextFrom && annotation.to === nextTo && annotation.unresolved === false) {
+    return annotation
   }
 
   return {
@@ -150,31 +154,50 @@ function resolveAnnotations(doc: ProseMirrorNode, annotations: TextAnnotation[])
 
 function resolveAnnotation(doc: ProseMirrorNode, annotation: TextAnnotation): TextAnnotation {
   const selectedText = annotation.selectedText ?? ''
-  if (!selectedText) return { ...annotation, unresolved: true }
+  if (!selectedText) return markUnresolved(annotation)
 
   const validRange = validateRange(doc, annotation)
   if (validRange) {
-    return {
-      ...annotation,
-      ...validRange,
-      unresolved: false,
-      anchorVersion: annotation.anchorVersion ?? 1,
-      lastResolvedAt: Date.now(),
-    }
+    return markResolved(annotation, validRange, false)
   }
 
   const relocated = relocateByText(doc, annotation)
   if (relocated) {
-    return {
-      ...annotation,
-      ...relocated,
-      unresolved: false,
-      anchorVersion: annotation.anchorVersion ?? 1,
-      lastResolvedAt: Date.now(),
-    }
+    return markResolved(annotation, relocated, true)
   }
 
-  return { ...annotation, unresolved: true }
+  return markUnresolved(annotation)
+}
+
+function markResolved(
+  annotation: TextAnnotation,
+  range: { from: number; to: number },
+  relocated: boolean,
+): TextAnnotation {
+  const hasAnchorVersion = typeof annotation.anchorVersion === 'number'
+  const changed = annotation.from !== range.from
+    || annotation.to !== range.to
+    || annotation.unresolved !== false
+    || !hasAnchorVersion
+
+  if (!changed) return annotation
+
+  return {
+    ...annotation,
+    ...range,
+    unresolved: false,
+    anchorVersion: hasAnchorVersion ? annotation.anchorVersion : 1,
+    lastResolvedAt: relocated ? Date.now() : annotation.lastResolvedAt,
+  }
+}
+
+function markUnresolved(annotation: TextAnnotation): TextAnnotation {
+  if (annotation.unresolved === true) return annotation
+  return {
+    ...annotation,
+    unresolved: true,
+    lastResolvedAt: annotation.lastResolvedAt,
+  }
 }
 
 function validateRange(

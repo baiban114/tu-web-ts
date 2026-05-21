@@ -96,10 +96,27 @@ const notePopoverAnnotations = ref<TextAnnotation[]>([])
 const notePopoverPos = ref({ top: 0, left: 0 })
 
 // --- Watchers ---
+// Track the blocks reference we most recently emitted upward. When the parent
+// hands those exact blocks back via `contentList`, we must NOT re-clone them
+// into localBlocks — doing so triggers a second TuEditor blocks watch after
+// `skipNextContentSync` is already consumed, which causes setContent to fire
+// and visibly rearrange interactive nodes (e.g. table rows collapsing).
+let pendingSelfEmittedBlocks: Block[] | null = null
+
+const emitLocalContentChange = (blocks: Block[] = localBlocks.value) => {
+  pendingSelfEmittedBlocks = blocks
+  emit('content-change', blocks)
+}
+
 watch(
   () => props.contentList,
   (val, oldVal) => {
     if (val === oldVal) return
+    if (pendingSelfEmittedBlocks && val === pendingSelfEmittedBlocks) {
+      pendingSelfEmittedBlocks = null
+      return
+    }
+    pendingSelfEmittedBlocks = null
     localBlocks.value = JSON.parse(JSON.stringify(val))
   },
   { immediate: true },
@@ -126,7 +143,7 @@ const removeToast = (id: string) => {
 // --- Block sync ---
 const handleBlocksChange = (blocks: Block[]) => {
   localBlocks.value = blocks
-  emit('content-change', blocks)
+  emitLocalContentChange(blocks)
 }
 
 // --- Focus editor from title ---
@@ -367,7 +384,7 @@ const updateBlockTags = (tags: BlockTag[]) => {
   const block = localBlocks.value.find(b => b.id === tagEditorState.value.blockId)
   if (!block) return
   setBlockTags(block, tags)
-  emit('content-change', localBlocks.value)
+  emitLocalContentChange()
   localBlocks.value = [...localBlocks.value]
 }
 
@@ -442,7 +459,7 @@ const handleSaveAnnotation = (note: string) => {
   }
 
   block.metadata = { ...(block.metadata || {}), annotations }
-  emit('content-change', localBlocks.value)
+  emitLocalContentChange()
   localBlocks.value = [...localBlocks.value]
 
   noteEditorVisible.value = false
@@ -478,6 +495,14 @@ const getBlockAnnotations = (): TextAnnotation[] => {
   return allAnnotations.value
 }
 
+const hasAnnotationAnchorChange = (previous: TextAnnotation, next: TextAnnotation): boolean => {
+  return previous.from !== next.from
+    || previous.to !== next.to
+    || previous.unresolved !== next.unresolved
+    || previous.anchorVersion !== next.anchorVersion
+    || previous.blockId !== next.blockId
+}
+
 const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
   if (annotationPersistTimer) clearTimeout(annotationPersistTimer)
   annotationPersistTimer = setTimeout(() => {
@@ -488,13 +513,13 @@ const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
       const annotations = block.metadata?.annotations as TextAnnotation[] | undefined
       if (!annotations?.length) continue
       const next = annotations.map((annotation) => byId.get(annotation.id) ?? annotation)
-      if (next.some((annotation, index) => annotation !== annotations[index])) {
+      if (next.some((annotation, index) => hasAnnotationAnchorChange(annotations[index], annotation))) {
         block.metadata = { ...(block.metadata || {}), annotations: next }
         changed = true
       }
     }
     if (changed) {
-      emit('content-change', localBlocks.value)
+      emitLocalContentChange()
       localBlocks.value = [...localBlocks.value]
     }
   }, 400)
@@ -532,7 +557,7 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   if (idx >= 0) {
     annotations.splice(idx, 1)
     block.metadata = { ...(block.metadata || {}), annotations }
-    emit('content-change', localBlocks.value)
+    emitLocalContentChange()
   }
   notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
   notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null

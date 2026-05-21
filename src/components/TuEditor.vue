@@ -11,7 +11,22 @@ import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
-import { Table, TableRow, TableCell, TableHeader } from '@tiptap/extension-table'
+import { Table as BaseTable, TableRow, TableCell, TableHeader } from '@tiptap/extension-table'
+
+// Preserve our custom blockId attribute on the table node. Default Table
+// schema does not declare it, so ProseMirror silently strips it on every
+// fromJSON — which means convertTableNode has to guess the original block id
+// by document order, and any cycle that mounts the table again sees the attr
+// reset to its default. Declaring it here keeps the attribute round-tripping
+// through setContent without affecting rendering.
+const Table = BaseTable.extend({
+  addAttributes() {
+    return {
+      ...(this.parent?.() ?? {}),
+      blockId: { default: '' },
+    }
+  },
+})
 import type { Block, TextAnnotation } from '@/api/types'
 import {
   AnnotationDecorations,
@@ -550,6 +565,19 @@ watch(
     isInternalUpdate = true
     try {
       const content = blocksToTipTap(newBlocks)
+      // If the rebuilt doc spec matches the live doc, skip setContent. The
+      // round-trip through tipTapToBlocks → blocksToTipTap normalizes attrs
+      // the same way Tiptap does, so the comparison stays meaningful even
+      // when ProseMirror would have stripped unknown attrs on parse. Without
+      // this guard, every metadata-only blocks reassignment (tags, annotation
+      // remap, etc.) tears down and rebuilds the doc, which is what made
+      // interactive nodes like tables visibly rearrange after typing.
+      const liveDocJson = editor.value.getJSON()
+      const liveSpec = blocksToTipTap(tipTapToBlocks(liveDocJson, newBlocks))
+      if (JSON.stringify(content) === JSON.stringify(liveSpec)) {
+        lastDocSignature = JSON.stringify(liveDocJson)
+        return
+      }
       // Capture caret state before setContent rebuilds the doc — without this,
       // ProseMirror's selection mapping over a full doc replace clamps the
       // caret to the doc end whenever the new structure differs even slightly
