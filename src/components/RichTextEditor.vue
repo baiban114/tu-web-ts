@@ -91,6 +91,7 @@ const pendingExternalContent = ref<string | null>(null);
 const pendingFocusAfterReady = ref(false);
 let savedMarkdownLinkRange: Range | null = null;
 let pendingPreviewClickRange: Range | null = null;
+let pendingPreviewClickPoint: { x: number; y: number } | null = null;
 let lastInsertedResourceLink: InsertedResourceLink | null = null;
 const activeLineElement = ref<HTMLElement | null>(null);
 const lineHandleMode = ref<LineHandleMode>(null);
@@ -539,6 +540,46 @@ const getEditorContentRoot = (): HTMLElement | null => {
   return editorRef.value?.querySelector('.vditor-wysiwyg .vditor-reset')
     ?? editorRef.value?.querySelector('.vditor-wysiwyg')
     ?? null;
+};
+
+const caretRangeFromPoint = (x: number, y: number): Range | null => {
+  const doc = document as Document & {
+    caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+  };
+  if (typeof doc.caretRangeFromPoint === 'function') {
+    return doc.caretRangeFromPoint(x, y);
+  }
+  if (typeof doc.caretPositionFromPoint === 'function') {
+    const pos = doc.caretPositionFromPoint(x, y);
+    if (!pos) return null;
+    const range = document.createRange();
+    range.setStart(pos.offsetNode, pos.offset);
+    range.collapse(true);
+    return range;
+  }
+  return null;
+};
+
+// After the editor mounts where the preview used to live, place the caret at
+// the original click coordinates instead of leaving it at the doc end where
+// Vditor's focus() puts it.
+const placeCaretAtPendingPoint = (): boolean => {
+  if (!pendingPreviewClickPoint) return false;
+  const { x, y } = pendingPreviewClickPoint;
+  pendingPreviewClickPoint = null;
+
+  const contentRoot = getEditorContentRoot();
+  if (!contentRoot) return false;
+
+  const range = caretRangeFromPoint(x, y);
+  if (!range || !contentRoot.contains(range.startContainer)) return false;
+
+  const selection = window.getSelection();
+  if (!selection) return false;
+  selection.removeAllRanges();
+  selection.addRange(range);
+  return true;
 };
 
 const getLineHeight = (element: HTMLElement | null): number => {
@@ -1532,12 +1573,15 @@ const initEditor = () => {
 
           pendingFocusAfterReady.value = false;
           editorInstance.value?.focus();
-          if (pendingPreviewClickRange) {
+          // Try restoring caret at the preview-click point first; Vditor's
+          // focus() above moves the caret to the doc end, so we override it.
+          const restoredFromPoint = placeCaretAtPendingPoint();
+          if (!restoredFromPoint && pendingPreviewClickRange) {
             const selection = window.getSelection();
             selection?.removeAllRanges();
             selection?.addRange(pendingPreviewClickRange);
-            pendingPreviewClickRange = null;
           }
+          pendingPreviewClickRange = null;
           scheduleEditorHandleSync(2);
           emit('focused');
         });
@@ -1572,12 +1616,13 @@ const activateEditor = (shouldFocus = false) => {
 
     if (shouldFocus && isReady.value) {
       editorInstance.value?.focus();
-      if (pendingPreviewClickRange) {
+      const restoredFromPoint = placeCaretAtPendingPoint();
+      if (!restoredFromPoint && pendingPreviewClickRange) {
         const selection = window.getSelection();
         selection?.removeAllRanges();
         selection?.addRange(pendingPreviewClickRange);
-        pendingPreviewClickRange = null;
       }
+      pendingPreviewClickRange = null;
       pendingFocusAfterReady.value = false;
     }
   });
@@ -1711,8 +1756,14 @@ const handlePreviewClick = (event: MouseEvent) => {
     }
   }
   if (hasRangeSelection) {
+    // Selection already exists in preview; keep it and don't trigger activation
+    // which would call editor.focus() and collapse selection to the end.
     return;
   }
+  // Remember the click coordinates so we can place the caret precisely once the
+  // editor mounts in the same screen region. Without this, Vditor's focus()
+  // call after init lands the caret at the very end of the content.
+  pendingPreviewClickPoint = { x: event.clientX, y: event.clientY };
   activateEditor(true);
 };
 
@@ -1948,8 +1999,11 @@ watch(
   min-height: 24px;
 }
 
+
+
 .preview-fade-leave-active {
   transition: opacity 0.15s ease;
+  pointer-events: none;
 }
 
 .preview-fade-leave-to {
