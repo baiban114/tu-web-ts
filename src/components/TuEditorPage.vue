@@ -13,6 +13,7 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
 import { ensureExternalLinkResource } from '@/api/externalResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
+import { useBlockRegistryStore } from '@/stores/blockRegistry'
 
 type LinkDisplayMode = 'link' | 'image'
 
@@ -22,9 +23,13 @@ interface TocItem {
   level: number
   text: string
   pos: number
+  sourceType: 'local' | 'ref-group' | 'ref-child'
+  children?: TocItem[]
+  refId?: string
 }
 
 const workspaceStore = useWorkspaceStore()
+const registryStore = useBlockRegistryStore()
 
 interface Props {
   contentList: Block[]
@@ -222,10 +227,77 @@ const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string })
 }
 
 // --- TOC ---
+const expandedRefIds = ref<Set<string>>(new Set())
+
+const toggleRefGroup = (refId: string) => {
+  const next = new Set(expandedRefIds.value)
+  if (next.has(refId)) next.delete(refId)
+  else next.add(refId)
+  expandedRefIds.value = next
+}
+
+/** Walk workspace page tree to find a page title by pageId. */
+function findPageTitle(pageId: string): string {
+  const walk = (items: Array<{ id: string; title: string; children?: any[] }>): string | undefined => {
+    for (const item of items) {
+      if (item.id === pageId) return item.title
+      if (item.children?.length) {
+        const found = walk(item.children)
+        if (found) return found
+      }
+    }
+    return undefined
+  }
+  return walk(workspaceStore.pageTree) ?? pageId
+}
+
+/** Extract heading-like structures from a list of blocks (richtext markdown content).
+ *  Used to surface headings from referenced pages/blocks in the current page TOC. */
+function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level: number }> {
+  const result: Array<{ text: string; level: number }> = []
+  const seen = new Set<string>()
+  const walk = (list: Block[]) => {
+    for (const block of list) {
+      if (block.type === 'richtext' || block.type === 'richText') {
+        const content = (block.content || '').replace(/\r\n/g, '\n')
+        const lines = content.split('\n')
+        for (const line of lines) {
+          const match = line.match(/^(#{1,6})\s+(.+)$/)
+          if (match) {
+            const level = match[1].length
+            let text = match[2].trim()
+            // Strip trailing # characters (common in ATX headings like "## Title ##")
+            text = text.replace(/\s*#+\s*$/, '').trim()
+            // Strip inline markdown formatting for clean display
+            text = text.replace(/\*\*(.+?)\*\*/g, '$1')
+            text = text.replace(/\*(.+?)\*/g, '$1')
+            text = text.replace(/`(.+?)`/g, '$1')
+            text = text.replace(/\[(.+?)\]\(.+?\)/g, '$1')
+            if (text && !seen.has(text)) {
+              seen.add(text)
+              result.push({ text, level })
+            }
+          }
+        }
+      }
+      if (block.children) walk(block.children)
+    }
+  }
+  walk(blocks)
+  return result
+}
+
+/**
+ * Tree-structured TOC items. Top-level entries are either:
+ * - local headings (sourceType === 'local')
+ * - ref-group entries (sourceType === 'ref-group') wrapping children from referenced content
+ * Children are ref-child entries with sourceType === 'ref-child'.
+ */
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return []
 
+  // 1. Headings from the local editor doc
   const items: TocItem[] = []
   editor.state.doc.descendants((node, pos) => {
     if (node.type.name === 'heading') {
@@ -237,13 +309,85 @@ const tocItems = computed<TocItem[]>(() => {
           level: node.attrs?.level || 1,
           text,
           pos,
+          sourceType: 'local',
         })
       }
     }
     return true
   })
 
+  // 2. Build a map of refBlock positions from the editor doc
+  const refPositions = new Map<string, number>()
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name === 'refBlock') {
+      const blockId = node.attrs?.blockId
+      if (blockId) refPositions.set(blockId, pos)
+    }
+    return true
+  })
+
+  // 3. Build ref-group items with children from referenced blocks/pages
+  for (const block of localBlocks.value) {
+    if (block.type !== 'ref' || !block.refId) continue
+    const refPos = refPositions.get(block.id)
+    if (refPos == null) continue
+
+    let refBlocks: Block[] = []
+
+    if (block.refType === 'page') {
+      refBlocks = registryStore.getPageBlocks(block.refId)
+    } else if (block.refType === 'block') {
+      const refBlock = registryStore.getBlock(block.refId)
+      if (refBlock) refBlocks = [refBlock]
+    }
+
+    const headings = extractHeadingsFromBlocks(refBlocks)
+    if (headings.length === 0) continue
+
+    // Determine group title
+    let groupTitle: string
+    if (block.refType === 'page') {
+      groupTitle = findPageTitle(block.refId) || '未知页面'
+    } else {
+      const meta = registryStore.getMeta(block.refId)
+      groupTitle = meta?.pageTitle || '引用块'
+    }
+
+    const children: TocItem[] = headings.map((h, i) => ({
+      id: `ref-child-${block.id}-${i}`,
+      blockId: block.id,
+      level: h.level,
+      text: h.text,
+      pos: refPos,
+      sourceType: 'ref-child',
+    }))
+
+    items.push({
+      id: `ref-group-${block.id}`,
+      blockId: block.id,
+      level: 0,
+      text: groupTitle,
+      pos: refPos,
+      sourceType: 'ref-group',
+      refId: block.refId,
+      children,
+    })
+  }
+
+  // Sort by document position so local headings and ref groups are interleaved
+  items.sort((a, b) => a.pos - b.pos)
+
   return items
+})
+
+/** Total flat heading count counting group children. */
+const tocFlatCount = computed(() => {
+  let count = 0
+  for (const item of tocItems.value) {
+    count += 1
+    if (item.children) count += item.children.length
+  }
+  return count
 })
 
 const handleTocItemClick = (item: TocItem) => {
@@ -846,24 +990,59 @@ onBeforeUnmount(() => {
             @click="tocExpanded = !tocExpanded"
           >
             <span class="page-toc__title">目录</span>
-            <span class="page-toc__meta">{{ tocItems.length }}</span>
+            <span class="page-toc__meta">{{ tocFlatCount }}</span>
             <span class="page-toc__toggle">{{ tocExpanded ? '收起' : '展开' }}</span>
           </button>
           <div v-show="tocExpanded" class="page-toc__list">
-            <button
-              v-for="item in tocItems"
-              :key="item.id"
-              type="button"
-              class="page-toc__item"
-              :class="{
-                'page-toc__item--active': highlightedBlockId === item.blockId,
-                [`page-toc__item--level-${item.level}`]: true,
-              }"
-              @click="handleTocItemClick(item)"
-            >
-              <span class="page-toc__bullet">H{{ item.level }}</span>
-              <span class="page-toc__text">{{ item.text }}</span>
-            </button>
+            <template v-for="item in tocItems" :key="item.id">
+              <!-- Local heading item -->
+              <button
+                v-if="item.sourceType === 'local'"
+                type="button"
+                class="page-toc__item"
+                :class="{
+                  'page-toc__item--active': highlightedBlockId === item.blockId,
+                  [`page-toc__item--level-${item.level}`]: true,
+                }"
+                @click="handleTocItemClick(item)"
+              >
+                <span class="page-toc__bullet">H{{ item.level }}</span>
+                <span class="page-toc__text">{{ item.text }}</span>
+              </button>
+
+              <!-- Ref group: expandable entry wrapping referenced headings -->
+              <div v-else-if="item.sourceType === 'ref-group'" class="page-toc__group">
+                <button
+                  type="button"
+                  class="page-toc__item page-toc__item--ref"
+                  :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
+                  @click="toggleRefGroup(item.refId!)"
+                >
+                  <span class="page-toc__bullet page-toc__bullet--group">
+                    {{ expandedRefIds.has(item.refId!) ? '▼' : '▶' }}
+                  </span>
+                  <span class="page-toc__text page-toc__text--group">{{ item.text }}</span>
+                  <span class="page-toc__group-count">{{ item.children?.length }}</span>
+                </button>
+                <!-- Expanded child headings -->
+                <div v-if="expandedRefIds.has(item.refId!)" class="page-toc__children">
+                  <button
+                    v-for="child in item.children"
+                    :key="child.id"
+                    type="button"
+                    class="page-toc__item page-toc__item--ref-child"
+                    :class="{
+                      'page-toc__item--active': highlightedBlockId === child.blockId,
+                      [`page-toc__item--level-${child.level}`]: true,
+                    }"
+                    @click="handleTocItemClick(child)"
+                  >
+                    <span class="page-toc__bullet">H{{ child.level }}</span>
+                    <span class="page-toc__text">{{ child.text }}</span>
+                  </button>
+                </div>
+              </div>
+            </template>
           </div>
         </div>
       </aside>
@@ -1143,6 +1322,57 @@ onBeforeUnmount(() => {
   font-size: 11px;
   font-weight: 700;
   color: #1677ff;
+}
+
+/* --- Ref group: top-level entry --- */
+.page-toc__item--ref {
+  background: rgba(139, 92, 246, 0.06);
+}
+.page-toc__item--ref:hover {
+  background: rgba(139, 92, 246, 0.12);
+}
+.page-toc__item--ref.page-toc__item--active {
+  background: rgba(139, 92, 246, 0.14);
+}
+.page-toc__bullet--group {
+  color: #7c3aed !important;
+  font-size: 10px !important;
+  min-width: 20px !important;
+}
+.page-toc__text--group {
+  font-weight: 600 !important;
+  color: #5b21b6 !important;
+  font-size: 12px !important;
+}
+.page-toc__group-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(139, 92, 246, 0.10);
+  color: #7c3aed;
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+/* --- Ref children: collapsed/expanded below group --- */
+.page-toc__children {
+  display: flex;
+  flex-direction: column;
+  margin: 2px 0 4px 14px;
+  padding-left: 8px;
+  border-left: 1px solid #e5e7eb;
+}
+.page-toc__item--ref-child {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.page-toc__item--ref-child:hover {
+  background: rgba(139, 92, 246, 0.08);
+}
+.page-toc__item--ref-child .page-toc__bullet {
+  color: #8b5cf6;
 }
 
 .page-toc__text {
