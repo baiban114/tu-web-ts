@@ -51,6 +51,9 @@ const selectedReferenceCategory = ref<ReferenceCategoryFilter>('all');
 const selectedReferenceStatus = ref<ReferenceStatusFilter>('all');
 const referenceKeyword = ref('');
 const selectedReferenceResourceItemId = ref('');
+const currentPage = ref(0);
+const pageSize = ref(50);
+const totalReferences = ref(0);
 
 const types = ref<ResourceType[]>([]);
 const works = ref<ResourceWork[]>([]);
@@ -255,18 +258,57 @@ async function refreshItems() {
 async function refreshReferences() {
   referencesLoading.value = true;
   try {
-    references.value = await listReferences({
+    const result = await listReferences({
       category: selectedReferenceCategory.value === 'all' ? undefined : selectedReferenceCategory.value,
       resourceItemId: selectedReferenceResourceItemId.value || undefined,
       status: selectedReferenceStatus.value === 'all' ? undefined : selectedReferenceStatus.value,
       q: referenceKeyword.value.trim() || undefined,
+      page: currentPage.value,
+      pageSize: pageSize.value,
     });
+    if (Array.isArray(result)) {
+      references.value = result;
+      totalReferences.value = result.length;
+    } else {
+      references.value = result.items ?? [];
+      totalReferences.value = result.total ?? 0;
+    }
   } catch (error) {
     showError(error);
   } finally {
     referencesLoading.value = false;
   }
 }
+
+function onReferenceFilterChange() {
+  currentPage.value = 0;
+  void refreshReferences();
+}
+
+function goToPage(page: number) {
+  currentPage.value = page;
+  void refreshReferences();
+}
+
+const totalPages = computed(() => Math.max(1, Math.ceil(totalReferences.value / pageSize.value)));
+
+const displayedPages = computed(() => {
+  const total = totalPages.value;
+  const current = currentPage.value;
+  const range: (number | null)[] = [];
+  if (total <= 7) {
+    for (let i = 0; i < total; i++) range.push(i);
+    return range;
+  }
+  range.push(0);
+  if (current > 2) range.push(null);
+  const start = Math.max(1, current - 1);
+  const end = Math.min(total - 2, current + 1);
+  for (let i = start; i <= end; i++) range.push(i);
+  if (current < total - 3) range.push(null);
+  range.push(total - 1);
+  return range;
+});
 
 async function saveType() {
   try {
@@ -624,7 +666,7 @@ watch(
         <h2>{{ referenceForm.id ? '编辑外部引用' : '引用详情' }}</h2>
         <label>
           引用类别
-          <select v-model="selectedReferenceCategory" @change="refreshReferences">
+          <select v-model="selectedReferenceCategory" @change="onReferenceFilterChange">
             <option value="all">全部</option>
             <option value="annotation">标注引用</option>
             <option value="internal">内部引用</option>
@@ -633,7 +675,7 @@ watch(
         </label>
         <label>
           引用状态
-          <select v-model="selectedReferenceStatus" @change="refreshReferences">
+          <select v-model="selectedReferenceStatus" @change="onReferenceFilterChange">
             <option value="all">全部</option>
             <option value="ok">正常</option>
             <option value="broken">失效</option>
@@ -643,7 +685,7 @@ watch(
         </label>
         <label>
           关联资源实体
-          <select v-model="selectedReferenceResourceItemId" @change="refreshReferences">
+          <select v-model="selectedReferenceResourceItemId" @change="onReferenceFilterChange">
             <option value="">全部资源实体</option>
             <option v-for="item in items" :key="item.id" :value="item.id">
               {{ item.title }}
@@ -655,7 +697,7 @@ watch(
           <input v-model.trim="referenceKeyword" maxlength="200" placeholder="页面、块、资源标题、URL" />
         </label>
         <div class="form-actions">
-          <button type="button" @click="refreshReferences">查询</button>
+          <button type="button" @click="onReferenceFilterChange">查询</button>
           <button type="button" class="secondary" @click="rebuildReferenceIndex">重建索引</button>
         </div>
 
@@ -698,51 +740,70 @@ watch(
       </form>
 
       <div class="resource-list" :aria-busy="referencesLoading">
-        <article v-for="item in references" :key="item.id" class="resource-row">
-          <div class="reference-row__content">
-            <div class="row-title">
-              <span class="reference-badge" :class="`reference-badge--${item.category}`">{{ categoryLabel(item.category) }}</span>
-              <span class="reference-status" :class="`reference-status--${item.status}`">{{ item.status }}</span>
+        <div class="resource-list__scroll">
+          <article v-for="item in references" :key="item.id" class="resource-row">
+            <div class="reference-row__content">
+              <div class="row-title">
+                <span class="reference-badge" :class="`reference-badge--${item.category}`">{{ categoryLabel(item.category) }}</span>
+                <span class="reference-status" :class="`reference-status--${item.status}`">{{ item.status }}</span>
+              </div>
+              <div class="row-meta">
+                来源：
+                <template v-if="item.category === 'annotation'">
+                  {{ item.source.pageTitle }} · {{ item.target.blockPreview || item.target.resourceItemTitle }}
+                </template>
+                <template v-else>
+                  页面 {{ item.source.pageTitle }} · 块 {{ item.source.blockId }} · {{ item.source.sourceKind }}
+                </template>
+              </div>
+              <div class="row-meta">
+                目标：
+                <template v-if="item.category === 'internal'">
+                  {{ item.target.kind }} {{ item.target.pageTitle || item.target.pageId || item.target.blockId }}
+                </template>
+                <template v-else-if="item.category === 'annotation'">
+                  {{ item.citation.note || '(无备注)' }}
+                </template>
+                <template v-else>
+                  {{ item.target.resourceItemTitle || '未绑定资源' }}
+                  <span v-if="item.target.resourceTypeName"> · {{ item.target.resourceTypeName }}</span>
+                </template>
+              </div>
+              <p v-if="item.target.url" class="reference-url">{{ item.target.url }}</p>
+              <p v-if="item.target.blockPreview && item.category !== 'annotation'" class="reference-preview">{{ item.target.blockPreview }}</p>
+              <p v-if="item.citation.displayText || item.citation.locator || item.citation.note" class="reference-preview">
+                {{ item.citation.displayText || '未设置显示文案' }}
+                <span v-if="item.citation.locator"> · {{ item.citation.locator }}</span>
+                <span v-if="item.citation.note"> · {{ item.citation.note }}</span>
+              </p>
             </div>
-            <div class="row-meta">
-              来源：
-              <template v-if="item.category === 'annotation'">
-                {{ item.source.pageTitle }} · {{ item.target.blockPreview || item.target.resourceItemTitle }}
-              </template>
-              <template v-else>
-                页面 {{ item.source.pageTitle }} · 块 {{ item.source.blockId }} · {{ item.source.sourceKind }}
-              </template>
+            <div class="row-actions">
+              <button @click="goToReferenceSource(item)">打开来源</button>
+              <button v-if="item.editable && item.category !== 'annotation'" @click="editReference(item)">编辑</button>
+              <button v-if="item.editable && item.category !== 'annotation'" class="secondary" @click="setReferenceBinding(item, 'auto')">自动匹配</button>
+              <button v-if="item.editable && item.category !== 'annotation'" class="danger" @click="setReferenceBinding(item, 'manual_unbound')">解绑</button>
+              <button v-if="item.editable && item.category === 'annotation'" class="danger" @click="deleteAnnotation(item)">删除</button>
             </div>
-            <div class="row-meta">
-              目标：
-              <template v-if="item.category === 'internal'">
-                {{ item.target.kind }} {{ item.target.pageTitle || item.target.pageId || item.target.blockId }}
-              </template>
-              <template v-else-if="item.category === 'annotation'">
-                {{ item.citation.note || '(无备注)' }}
-              </template>
-              <template v-else>
-                {{ item.target.resourceItemTitle || '未绑定资源' }}
-                <span v-if="item.target.resourceTypeName"> · {{ item.target.resourceTypeName }}</span>
-              </template>
-            </div>
-            <p v-if="item.target.url" class="reference-url">{{ item.target.url }}</p>
-            <p v-if="item.target.blockPreview && item.category !== 'annotation'" class="reference-preview">{{ item.target.blockPreview }}</p>
-            <p v-if="item.citation.displayText || item.citation.locator || item.citation.note" class="reference-preview">
-              {{ item.citation.displayText || '未设置显示文案' }}
-              <span v-if="item.citation.locator"> · {{ item.citation.locator }}</span>
-              <span v-if="item.citation.note"> · {{ item.citation.note }}</span>
-            </p>
-          </div>
-          <div class="row-actions">
-            <button @click="goToReferenceSource(item)">打开来源</button>
-            <button v-if="item.editable && item.category !== 'annotation'" @click="editReference(item)">编辑</button>
-            <button v-if="item.editable && item.category !== 'annotation'" class="secondary" @click="setReferenceBinding(item, 'auto')">自动匹配</button>
-            <button v-if="item.editable && item.category !== 'annotation'" class="danger" @click="setReferenceBinding(item, 'manual_unbound')">解绑</button>
-            <button v-if="item.editable && item.category === 'annotation'" class="danger" @click="deleteAnnotation(item)">删除</button>
-          </div>
-        </article>
-        <p v-if="!references.length && !referencesLoading" class="empty">暂无引用记录</p>
+          </article>
+          <p v-if="!references.length && !referencesLoading" class="empty">暂无引用记录</p>
+        </div>
+        <div v-if="!referencesLoading && references.length" class="resource-list__pagination">
+          <span class="pagination-info">共 {{ totalReferences }} 条</span>
+          <span class="pagination-separator">|</span>
+          <button :disabled="currentPage <= 0" @click="goToPage(0)" title="首页">&laquo;</button>
+          <button :disabled="currentPage <= 0" @click="goToPage(currentPage - 1)" title="上一页">&lsaquo;</button>
+          <template v-if="totalPages > 1" v-for="p in displayedPages" :key="p">
+            <button
+              v-if="p !== null"
+              :class="{ active: p === currentPage }"
+              @click="goToPage(p)"
+            >{{ p + 1 }}</button>
+            <span v-else class="pagination-ellipsis">…</span>
+          </template>
+          <button :disabled="currentPage >= totalPages - 1" @click="goToPage(currentPage + 1)" title="下一页">&rsaquo;</button>
+          <button :disabled="currentPage >= totalPages - 1" @click="goToPage(totalPages - 1)" title="末页">&raquo;</button>
+          <span class="pagination-page">{{ currentPage + 1 }}/{{ totalPages }}</span>
+        </div>
       </div>
     </section>
 
@@ -1175,7 +1236,75 @@ textarea {
 }
 
 .resource-list {
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
+  max-height: 75vh;
+}
+
+.resource-list__scroll {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.resource-list__pagination {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 16px;
+  border-top: 1px solid #edf0f5;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.resource-list__pagination button {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2933;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.resource-list__pagination button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.resource-list__pagination button.active {
+  border-color: #1677ff;
+  background: #1677ff;
+  color: #fff;
+}
+
+.resource-list__pagination .pagination-ellipsis {
+  padding: 0 4px;
+  color: #667085;
+}
+
+.resource-list__pagination .pagination-info {
+  font-size: 13px;
+  color: #667085;
+  white-space: nowrap;
+}
+
+.resource-list__pagination .pagination-separator {
+  color: #d0d5dd;
+  font-size: 13px;
+}
+
+.resource-list__pagination .pagination-page {
+  margin-left: auto;
+  font-size: 13px;
+  color: #667085;
+  white-space: nowrap;
 }
 
 .object-model-list {

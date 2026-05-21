@@ -48,6 +48,15 @@ export interface ListReferencesParams {
   resourceItemId?: string;
   status?: string;
   q?: string;
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ListReferencesResult {
+  items: ReferenceItem[];
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 export interface UpdateExternalReferencePayload {
@@ -67,16 +76,18 @@ function query(params: Record<string, string | undefined>): string {
   return serialized ? `?${serialized}` : '';
 }
 
-export function listReferences(params: ListReferencesParams = {}): Promise<ReferenceItem[]> {
+export function listReferences(params: ListReferencesParams = {}): Promise<ListReferencesResult> {
   if (isMockDataSource()) {
     return Promise.resolve(listReferencesMock(params));
   }
-  return request<ReferenceItem[]>(`/api/references${query({
+  return request<ListReferencesResult>(`/api/references${query({
     category: params.category,
     pageId: params.pageId,
     resourceItemId: params.resourceItemId,
     status: params.status,
     q: params.q,
+    page: params.page !== undefined ? String(params.page) : undefined,
+    pageSize: params.pageSize !== undefined ? String(params.pageSize) : undefined,
   })}`);
 }
 

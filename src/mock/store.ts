@@ -9,7 +9,7 @@ import type {
   RoadmapNode,
   TextAnnotation,
 } from '@/api/types';
-import type { ReferenceItem, ListReferencesParams } from '@/api/reference';
+import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
@@ -461,7 +461,7 @@ function findPageTitle(pageId: string): string {
   return page?.title || pageId;
 }
 
-export function listReferencesMock(params: ListReferencesParams = {}): ReferenceItem[] {
+export function listReferencesMock(params: ListReferencesParams = {}): ListReferencesResult {
   const results: ReferenceItem[] = [];
   const now = Date.now();
 
@@ -509,13 +509,19 @@ export function listReferencesMock(params: ListReferencesParams = {}): Reference
     }
   }
 
+  let filtered = results;
   if (params.category && params.category !== 'all' && params.category !== 'annotation') {
-    return results.filter((r) => r.category === params.category);
+    filtered = results.filter((r) => r.category === params.category);
   }
-
   if (params.category === 'annotation') {
-    return results;
+    filtered = results;
   }
 
-  return results;
+  const total = filtered.length;
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? 50;
+  const from = page * pageSize;
+  const items = from >= total ? [] : filtered.slice(from, from + pageSize);
+
+  return { items, total, page, pageSize };
 }
