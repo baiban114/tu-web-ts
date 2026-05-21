@@ -133,6 +133,22 @@ const edgeInlineInputRef = ref<HTMLTextAreaElement | null>(null);
 const isEditable = computed(() => props.editable !== false);
 const isTaskFlow = computed(() => props.graphData?.blueprintMeta?.kind === TASK_FLOW_KIND);
 const hasGraphSourceActions = computed(() => props.sourceLoadEnabled || props.sourceWriteBackEnabled);
+const hasExplicitSize = computed(() => props.width != null && props.height != null)
+const editorStyle = computed(() => {
+  if (hasExplicitSize.value) {
+    return {
+      width: `${props.width}px`,
+      height: `${props.height}px`,
+    }
+  }
+  return {}
+})
+const stageStyle = computed(() => {
+  if (hasExplicitSize.value) return { height: '100%', minHeight: '0' }
+  return { minHeight: `${props.height || 540}px` }
+})
+const effectiveWidth = computed(() => props.width ?? 960)
+const effectiveHeight = computed(() => props.height ?? 540)
 const selectionSummary = computed(() => {
   if (selectedCellsCount.value === 0) return '未选中对象';
   if (selectedCellsCount.value > 1) return `已选中 ${selectedCellsCount.value} 个对象`;
@@ -1864,8 +1880,8 @@ function editEdgeLabel(edge: Edge) {
 
 function resizeGraph() {
   if (!graph || !stageRef.value) return;
-  const width = stageRef.value.clientWidth || props.width;
-  const height = stageRef.value.clientHeight || props.height;
+  const width = hasExplicitSize.value ? effectiveWidth.value : (stageRef.value.clientWidth || effectiveWidth.value);
+  const height = hasExplicitSize.value ? effectiveHeight.value : (stageRef.value.clientHeight || effectiveHeight.value);
   graph.resize(width, height);
   updateUndoRedoState();
   updateNodeOverlays();
@@ -2209,6 +2225,16 @@ watch(
   },
 );
 
+watch(
+  () => [props.width, props.height] as const,
+  ([w, h]) => {
+    if (!graph || !stageRef.value || w == null || h == null) return;
+    graph.resize(w, h);
+    updateUndoRedoState();
+    updateNodeOverlays();
+  },
+);
+
 defineExpose({
   getMarkdownLinkAnchor,
   insertMarkdownLink,
@@ -2218,7 +2244,7 @@ defineExpose({
 </script>
 
 <template>
-  <div class="x6-editor" @mousedown.stop="emit('active')" @click.stop @dblclick.stop>
+  <div class="x6-editor" :class="{ 'x6-editor--sized': hasExplicitSize }" :style="editorStyle" @mousedown.stop="emit('active')" @click.stop @dblclick.stop>
     <div class="x6-toolbar">
       <div class="toolbar-group" v-if="isTaskFlow">
         <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('round')">
@@ -2298,7 +2324,7 @@ defineExpose({
     </div>
 
     <div class="x6-workspace">
-      <div ref="stageRef" class="x6-stage" :style="{ minHeight: `${height}px` }">
+      <div ref="stageRef" class="x6-stage" :style="stageStyle">
         <div ref="containerRef" class="x6-canvas"></div>
 
         <div
@@ -2904,6 +2930,20 @@ defineExpose({
 
 .x6-canvas :deep(.x6-node [magnet='true']:hover) {
   transform: scale(1.12);
+}
+
+.x6-editor--sized {
+  display: flex;
+  flex-direction: column;
+}
+
+.x6-editor--sized .x6-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+.x6-editor--sized .x6-stage {
+  height: 100%;
 }
 
 @media (max-width: 1100px) {

@@ -141,44 +141,16 @@ export function blockToTipTapNode(block: Block, editor: any) {
       })
 
     case 'table':
-      return createTableNode(block, editor)
+      return schema.nodes.tableBlock.create({
+        ...attrs,
+        width: block.width ?? null,
+        height: block.height ?? null,
+        tableData: block.tableData || { headers: [], rows: [] },
+      })
 
     default:
       return schema.nodes.paragraph.create(attrs)
   }
-}
-
-function createTableNode(block: Block, editor: any) {
-  const schema = editor.schema
-  const source = block.tableData || { headers: ['列 1', '列 2'], rows: [['', '']] }
-  const rows = source.rows?.length ? source.rows : [['', '']]
-  const headers = source.headers?.length ? source.headers : rows[0].map((_, index) => `列 ${index + 1}`)
-  const columnCount = Math.max(headers.length, ...rows.map((row) => row.length), 1)
-  const tableData = {
-    headers: Array.from({ length: columnCount }, (_, index) => headers[index] ?? `列 ${index + 1}`),
-    rows: rows.map((row) => Array.from({ length: columnCount }, (_, index) => row[index] ?? '')),
-  }
-
-  const createCellContent = (text = '') => [
-    schema.nodes.paragraph.create(
-      { blockId: block.id },
-      text ? schema.text(text) : undefined,
-    ),
-  ]
-
-  const tableRows = [
-    schema.nodes.tableRow.create(null, tableData.headers.map((text) => (
-      schema.nodes.tableHeader.create(null, createCellContent(text))
-    ))),
-    ...tableData.rows.map((row) => schema.nodes.tableRow.create(null, row.map((text) => (
-      schema.nodes.tableCell.create(null, createCellContent(text))
-    )))),
-  ]
-
-  return schema.nodes.table.create(
-    { blockId: block.id, tableData: JSON.stringify(tableData) },
-    tableRows,
-  )
 }
 
 function findNodePositionByBlockId(doc: ProseMirrorNode, blockId: string): number | null {

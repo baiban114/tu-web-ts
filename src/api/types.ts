@@ -67,6 +67,12 @@ export interface BlockTag {
   color?: string;
 }
 
+export interface SpannedBlockInfo {
+  blockId: string;
+  blockType: string;
+  title?: string;
+}
+
 export interface TextAnnotation {
   id: string;
   selectedText: string;
@@ -82,6 +88,9 @@ export interface TextAnnotation {
   anchorVersion?: number;
   lastResolvedAt?: number;
   unresolved?: boolean;
+  scope?: 'text' | 'block' | 'compound';
+  spannedBlockIds?: string[];
+  spannedBlockMetadata?: SpannedBlockInfo[];
 }
 
 export interface BlockMetadata {

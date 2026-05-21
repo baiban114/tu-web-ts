@@ -1,10 +1,21 @@
 ﻿<script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import X6Component from '@/components/X6Component.vue'
 
 const props = defineProps(nodeViewProps)
+
+interface CompoundBadge {
+  annotationId: string
+  color: string
+}
+
+const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]>>('compoundAnnotationBadges', {})
+const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
+
+const blockId = computed(() => props.node.attrs.blockId || '')
+const compoundBadges = computed(() => compoundAnnotationBadges[blockId.value] || [])
 
 const graphData = computed({
   get: () => props.node.attrs.graphData,
@@ -13,6 +24,10 @@ const graphData = computed({
 
 const onResize = (width: number | null, height: number | null) => {
   props.updateAttributes({ width, height })
+}
+
+const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) => {
+  onCompoundBadgeClick(bid, annotationId, event)
 }
 </script>
 
@@ -24,10 +39,16 @@ const onResize = (width: number | null, height: number | null) => {
       :min-width="200"
       :min-height="150"
       block-type-label="X6 画板"
+      :block-id="blockId"
+      block-type="x6"
+      :compound-badges="compoundBadges"
       @resize="onResize"
+      @compound-badge-click="handleBadgeClick"
     >
       <X6Component
         :graph-data="graphData"
+        :width="props.node.attrs.width"
+        :height="props.node.attrs.height"
         @graph-data-change="graphData = $event"
       />
     </ResizableBlockWrapper>

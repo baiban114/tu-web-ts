@@ -2,6 +2,13 @@
 import { computed } from 'vue'
 import type { TextAnnotation } from '@/api/types'
 
+const BLOCK_TYPE_LABELS: Record<string, string> = {
+  x6Block: 'X6 画板',
+  timelineBlock: '时间轴',
+  refBlock: '引用',
+  spacerBlock: '分割空白',
+}
+
 interface Props {
   visible: boolean
   top: number
@@ -57,8 +64,20 @@ const title = computed(() => displayedAnnotations.value.length > 1
             :key="item.id"
             class="note-popover__item"
           >
-            <div class="note-popover__quote">
+            <div v-if="item.scope !== 'block'" class="note-popover__quote">
               "{{ item.selectedText }}"
+            </div>
+
+            <div v-if="item.scope === 'compound' && item.spannedBlockMetadata?.length" class="note-popover__blocks">
+              <div class="note-popover__blocks-label">涉及块：</div>
+              <div
+                v-for="meta in item.spannedBlockMetadata"
+                :key="meta.blockId"
+                class="note-popover__block-tag"
+              >
+                {{ BLOCK_TYPE_LABELS[meta.blockType] || meta.blockType }}
+                <template v-if="meta.title"> — {{ meta.title }}</template>
+              </div>
             </div>
 
             <div class="note-popover__body">
@@ -184,5 +203,32 @@ const title = computed(() => displayedAnnotations.value.length > 1
 
 .note-popover__delete-btn:hover {
   background: #fff1f0;
+}
+
+.note-popover__blocks {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  background: #f0fdf4;
+  border-left: 3px solid #86efac;
+  border-radius: 4px;
+}
+
+.note-popover__blocks-label {
+  font-size: 12px;
+  color: #6b7280;
+  margin-bottom: 4px;
+}
+
+.note-popover__block-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px 6px;
+  margin: 2px 2px 2px 0;
+  border-radius: 3px;
+  background: #dcfce7;
+  color: #166534;
+  font-size: 12px;
+  font-weight: 500;
 }
 </style>

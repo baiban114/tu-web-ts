@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { watch, onBeforeUnmount, onMounted, ref, computed } from 'vue'
+import { watch, onBeforeUnmount, onMounted, ref, computed, provide } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
@@ -11,23 +11,7 @@ import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
-import { Table as BaseTable, TableRow, TableCell, TableHeader } from '@tiptap/extension-table'
-
-// Preserve our custom blockId attribute on the table node. Default Table
-// schema does not declare it, so ProseMirror silently strips it on every
-// fromJSON — which means convertTableNode has to guess the original block id
-// by document order, and any cycle that mounts the table again sees the attr
-// reset to its default. Declaring it here keeps the attribute round-tripping
-// through setContent without affecting rendering.
-const Table = BaseTable.extend({
-  addAttributes() {
-    return {
-      ...(this.parent?.() ?? {}),
-      blockId: { default: '' },
-    }
-  },
-})
-import type { Block, TextAnnotation } from '@/api/types'
+import type { Block, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import {
   AnnotationDecorations,
   annotationDecorationsKey,
@@ -38,6 +22,7 @@ import {
   TimelineBlockNode,
   RefBlockNode,
   SpacerBlockNode,
+  TableBlockNode,
   ParagraphNode,
   blocksToTipTap,
   tipTapToBlocks,
@@ -62,11 +47,12 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   'update:blocks': [blocks: Block[]]
   'content-change': [blocks: Block[]]
-  'selection-change': [hasSelection: boolean, text: string, from?: number, to?: number, blockId?: string]
+  'selection-change': [hasSelection: boolean, text: string, from?: number, to?: number, blockId?: string, spannedBlockIds?: string[], spannedBlockMetadata?: SpannedBlockInfo[]]
   'selection-pointer-change': [active: boolean]
   'annotation-click': [payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }]
   'annotations-mapped': [annotations: TextAnnotation[]]
   'block-click': [blockId: string, event: MouseEvent]
+  'compound-badge-click': [blockId: string, annotationId: string, clientY: number, clientX: number]
   'open-block-picker': []
   'open-tag-editor': [blockId: string]
 }>()
@@ -146,6 +132,28 @@ const filteredSlashOptions = computed(() => {
 })
 
 const flattenedAnnotations = computed(() => Object.values(props.annotations).flat())
+
+const compoundAnnotationBadges = computed(() => {
+  const map: Record<string, { annotationId: string; color: string }[]> = {}
+  for (const annotations of Object.values(props.annotations)) {
+    for (const ann of annotations) {
+      if (ann.scope === 'compound' && ann.spannedBlockIds?.length) {
+        for (const bid of ann.spannedBlockIds) {
+          if (!map[bid]) map[bid] = []
+          map[bid].push({ annotationId: ann.id, color: ann.color || '#FFEB3B' })
+        }
+      }
+    }
+  }
+  return map
+})
+
+provide('compoundAnnotationBadges', compoundAnnotationBadges)
+
+const handleCompoundBadgeClick = (blockId: string, annotationId: string, event: MouseEvent) => {
+  emit('compound-badge-click', blockId, annotationId, event.clientY, event.clientX)
+}
+provide('onCompoundBadgeClick', handleCompoundBadgeClick)
 
 const getBlockIdAtPos = (pos: number): string | undefined => {
   if (!editor.value) return undefined
@@ -451,10 +459,6 @@ const editor = useEditor({
     Placeholder.configure({
       placeholder: '输入 / 查看更多选项...',
     }),
-    Table.configure({ resizable: true }),
-    TableRow,
-    TableCell,
-    TableHeader,
     AnnotationDecorations.configure({
       annotations: flattenedAnnotations.value,
       onAnnotationClick: (payload) => emit('annotation-click', payload),
@@ -511,6 +515,7 @@ const editor = useEditor({
     TimelineBlockNode,
     RefBlockNode,
     SpacerBlockNode,
+    TableBlockNode,
     ParagraphNode,
   ],
   editorProps: {
@@ -547,7 +552,21 @@ const editor = useEditor({
     if (!isMounted || !editor.value) return
     const { empty, from, to } = editor.value.state.selection
     const text = empty ? '' : editor.value.state.doc.textBetween(from, to, ' ')
-    emit('selection-change', !empty, text, from, to, getBlockIdAtPos(from))
+    const spannedBlockIds: string[] = []
+    const spannedBlockMetadata: { blockId: string; blockType: string }[] = []
+    if (!empty) {
+      const seen = new Set<string>()
+      editor.value.state.doc.nodesBetween(from!, to!, (node) => {
+        const bid = node.attrs?.blockId
+        if (node.type.isAtom && bid && !seen.has(bid) && node.type.name !== 'paragraph') {
+          seen.add(bid)
+          spannedBlockIds.push(bid)
+          spannedBlockMetadata.push({ blockId: bid, blockType: node.type.name })
+        }
+        return true
+      })
+    }
+    emit('selection-change', !empty, text, from, to, getBlockIdAtPos(from), spannedBlockIds.length ? spannedBlockIds : undefined, spannedBlockMetadata.length ? spannedBlockMetadata : undefined)
   },
 })
 

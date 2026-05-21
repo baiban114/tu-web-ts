@@ -13,51 +13,6 @@ function createEmptyParagraph(blockId?: string): JSONContent {
   }
 }
 
-function createCellParagraph(blockId: string | undefined, text: string): JSONContent {
-  const attrs = blockId ? { blockId } : undefined
-  if (!text) return { type: 'paragraph', attrs }
-  return {
-    type: 'paragraph',
-    attrs,
-    content: [{ type: 'text', text }],
-  }
-}
-
-/** Convert a block's tableData into a proper tiptap table JSON structure.
- * Important: cell text must be rendered into the paragraphs. If cells stay
- * empty here, any external re-render via setContent (e.g. annotation remap,
- * page reload) replaces the live doc with an emptier one and ProseMirror's
- * selection mapping clamps the caret to the doc end. */
-function tableDataToTipTapTable(
-  blockId: string,
-  tableData: NonNullable<Block['tableData']>,
-): JSONContent {
-  const { headers = [], rows = [] } = tableData
-  const tableContent: JSONContent[] = []
-
-  if (headers.length > 0) {
-    const headerCells = headers.map((h) => ({
-      type: 'tableHeader' as const,
-      content: [createCellParagraph(blockId, h ?? '')],
-    }))
-    tableContent.push({ type: 'tableRow', content: headerCells })
-  }
-
-  for (const row of rows) {
-    const cells = row.map((cell) => ({
-      type: 'tableCell' as const,
-      content: [createCellParagraph(blockId, cell ?? '')],
-    }))
-    tableContent.push({ type: 'tableRow', content: cells })
-  }
-
-  return {
-    type: 'table',
-    attrs: { blockId, tableData: JSON.stringify(tableData) },
-    content: tableContent,
-  }
-}
-
 export function blocksToTipTap(blocks: Block[]): JSONContent {
   const children: JSONContent[] = []
 
@@ -78,8 +33,16 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
         },
       })
     } else if (block.type === 'table') {
-      // Convert to proper tiptap table node structure
-      children.push(tableDataToTipTapTable(block.id, block.tableData || { headers: [], rows: [] }))
+      children.push({
+        type: 'tableBlock',
+        attrs: {
+          blockId: block.id,
+          title: block.title || '',
+          width: block.width ?? null,
+          height: block.height ?? null,
+          tableData: block.tableData || { headers: [], rows: [] },
+        },
+      })
     } else if (block.type === 'line') {
       children.push({
         type: 'timelineBlock',
@@ -146,12 +109,6 @@ export function tipTapToBlocks(json: JSONContent, originalBlocks: Block[]): Bloc
   const originalRichTextBlocks = originalBlocks.filter((b) => isRichTextBlock(b))
   let richTextEmittedCount = 0
 
-  // Tiptap's default table schema does not declare our custom `blockId` attr,
-  // so it gets stripped from node.attrs. Recover the original table block id by
-  // matching tables in document order against the original block list.
-  const originalTableBlocks = originalBlocks.filter((b) => b.type === 'table')
-  let tableEmittedCount = 0
-
   const richTextNodes: JSONContent[] = []
 
   const flushRichText = () => {
@@ -172,12 +129,6 @@ export function tipTapToBlocks(json: JSONContent, originalBlocks: Block[]): Bloc
   for (const node of json.content) {
     if (isTipTapRichTextNode(node)) {
       richTextNodes.push(node)
-    } else if (node.type === 'table') {
-      flushRichText()
-      const existingTable = originalTableBlocks[tableEmittedCount]
-      tableEmittedCount += 1
-      const converted = convertTableNode(node, originalBlockMap, existingTable)
-      if (converted) blocks.push(converted)
     } else {
       flushRichText()
       const converted = convertNonRichTextNode(node, originalBlockMap)
@@ -195,55 +146,6 @@ function isRichTextBlock(block: Block): boolean {
 
 function isTipTapRichTextNode(node: JSONContent): boolean {
   return ['heading', 'paragraph', 'bulletList', 'orderedList', 'blockquote', 'horizontalRule', 'taskList', 'image'].includes(node.type || '')
-}
-
-/** Convert a tiptap `table` node back to a Block with type 'table'.
- * Always rebuilds tableData from the live cell content — node.attrs.tableData
- * is set at conversion time but Tiptap drops it because the default Table
- * schema does not declare the attribute, so trusting it would echo the initial
- * (stale) values back and lose every edit. */
-function convertTableNode(
-  node: JSONContent,
-  originalBlockMap: Map<string, Block>,
-  existingTableByOrder?: Block,
-): Block | null {
-  const blockIdAttr = node.attrs?.blockId
-  const existingBlock = (blockIdAttr ? originalBlockMap.get(blockIdAttr) : undefined)
-    ?? existingTableByOrder
-
-  const headers: string[] = []
-  const rows: string[][] = []
-  const content = node.content || []
-  for (let ri = 0; ri < content.length; ri += 1) {
-    const row = content[ri]
-    const cells = row.content || []
-    if (ri === 0 && cells.length > 0 && cells.every((c) => c.type === 'tableHeader')) {
-      for (const cell of cells) {
-        headers.push(extractTextContent(cell))
-      }
-    } else {
-      const rowData: string[] = []
-      for (const cell of cells) {
-        rowData.push(extractTextContent(cell))
-      }
-      rows.push(rowData)
-    }
-  }
-
-  return {
-    id: blockIdAttr || existingBlock?.id || generateId(),
-    type: 'table',
-    title: existingBlock?.title,
-    tableData: { headers, rows },
-  }
-}
-
-function extractTextContent(node: JSONContent): string {
-  if (node.text) return node.text
-  if (node.content) {
-    return node.content.map((c) => extractTextContent(c)).join(' ')
-  }
-  return ''
 }
 
 function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string, Block>): Block | null {
@@ -278,6 +180,15 @@ function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string,
         refType: node.attrs?.refType || existingBlock?.refType,
         width: node.attrs?.width ?? existingBlock?.width,
         height: node.attrs?.height ?? existingBlock?.height,
+      }
+    case 'tableBlock':
+      return {
+        id: blockId || existingBlock?.id || generateId(),
+        type: 'table',
+        title: node.attrs?.title || existingBlock?.title,
+        width: node.attrs?.width ?? existingBlock?.width,
+        height: node.attrs?.height ?? existingBlock?.height,
+        tableData: node.attrs?.tableData || existingBlock?.tableData || { headers: [], rows: [] },
       }
     case 'spacerBlock':
       return {

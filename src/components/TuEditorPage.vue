@@ -1,6 +1,6 @@
 ﻿<script setup lang="ts">
 import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import type { Block, BlockTag, TextAnnotation } from '@/api/types'
+import type { Block, BlockTag, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import TuEditor from './TuEditor.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
@@ -58,6 +58,8 @@ const selectionBlockIndex = ref(-1)
 const selectionBlockId = ref('')
 const selectionFrom = ref(0)
 const selectionTo = ref(0)
+const selectionSpannedBlockIds = ref<string[]>([])
+const selectionSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let selectionToolbarTimer: ReturnType<typeof setTimeout> | null = null
 
 // --- Toast ---
@@ -88,6 +90,8 @@ const pendingNoteContextBefore = ref('')
 const pendingNoteContextAfter = ref('')
 const pendingNoteFrom = ref(0)
 const pendingNoteTo = ref(0)
+const pendingNoteSpannedBlockIds = ref<string[]>([])
+const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 
 const notePopoverVisible = ref(false)
@@ -162,6 +166,8 @@ const handleSelectionChange = (
   selFrom?: number,
   selTo?: number,
   selBlockId?: string,
+  selSpannedBlockIds?: string[],
+  selSpannedBlockMetadata?: SpannedBlockInfo[],
 ) => {
   if (selectionToolbarTimer !== null) {
     clearTimeout(selectionToolbarTimer)
@@ -174,6 +180,8 @@ const handleSelectionChange = (
   selectionTo.value = selTo ?? 0
   selectionBlockIndex.value = -1
   selectionBlockId.value = selBlockId ?? ''
+  selectionSpannedBlockIds.value = selSpannedBlockIds ?? []
+  selectionSpannedBlockMetadata.value = selSpannedBlockMetadata ?? []
 
   if (selHasSelection && tuEditorRef.value) {
     const pos = tuEditorRef.value.getSelectionPosition?.()
@@ -182,7 +190,7 @@ const handleSelectionChange = (
     }
     selectionToolbarTimer = setTimeout(() => {
       selectionToolbarTimer = null
-      selectionToolbarVisible.value = hasSelection.value && selectedText.value.trim().length > 0
+      selectionToolbarVisible.value = hasSelection.value && (selectedText.value.trim().length > 0 || selectionSpannedBlockIds.value.length > 0)
     }, 120)
   } else {
     selectionToolbarVisible.value = false
@@ -403,7 +411,9 @@ const allAnnotations = computed(() => Object.values(editorAnnotations.value).fla
 
 // --- Note / Annotation ---
 const handleAddNoteFromSelection = () => {
-  if (!selectedText.value) return
+  const hasText = !!selectedText.value
+  const hasBlocks = selectionSpannedBlockIds.value.length > 0
+  if (!hasText && !hasBlocks) return
 
   const blockIndex = selectionBlockIndex.value >= 0 ? selectionBlockIndex.value : 0
   const targetBlock = selectionBlockId.value
@@ -418,6 +428,8 @@ const handleAddNoteFromSelection = () => {
   pendingNoteContextAfter.value = context.after
   pendingNoteFrom.value = selectionFrom.value
   pendingNoteTo.value = selectionTo.value
+  pendingNoteSpannedBlockIds.value = selectionSpannedBlockIds.value
+  pendingNoteSpannedBlockMetadata.value = selectionSpannedBlockMetadata.value
 
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
@@ -439,21 +451,28 @@ const handleSaveAnnotation = (note: string) => {
       annotations[idx] = { ...existing, note, updatedAt: now }
     }
   } else {
+    const hasText = !!pendingNoteSelectedText.value
+    const hasSpannedBlocks = pendingNoteSpannedBlockIds.value.length > 0
+    const isBlockOnly = !hasText && hasSpannedBlocks
+    const scope: 'text' | 'block' | 'compound' = isBlockOnly ? 'block' : hasSpannedBlocks ? 'compound' : 'text'
     const annotation: TextAnnotation = {
       id: `annot-${now}-${Math.random().toString(36).substr(2, 6)}`,
       selectedText: pendingNoteSelectedText.value,
       contextBefore: pendingNoteContextBefore.value,
       contextAfter: pendingNoteContextAfter.value,
       note,
-      color: '#FFEB3B',
+      color: scope === 'compound' ? '#A5D6A7' : scope === 'block' ? '#90CAF9' : '#FFEB3B',
       createdAt: now,
       updatedAt: now,
-      from: pendingNoteFrom.value,
-      to: pendingNoteTo.value,
+      from: hasText ? pendingNoteFrom.value : undefined,
+      to: hasText ? pendingNoteTo.value : undefined,
       blockId: pendingNoteBlockId.value,
-      anchorVersion: 1,
-      lastResolvedAt: now,
+      anchorVersion: hasText ? 1 : undefined,
+      lastResolvedAt: hasText ? now : undefined,
       unresolved: false,
+      scope,
+      spannedBlockIds: hasSpannedBlocks ? pendingNoteSpannedBlockIds.value : undefined,
+      spannedBlockMetadata: hasSpannedBlocks ? pendingNoteSpannedBlockMetadata.value : undefined,
     }
     annotations.push(annotation)
   }
@@ -472,6 +491,8 @@ const handleSaveAnnotation = (note: string) => {
   pendingNoteSelectedText.value = ''
   pendingNoteFrom.value = 0
   pendingNoteTo.value = 0
+  pendingNoteSpannedBlockIds.value = []
+  pendingNoteSpannedBlockMetadata.value = []
 }
 
 const sortAnnotationsByTimeDesc = (annotations: TextAnnotation[]) => {
@@ -523,6 +544,15 @@ const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
       localBlocks.value = [...localBlocks.value]
     }
   }, 400)
+}
+
+const handleCompoundBadgeClick = (blockId: string, annotationId: string, clientY: number, clientX: number) => {
+  const annotation = allAnnotations.value.find(a => a.id === annotationId)
+  if (!annotation) return
+  notePopoverAnnotation.value = annotation
+  notePopoverAnnotations.value = [annotation]
+  notePopoverPos.value = { top: clientY - 10, left: clientX + 12 }
+  notePopoverVisible.value = true
 }
 
 const handleEditAnnotation = (annotation?: TextAnnotation) => {
@@ -739,6 +769,7 @@ onBeforeUnmount(() => {
           @selection-change="handleSelectionChange"
           @annotation-click="handleAnnotationClick"
           @annotations-mapped="handleAnnotationsMapped"
+          @compound-badge-click="handleCompoundBadgeClick"
           @open-block-picker="handleOpenBlockPicker"
           @open-tag-editor="handleOpenTagEditor"
         />

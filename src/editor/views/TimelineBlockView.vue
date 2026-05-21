@@ -1,10 +1,21 @@
 ﻿<script setup lang="ts">
-import { computed } from 'vue'
+import { computed, inject } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import Line from '@/components/line.vue'
 
 const props = defineProps(nodeViewProps)
+
+interface CompoundBadge {
+  annotationId: string
+  color: string
+}
+
+const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]>>('compoundAnnotationBadges', {})
+const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
+
+const blockId = computed(() => props.node.attrs.blockId || '')
+const compoundBadges = computed(() => compoundAnnotationBadges[blockId.value] || [])
 
 const timelineData = computed({
   get: () => props.node.attrs.timelineData,
@@ -13,6 +24,10 @@ const timelineData = computed({
 
 const onResize = (width: number | null, _height: number | null) => {
   props.updateAttributes({ width })
+}
+
+const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) => {
+  onCompoundBadgeClick(bid, annotationId, event)
 }
 </script>
 
@@ -23,7 +38,11 @@ const onResize = (width: number | null, _height: number | null) => {
       :resizable-axes="{ width: true, height: false }"
       :min-width="300"
       block-type-label="时间轴"
+      :block-id="blockId"
+      block-type="line"
+      :compound-badges="compoundBadges"
       @resize="onResize"
+      @compound-badge-click="handleBadgeClick"
     >
       <Line
         :timeline-data="timelineData"

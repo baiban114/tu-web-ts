@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, inject, onMounted, ref, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import ReferencedBlockRenderer from '@/components/ReferencedBlockRenderer.vue'
@@ -11,7 +11,22 @@ import type { Block } from '@/api/types'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useWorkspaceStore } from '@/stores/workspace'
 
+interface CompoundBadge {
+  annotationId: string
+  color: string
+}
+
 const props = defineProps(nodeViewProps)
+
+const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]>>('compoundAnnotationBadges', {})
+const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
+
+const blockId = computed(() => props.node.attrs.blockId || '')
+const compoundBadges = computed(() => compoundAnnotationBadges[blockId.value] || [])
+
+const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) => {
+  onCompoundBadgeClick(bid, annotationId, event)
+}
 
 const registryStore = useBlockRegistryStore()
 const workspaceStore = useWorkspaceStore()
@@ -88,7 +103,11 @@ onMounted(() => {
       :resizable-axes="{ width: true, height: false }"
       :min-width="200"
       block-type-label="引用"
+      :block-id="blockId"
+      block-type="ref"
+      :compound-badges="compoundBadges"
       @resize="onResize"
+      @compound-badge-click="handleBadgeClick"
     >
     <div v-if="refType === 'page'" class="ref-page-card">
       <button type="button" class="ref-page-card__header" @click="openReferencedPage">
