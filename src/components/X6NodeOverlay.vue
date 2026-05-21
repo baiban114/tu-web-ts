@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
-import RichTextEditor from './RichTextEditor.vue';
+import type { Block } from '@/api/types';
+import TuEditor from './TuEditor.vue';
 
 interface Props {
   nodeId: string;
@@ -22,12 +23,15 @@ const emit = defineEmits<{
 
 const plainText = ref(props.label);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
-const richEditorRef = ref<{
-  getMarkdownLinkAnchor?: () => { top: number; left: number } | undefined;
-  insertMarkdownLink?: (label: string, url: string, display?: 'link' | 'image') => void;
-  updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
-  updateInsertedImageWidth?: (widthPercent: number) => boolean;
-} | null>(null);
+const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null);
+
+const INLINE_BLOCK_ID = 'x6-node-inline-editor';
+
+const richBlocks = computed<Block[]>(() => [{
+  id: INLINE_BLOCK_ID,
+  type: 'richtext',
+  content: props.richContent,
+}]);
 
 const richOverlayStyle = computed<Record<string, string>>(() => ({
   ...props.styleProps,
@@ -70,25 +74,34 @@ function handlePlainBlur() {
   }
 }
 
-function insertMarkdownLink(label: string, url: string, display: 'link' | 'image' = 'link'): boolean {
-  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return false;
-  richEditorRef.value?.insertMarkdownLink?.(label, url, display);
-  return Boolean(richEditorRef.value?.insertMarkdownLink);
+function handleBlocksUpdate(blocks: Block[]) {
+  const rich = blocks.find(
+    (b) => b.type === 'richtext' || b.type === 'richText',
+  );
+  emit('rich-change', rich?.content ?? '');
+}
+
+function insertMarkdownLink(label: string, url: string, _display: 'link' | 'image' = 'link'): boolean {
+  const ed = tuEditorRef.value?.editor;
+  if (!ed) return false;
+  ed.chain().focus().insertContent(label).setLink({ href: url }).run();
+  return true;
 }
 
 function getMarkdownLinkAnchor(): { top: number; left: number } | undefined {
-  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return undefined;
-  return richEditorRef.value?.getMarkdownLinkAnchor?.();
+  const ed = tuEditorRef.value?.editor;
+  if (!ed) return undefined;
+  const { from } = ed.state.selection;
+  const coords = ed.view.coordsAtPos(from);
+  return coords ? { top: coords.top, left: coords.left } : undefined;
 }
 
-function updateInsertedLinkDisplay(display: 'link' | 'image'): boolean {
-  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return false;
-  return richEditorRef.value?.updateInsertedLinkDisplay?.(display) ?? false;
+function updateInsertedLinkDisplay(_display: 'link' | 'image'): boolean {
+  return false;
 }
 
-function updateInsertedImageWidth(widthPercent: number): boolean {
-  if (props.textMode !== 'rich' || !props.isEditing || !props.isEditable) return false;
-  return richEditorRef.value?.updateInsertedImageWidth?.(widthPercent) ?? false;
+function updateInsertedImageWidth(_widthPercent: number): boolean {
+  return false;
 }
 
 defineExpose({
@@ -106,16 +119,13 @@ defineExpose({
     :class="isEditing ? 'x6-node-overlay--rich-edit' : 'x6-node-overlay--rich-preview'"
     :style="richOverlayStyle"
   >
-    <RichTextEditor
-      ref="richEditorRef"
-      :content="richContent"
+    <TuEditor
+      ref="tuEditorRef"
+      :blocks="richBlocks"
       :editable="isEditable"
-      :auto-focus="isEditing"
-      :line-handle-enabled="false"
-      compact
-      class="x6-node-rich-editor"
-      @content-change="(value: string) => emit('rich-change', value)"
-      @blur="emit('cancel')"
+      :hover-handle="false"
+      class="x6-node-tu-editor"
+      @update:blocks="handleBlocksUpdate"
     />
   </div>
 
@@ -156,32 +166,51 @@ defineExpose({
   pointer-events: auto;
   overflow: visible;
   z-index: 1001;
+  border: 2px solid #1677ff;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.96);
 }
 
-.x6-node-rich-editor {
+.x6-node-tu-editor {
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.x6-node-tu-editor :deep(.tu-editor-wrapper) {
+  min-height: auto;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.x6-node-tu-editor :deep(.tu-editor-content) {
+  min-height: 0;
+  height: auto;
   padding: 8px 10px;
   font-size: 12px;
-  box-sizing: border-box;
   line-height: 1.3;
   word-break: break-word;
+  --tiptap-handle-gutter: 0;
 }
 
-.x6-node-rich-editor :deep(.rich-text-editor-wrapper),
-.x6-node-rich-editor :deep(.rich-text-editor-container),
-.x6-node-rich-editor :deep(.editor-preview) {
-  width: 100%;
-  height: 100%;
-  min-height: 0;
+.x6-node-tu-editor :deep(.tu-editor-content p) {
+  margin: 0;
 }
 
-.x6-node-rich-editor :deep(p) { margin: 0; }
-.x6-node-rich-editor :deep(h1),
-.x6-node-rich-editor :deep(h2),
-.x6-node-rich-editor :deep(h3) { margin: 0 0 2px; font-size: 14px; }
-.x6-node-rich-editor :deep(ul),
-.x6-node-rich-editor :deep(ol) { margin: 0; padding-left: 16px; }
+.x6-node-tu-editor :deep(.tu-editor-content h1),
+.x6-node-tu-editor :deep(.tu-editor-content h2),
+.x6-node-tu-editor :deep(.tu-editor-content h3) {
+  margin: 0 0 2px;
+  font-size: 14px;
+}
+
+.x6-node-tu-editor :deep(.tu-editor-content ul),
+.x6-node-tu-editor :deep(.tu-editor-content ol) {
+  margin: 0;
+  padding-left: 16px;
+}
 
 .x6-node-overlay--plain-edit {
   position: absolute;

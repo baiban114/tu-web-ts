@@ -1911,6 +1911,9 @@ function bindKeyboardShortcuts() {
   });
 
   graph.bindKey('escape', () => {
+    if (editingNodeId.value != null) {
+      handleNodeOverlayCancel(editingNodeId.value);
+    }
     graph?.cleanSelection();
     refreshSelectedCellState();
     return false;
@@ -1928,7 +1931,14 @@ function bindGraphEvents() {
     startUserInteraction();
     pendingNodeInternalClickId = null;
 
-    if (!isEditable.value || editingNodeId.value != null) {
+    if (!isEditable.value) return;
+
+    // If editing a different node, cancel that edit first
+    if (editingNodeId.value != null && editingNodeId.value !== node.id) {
+      handleNodeOverlayCancel(editingNodeId.value);
+    }
+
+    if (editingNodeId.value != null) {
       return;
     }
 
@@ -1972,6 +1982,9 @@ function bindGraphEvents() {
   });
 
   graph.on('blank:click', () => {
+    if (editingNodeId.value != null) {
+      handleNodeOverlayCancel(editingNodeId.value);
+    }
     pendingNodeInternalClickId = null;
   });
 

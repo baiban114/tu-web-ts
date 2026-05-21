@@ -35,11 +35,13 @@ interface Props {
   blocks: Block[]
   editable?: boolean
   annotations?: Record<string, TextAnnotation[]>
+  hoverHandle?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
   editable: true,
   annotations: () => ({}),
+  hoverHandle: true,
 })
 
 const emit = defineEmits<{
@@ -655,7 +657,7 @@ defineExpose({
       </button>
     </div>
     <HoverHandle
-      v-if="handleVisible && editor"
+      v-if="hoverHandle && handleVisible && editor"
       ref="hoverHandleRef"
       :items="handleItems"
       :style="handlePositionStyle"

@@ -414,7 +414,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
   return nodes.length > 0 ? nodes : [{ type: 'paragraph', attrs: { blockId } }]
 }
 
-function parseInlineMarkdown(text: string): JSONContent[] {
+export function parseInlineMarkdown(text: string): JSONContent[] {
   const parts: JSONContent[] = []
   let remaining = text
 
@@ -470,10 +470,10 @@ function parseInlineMarkdown(text: string): JSONContent[] {
     }
   }
 
-  return parts.length > 0 ? parts : [{ type: 'text', text: '' }]
+  return parts
 }
 
-function tipTapNodesToMarkdown(nodes: JSONContent[]): string {
+export function tipTapNodesToMarkdown(nodes: JSONContent[]): string {
   return nodes.map((node) => nodeToMarkdown(node)).join('\n\n')
 }
 
