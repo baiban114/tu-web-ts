@@ -8,6 +8,7 @@ import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
+import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
@@ -227,14 +228,13 @@ const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string })
 }
 
 // --- TOC ---
-const expandedRefIds = ref<Set<string>>(new Set())
+const refGroups = useExpandCollapse()
 
-const toggleRefGroup = (refId: string) => {
-  const next = new Set(expandedRefIds.value)
-  if (next.has(refId)) next.delete(refId)
-  else next.add(refId)
-  expandedRefIds.value = next
-}
+const allRefGroupIds = computed(() =>
+  tocItems.value
+    .filter(i => i.sourceType === 'ref-group')
+    .map(i => i.refId!)
+)
 
 /** Walk workspace page tree to find a page title by pageId. */
 function findPageTitle(pageId: string): string {
@@ -950,7 +950,7 @@ onBeforeUnmount(() => {
       <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>
     </section>
 
-    <div class="content-shell">
+    <div class="content-shell" :class="{ 'content-shell--toc-open': tocExpanded && tocItems.length > 0 }">
       <div class="content-container">
         <TuEditor
           ref="tuEditorRef"
@@ -986,13 +986,21 @@ onBeforeUnmount(() => {
           <button
             type="button"
             class="page-toc__header"
-            :aria-expanded="tocExpanded"
-            @click="tocExpanded = !tocExpanded"
+            @click="tocExpanded = false"
           >
             <span class="page-toc__title">目录</span>
             <span class="page-toc__meta">{{ tocFlatCount }}</span>
-            <span class="page-toc__toggle">{{ tocExpanded ? '收起' : '展开' }}</span>
+            <span class="page-toc__toggle">收起</span>
           </button>
+          <div v-if="tocExpanded && allRefGroupIds.length > 0" class="page-toc__actions">
+            <button
+              type="button"
+              class="page-toc__action-btn"
+              @click="allRefGroupIds.length > 0 && refGroups.allCollapsed() ? refGroups.expandAll(allRefGroupIds) : refGroups.collapseAll()"
+            >
+              {{ refGroups.allCollapsed() ? '全部展开' : '全部收起' }}
+            </button>
+          </div>
           <div v-show="tocExpanded" class="page-toc__list">
             <template v-for="item in tocItems" :key="item.id">
               <!-- Local heading item -->
@@ -1016,16 +1024,16 @@ onBeforeUnmount(() => {
                   type="button"
                   class="page-toc__item page-toc__item--ref"
                   :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
-                  @click="toggleRefGroup(item.refId!)"
-                >
-                  <span class="page-toc__bullet page-toc__bullet--group">
-                    {{ expandedRefIds.has(item.refId!) ? '▼' : '▶' }}
+                  @click="refGroups.toggle(item.refId!)"
+                  >
+                    <span class="page-toc__bullet page-toc__bullet--group">
+                      {{ refGroups.isExpanded(item.refId!) ? '▼' : '▶' }}
                   </span>
                   <span class="page-toc__text page-toc__text--group">{{ item.text }}</span>
                   <span class="page-toc__group-count">{{ item.children?.length }}</span>
                 </button>
                 <!-- Expanded child headings -->
-                <div v-if="expandedRefIds.has(item.refId!)" class="page-toc__children">
+                <div v-if="refGroups.isExpanded(item.refId!)" class="page-toc__children">
                   <button
                     v-for="child in item.children"
                     :key="child.id"
@@ -1046,6 +1054,17 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </aside>
+
+      <!-- Floating TOC expand button (visible only when collapsed) -->
+      <button
+        v-if="!tocExpanded && tocItems.length > 0"
+        type="button"
+        class="page-toc__floating-toggle"
+        @click="tocExpanded = true"
+        title="展开目录"
+      >
+        目录
+      </button>
     </div>
 
     <!-- 选中文本工具栏 -->
@@ -1188,9 +1207,14 @@ onBeforeUnmount(() => {
 .content-shell {
   display: flex;
   align-items: flex-start;
-  gap: 20px;
+  gap: 0;
   width: 100%;
   min-height: 0;
+  position: relative;
+}
+
+.content-shell--toc-open {
+  gap: 20px;
 }
 
 .content-container {
@@ -1200,6 +1224,7 @@ onBeforeUnmount(() => {
   flex-direction: column;
   flex: 1;
   min-width: 0;
+  overflow: hidden;
 }
 
 .page-toc {
@@ -1213,8 +1238,15 @@ onBeforeUnmount(() => {
 }
 
 .page-toc--collapsed {
-  flex-basis: 112px;
-  width: 112px;
+  flex-basis: 0;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
 }
 
 .page-toc__card {
@@ -1273,13 +1305,52 @@ onBeforeUnmount(() => {
   font-size: 12px;
 }
 
-.page-toc--collapsed .page-toc__header {
-  justify-content: center;
+.page-toc__floating-toggle {
+  position: fixed;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 999;
+  padding: 12px 6px;
+  border: 1px solid #e5e7eb;
+  border-right: 0;
+  border-radius: 8px 0 0 8px;
+  background: rgba(252, 253, 255, 0.94);
+  backdrop-filter: blur(10px);
+  box-shadow: -4px 0 16px rgba(15, 23, 42, 0.08);
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  transition: color 0.15s, background 0.15s;
 }
 
-.page-toc--collapsed .page-toc__title,
-.page-toc--collapsed .page-toc__meta {
-  display: none;
+.page-toc__floating-toggle:hover {
+  color: #1677ff;
+  background: #fff;
+}
+
+.page-toc__actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 2px 8px 0;
+}
+
+.page-toc__action-btn {
+  border: 0;
+  background: transparent;
+  color: #1677ff;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.page-toc__action-btn:hover {
+  background: rgba(22, 119, 255, 0.08);
 }
 
 .page-toc__list {

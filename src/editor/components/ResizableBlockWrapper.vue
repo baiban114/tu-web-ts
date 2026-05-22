@@ -67,6 +67,14 @@ const handleMouseDown = (direction: 'right' | 'bottom' | 'corner', event: MouseE
       if (props.minWidth != null) newW = Math.max(props.minWidth, newW)
       if (props.maxWidth != null) newW = Math.min(props.maxWidth, newW)
       if (!props.resizableAxes.width) newW = startW
+
+      const container = el.closest('.content-container')
+      if (container) {
+        const containerRect = container.getBoundingClientRect()
+        const elRect = el.getBoundingClientRect()
+        const maxAllowed = containerRect.right - elRect.left - 4
+        newW = Math.min(newW, Math.max(props.minWidth ?? 0, maxAllowed))
+      }
     }
 
     if (direction === 'bottom' || direction === 'corner') {

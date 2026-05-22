@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick } from 'vue';
+import { ref, nextTick, computed } from 'vue';
 import {
   ElScrollbar,
   ElTree,
@@ -16,6 +16,9 @@ import MarkdownImportButton from './MarkdownImportButton.vue';
 import RoadmapImportButton from './RoadmapImportButton.vue';
 
 const store = useWorkspaceStore();
+
+const treeRef = ref<InstanceType<typeof ElTree>>()
+const allTreeExpanded = ref(false)
 
 const showAddKbDialog = ref(false);
 const newKbName = ref('');
@@ -139,6 +142,30 @@ async function onNodeDrop(draggingNode: any, dropNode: any, dropType: 'before' |
 function onDocumentClick() {
   closeContextMenu();
 }
+
+function expandAllTree() {
+  const nodesMap = treeRef.value?.store?.nodesMap
+  if (!nodesMap) return
+  for (const key of Object.keys(nodesMap)) {
+    const node = nodesMap[key]
+    if (!node.isLeaf) {
+      node.expanded = true
+    }
+  }
+  allTreeExpanded.value = true
+}
+
+function collapseAllTree() {
+  const nodesMap = treeRef.value?.store?.nodesMap
+  if (!nodesMap) return
+  for (const key of Object.keys(nodesMap)) {
+    const node = nodesMap[key]
+    if (!node.isLeaf) {
+      node.expanded = false
+    }
+  }
+  allTreeExpanded.value = false
+}
 </script>
 
 <template>
@@ -194,6 +221,15 @@ function onDocumentClick() {
       <div class="section-header">
         <span class="section-title">页面</span>
         <div class="section-actions">
+          <button
+            v-if="store.pageTree.length > 0"
+            type="button"
+            class="tree-action-btn"
+            :title="allTreeExpanded ? '全部收起' : '全部展开'"
+            @click.stop="allTreeExpanded ? collapseAllTree() : expandAllTree()"
+          >
+            {{ allTreeExpanded ? '收起' : '展开' }}
+          </button>
           <MarkdownImportButton />
           <el-button
             link
@@ -209,6 +245,7 @@ function onDocumentClick() {
 
       <el-scrollbar class="page-tree-scroll">
         <el-tree
+          ref="treeRef"
           v-if="store.pageTree.length > 0"
           :data="store.pageTree"
           :props="treeProps"
@@ -327,6 +364,21 @@ function onDocumentClick() {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.tree-action-btn {
+  border: 0;
+  background: transparent;
+  color: #1677ff;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background 0.15s;
+}
+
+.tree-action-btn:hover {
+  background: rgba(22, 119, 255, 0.08);
 }
 
 .kb-list {
