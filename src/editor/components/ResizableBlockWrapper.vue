@@ -72,7 +72,7 @@ const handleMouseDown = (direction: 'right' | 'bottom' | 'corner', event: MouseE
       if (container) {
         const containerRect = container.getBoundingClientRect()
         const elRect = el.getBoundingClientRect()
-        const maxAllowed = containerRect.right - elRect.left - 4
+        const maxAllowed = containerRect.right - elRect.left - 12
         newW = Math.min(newW, Math.max(props.minWidth ?? 0, maxAllowed))
       }
     }
@@ -101,6 +101,8 @@ const handleMouseDown = (direction: 'right' | 'bottom' | 'corner', event: MouseE
 
   const onMouseUp = () => {
     dragging.value = null
+    dragWidth.value = null
+    dragHeight.value = null
     document.removeEventListener('mousemove', onMouseMove)
     document.removeEventListener('mouseup', onMouseUp)
     document.body.style.userSelect = ''

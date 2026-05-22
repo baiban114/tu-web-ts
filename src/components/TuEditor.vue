@@ -808,7 +808,7 @@ defineExpose({
 .tu-editor-wrapper :deep(.tu-editor-content) {
   outline: none;
   min-height: 200px;
-  padding: 8px 0 8px var(--tiptap-handle-gutter);
+  padding: 8px 28px 8px var(--tiptap-handle-gutter);
   line-height: 1.7;
   font-size: 15px;
   color: #333;

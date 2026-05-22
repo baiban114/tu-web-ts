@@ -137,7 +137,6 @@ const hasExplicitSize = computed(() => props.width != null && props.height != nu
 const editorStyle = computed(() => {
   if (hasExplicitSize.value) {
     return {
-      width: `${props.width}px`,
       height: `${props.height}px`,
     }
   }

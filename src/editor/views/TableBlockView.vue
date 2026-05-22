@@ -45,7 +45,7 @@ const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) 
       @resize="onResize"
       @compound-badge-click="handleBadgeClick"
     >
-      <div class="table-block-view__body" :style="{ width: node.attrs.width ? `${node.attrs.width}px` : undefined }">
+      <div class="table-block-view__body">
         <TableBlock
           :data="tableData"
           :editable="editor.isEditable"
