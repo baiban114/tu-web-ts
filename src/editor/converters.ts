@@ -236,7 +236,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
           nodes.push({
             type: 'paragraph',
             attrs: { blockId },
-            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+            content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
@@ -250,7 +250,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
           nodes.push({
             type: 'paragraph',
             attrs: { blockId },
-            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+            content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
@@ -270,7 +270,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
           nodes.push({
             type: 'paragraph',
             attrs: { blockId },
-            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+            content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
@@ -287,7 +287,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
           nodes.push({
             type: 'paragraph',
             attrs: { blockId },
-            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+            content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
@@ -304,7 +304,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
           nodes.push({
             type: 'paragraph',
             attrs: { blockId },
-            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+            content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
@@ -320,7 +320,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
           nodes.push({
             type: 'paragraph',
             attrs: { blockId },
-            content: parseInlineMarkdown(currentLines.join('\n').trim()),
+            content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
@@ -332,7 +332,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
 
     // Flush remaining accumulated lines
     if (currentLines.length > 0) {
-      const text = currentLines.join('\n').trim()
+      const text = currentLines.join('\n')
       nodes.push({
         type: 'paragraph',
         attrs: { blockId },
