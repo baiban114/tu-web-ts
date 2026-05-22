@@ -120,7 +120,7 @@ onMounted(() => {
         <div v-if="pageBlocks.length === 0" class="ref-page-card__status">空页面</div>
         <template v-for="block in pageBlocks" :key="block.id">
           <TuEditor
-            v-if="isRichTextBlock(block)"
+            v-if="isRichTextBlock(block) && (block.content || '').trim()"
             :blocks="[block]"
             :editable="false"
             class="ref-page-content__block"
