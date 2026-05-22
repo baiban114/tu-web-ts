@@ -89,11 +89,16 @@ const handleHeight = ref(28)
 const handleMenuVisible = ref(false)
 let hideHandleTimer: ReturnType<typeof setTimeout> | null = null
 
+const handleFixedLeft = ref(0)
+let hoveredLineEl: HTMLElement | null = null
+let scrollContainer: HTMLElement | null = null
+
 const handlePositionStyle = computed<CSSProperties>(() => ({
-  '--hover-handle-left': `${HANDLE_GUTTER_WIDTH / 2}px`,
-  '--hover-handle-top': `${handleTop.value}px`,
-  '--hover-handle-height': `${handleHeight.value}px`,
-  '--hover-handle-transform': 'translateX(-50%)',
+  position: 'fixed',
+  left: `${handleFixedLeft.value}px`,
+  top: `${handleTop.value}px`,
+  height: `${handleHeight.value}px`,
+  transform: 'translateX(-50%)',
 }))
 
 const insertOptions: InsertOption[] = [
@@ -337,12 +342,24 @@ const completePendingRefInsert = (refId: string, refType: 'block' | 'page') => {
   pendingRefInsertPos = null
 }
 
+const handleScrollInEditor = () => {
+  if (!handleVisible.value || !hoveredLineEl || !editorEl.value) return
+  if (!document.contains(hoveredLineEl)) {
+    handleVisible.value = false
+    hoveredPos.value = null
+    hoveredLineEl = null
+    return
+  }
+  handleTop.value = hoveredLineEl.getBoundingClientRect().top
+}
+
 const scheduleHideHandle = () => {
   if (hideHandleTimer) return
   hideHandleTimer = setTimeout(() => {
     if (!handleMenuVisible.value) {
       handleVisible.value = false
       hoveredPos.value = null
+      hoveredLineEl = null
     }
     hideHandleTimer = null
   }, 200)
@@ -366,7 +383,7 @@ const handleEditorMouseMove = (event: MouseEvent) => {
     && event.clientY <= wrapperRect.bottom
   if (!isInsideEditor) { scheduleHideHandle(); return }
 
-  if (event.clientX < wrapperRect.left + HANDLE_GUTTER_WIDTH && handleVisible.value) {
+  if (event.clientX < wrapperRect.left && event.clientX >= wrapperRect.left - 48 && handleVisible.value) {
     clearHideHandle()
     return
   }
@@ -384,11 +401,12 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   if (!domPos || !(domPos instanceof HTMLElement)) { scheduleHideHandle(); return }
 
   const lineRect = domPos.getBoundingClientRect()
-  const top = lineRect.top - wrapperRect.top
   const height = Math.max(28, lineRect.height)
 
+  hoveredLineEl = domPos
+  handleFixedLeft.value = wrapperRect.left - 24
   hoveredPos.value = pos.pos
-  handleTop.value = top
+  handleTop.value = lineRect.top
   handleHeight.value = height
   handleVisible.value = true
 
@@ -591,6 +609,11 @@ const editor = useEditor({
       editor.value.view.dom.addEventListener('mousedown', handleEditorMouseDown)
       document.addEventListener('mouseup', handleDocumentMouseUp, true)
       lastDocSignature = getDocSignature()
+
+      scrollContainer = editor.value.view.dom.closest('.content-scroll') as HTMLElement | null
+      if (scrollContainer) {
+        scrollContainer.addEventListener('scroll', handleScrollInEditor, { passive: true })
+      }
     }
   },
   onUpdate: () => {
@@ -699,6 +722,10 @@ onBeforeUnmount(() => {
     clearTimeout(debounceTimer)
     debounceTimer = null
   }
+  if (scrollContainer) {
+    scrollContainer.removeEventListener('scroll', handleScrollInEditor)
+    scrollContainer = null
+  }
   if (editor.value) {
     try {
       const view = (editor.value as any).view
@@ -793,6 +820,7 @@ defineExpose({
       :menu-gap="4"
       @select="(key: string) => handleHandleSelect(key as HandleAction)"
       @menu-visibility-change="handleHandleMenuVisibilityChange"
+      @mouseenter="clearHideHandle"
     />
   </div>
 </template>
@@ -808,7 +836,7 @@ defineExpose({
 .tu-editor-wrapper :deep(.tu-editor-content) {
   outline: none;
   min-height: 200px;
-  padding: 8px 28px 8px var(--tiptap-handle-gutter);
+  padding: 8px 28px 8px 0;
   line-height: 1.7;
   font-size: 15px;
   color: #333;
