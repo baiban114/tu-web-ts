@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import X6NodeOverlay from './X6NodeOverlay.vue';
+import X6MaterialLibrary from './X6MaterialLibrary.vue';
+import { useMaterialLibraryStore } from '@/stores/materialLibrary';
 import { useObjectModelStore } from '@/stores/objectModel';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
 import {
@@ -72,11 +74,6 @@ const props = withDefaults(defineProps<Props>(), {
   sourceWriteBackEnabled: false,
 });
 
-interface ExtractedGraphSelectionPayload {
-  graphData: GraphData;
-  count: number;
-}
-
 interface InsertRefRequestPayload {
   x: number;
   y: number;
@@ -84,7 +81,6 @@ interface InsertRefRequestPayload {
 
 const emit = defineEmits<{
   (e: 'graph-data-change', graphData: GraphData): void;
-  (e: 'extract-selection', payload: ExtractedGraphSelectionPayload): void;
   (e: 'request-insert-ref', payload: InsertRefRequestPayload): void;
   (e: 'sync-from-source'): void;
   (e: 'sync-to-source', graphData: GraphData): void;
@@ -107,6 +103,10 @@ const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
 const objectModelStore = useObjectModelStore();
+const materialLibraryStore = useMaterialLibraryStore();
+const inspectorTab = ref<'inspector' | 'library'>('inspector');
+const toolbarVisible = ref(true);
+const inspectorVisible = ref(true);
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -1389,7 +1389,8 @@ function offsetCellPosition(cell: CellData, offsetX: number, offsetY: number): C
   return nextCell;
 }
 
-function buildExtractedSelectionGraphData(): ExtractedGraphSelectionPayload | null {
+/** Build a clean GraphData from the currently selected cells (normalised, no blueprint meta). */
+function buildMaterialGraphData(): GraphData | null {
   if (!graph) return null;
 
   const selectedCells = graph.getSelectedCells();
@@ -1433,44 +1434,10 @@ function buildExtractedSelectionGraphData(): ExtractedGraphSelectionPayload | nu
 
   if (!selectedNodes.length) return null;
 
-  const bounds = getSelectionBounds(selectedNodes);
-  const anchorX = bounds ? bounds.minX : BLUEPRINT_ANCHOR.x;
-  const anchorY = bounds ? bounds.minY : BLUEPRINT_ANCHOR.y;
-  const offsetX = BLUEPRINT_ANCHOR.x - anchorX;
-  const offsetY = BLUEPRINT_ANCHOR.y - anchorY;
+  const nodes = selectedNodes.map((node) => node.toJSON() as CellData);
+  const edges = selectedEdges.map((edge) => edge.toJSON() as CellData);
 
-  const nodes = selectedNodes.map((node) => offsetCellPosition(node.toJSON() as CellData, offsetX, offsetY));
-  const edges = selectedEdges.map((edge) => offsetCellPosition(edge.toJSON() as CellData, offsetX, offsetY));
-
-  const offsetBounds = {
-    minX: (bounds?.minX ?? BLUEPRINT_ANCHOR.x) + offsetX,
-    minY: (bounds?.minY ?? BLUEPRINT_ANCHOR.y) + offsetY,
-    maxX: (bounds?.maxX ?? BLUEPRINT_ANCHOR.x) + offsetX,
-    maxY: (bounds?.maxY ?? BLUEPRINT_ANCHOR.y) + offsetY,
-    width: bounds?.width ?? 0,
-    height: bounds?.height ?? 0,
-  };
-
-  return {
-    count: selectedCells.length,
-    graphData: normalizeGraphData({
-      cells: [...nodes, ...edges],
-      nodes,
-      edges,
-      blueprintMeta: {
-        anchor: {
-          x: BLUEPRINT_ANCHOR.x,
-          y: BLUEPRINT_ANCHOR.y,
-        },
-        extractedCenter: {
-          x: offsetBounds.minX + offsetBounds.width / 2,
-          y: offsetBounds.minY + offsetBounds.height / 2,
-        },
-        extractedCount: selectedCells.length,
-        kind: 'blueprint',
-      },
-    }),
-  };
+  return normalizeGraphData({ cells: [...nodes, ...edges], nodes, edges });
 }
 
 function getRefInsertPosition() {
@@ -1582,11 +1549,82 @@ function pasteSelection() {
   scheduleSync();
 }
 
-function extractSelectionAsBlock() {
+/** Extract selected cells as a reusable material and open the library panel. */
+function extractSelectionAsMaterial() {
   if (!graph || !props.blockActionsEnabled) return;
-  const payload = buildExtractedSelectionGraphData();
-  if (!payload) return;
-  emit('extract-selection', payload);
+  const data = buildMaterialGraphData();
+  if (!data) return;
+  const name = `素材 ${materialLibraryStore.items.length + 1}`;
+  materialLibraryStore.addMaterial(name, data);
+  materialPanelVisible.value = true;
+}
+
+/** Insert a saved material's graph data onto the canvas at the viewport center. */
+function insertMaterial(graphData: GraphData) {
+  insertMaterialAt(graphData, undefined);
+}
+
+/** Insert material's graph data at a specific graph-space position (or viewport center). */
+function insertMaterialAt(graphData: GraphData, position?: { x: number; y: number }) {
+  if (!graph || !isEditable.value) return;
+  const center = position ?? getCanvasCenter();
+  const dx = center.x;
+  const dy = center.y;
+  // Find min position in material to offset from that
+  let minX = Infinity, minY = Infinity;
+  for (const node of graphData.nodes ?? []) {
+    const x = node.x ?? node.position?.x ?? 0;
+    const y = node.y ?? node.position?.y ?? 0;
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+  }
+  const offsetX = dx - (isFinite(minX) ? minX : 0);
+  const offsetY = dy - (isFinite(minY) ? minY : 0);
+  // Generate new IDs to avoid conflicts; remap edge terminals
+  const idMap = new Map<string, string>();
+  const addedNodes: Node[] = [];
+  for (const nodeData of graphData.nodes ?? []) {
+    const newId = `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    idMap.set(nodeData.id, newId);
+    const nx = (nodeData.x ?? 0) + offsetX;
+    const ny = (nodeData.y ?? 0) + offsetY;
+    addedNodes.push(graph.addNode({
+      ...nodeData,
+      id: newId,
+      x: nx,
+      y: ny,
+      position: { x: nx, y: ny },
+    }));
+  }
+  const remapTerminal = (term: any): any => {
+    if (typeof term === 'string') return idMap.get(term) ?? term;
+    if (term?.cell) return { ...term, cell: idMap.get(term.cell) ?? term.cell };
+    return term;
+  };
+  for (const edgeData of graphData.edges ?? []) {
+    graph.addEdge({
+      ...edgeData,
+      id: undefined,
+      x: undefined, y: undefined, position: undefined,
+      source: remapTerminal(edgeData.source),
+      target: remapTerminal(edgeData.target),
+    });
+  }
+  if (addedNodes.length) {
+    graph.resetSelection(addedNodes);
+  }
+  scheduleSync();
+}
+
+function onMaterialDrop(e: DragEvent) {
+  if (!graph || !isEditable.value) return;
+  const raw = e.dataTransfer?.getData('application/x6-material');
+  if (!raw) return;
+  try {
+    const graphData: GraphData = JSON.parse(raw);
+    const pos = graph.clientToLocal(e.clientX, e.clientY);
+    insertMaterialAt(graphData, { x: pos.x, y: pos.y });
+  } catch { /* ignore invalid data */ }
 }
 
 function requestInsertRefBlock() {
@@ -2244,7 +2282,12 @@ defineExpose({
 
 <template>
   <div class="x6-editor" :class="{ 'x6-editor--sized': hasExplicitSize }" :style="editorStyle" @mousedown.stop="emit('active')" @click.stop @dblclick.stop>
-    <div class="x6-toolbar">
+    <div v-if="toolbarVisible" class="x6-toolbar">
+      <div class="toolbar-group">
+        <button type="button" class="tool-button tool-button--icon" title="切换工具栏" @click="toolbarVisible = false">
+          ⊖
+        </button>
+      </div>
       <div class="toolbar-group" v-if="isTaskFlow">
         <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('round')">
           新任务
@@ -2305,8 +2348,16 @@ defineExpose({
       </div>
 
       <div v-if="blockActionsEnabled" class="toolbar-group">
-        <button type="button" class="tool-button" :disabled="selectedCellsCount === 0" @click="extractSelectionAsBlock">
-          提取为块（蓝图）
+        <button type="button" class="tool-button" :disabled="selectedCellsCount === 0" @click="extractSelectionAsMaterial">
+          提取为素材
+        </button>
+        <button
+          type="button"
+          class="tool-button"
+          :class="{ 'tool-button--active': inspectorTab === 'library' }"
+          @click="inspectorTab = inspectorTab === 'library' ? 'inspector' : 'library'"
+        >
+          素材库
         </button>
         <button type="button" class="tool-button" :disabled="!isEditable" @click="requestInsertRefBlock">
           插入引用块
@@ -2321,9 +2372,17 @@ defineExpose({
         </button>
       </div>
     </div>
+    <div v-if="!toolbarVisible || !inspectorVisible" class="x6-restore-bar">
+      <button v-if="!toolbarVisible" type="button" class="x6-restore-button" title="显示工具栏" @click="toolbarVisible = true">
+        ⊞ 工具栏
+      </button>
+      <button v-if="!inspectorVisible" type="button" class="x6-restore-button" title="显示侧边栏" @click="inspectorVisible = true">
+        ⊞ 侧边栏
+      </button>
+    </div>
 
-    <div class="x6-workspace">
-      <div ref="stageRef" class="x6-stage" :style="stageStyle">
+    <div class="x6-workspace" :class="{ 'x6-workspace--no-inspector': !inspectorVisible }">
+      <div ref="stageRef" class="x6-stage" :style="stageStyle" @dragover.prevent @drop="onMaterialDrop">
         <div ref="containerRef" class="x6-canvas"></div>
 
         <div
@@ -2390,31 +2449,61 @@ defineExpose({
             @keydown="handleEdgeEditKeydown"
             @blur="commitEdgeInlineEdit()"
           />
-          <span v-if="blockActionsEnabled">多选后可直接提取为新蓝图块（蓝图）</span>
+          <span v-if="blockActionsEnabled">选中后可直接提取为素材</span>
         </div>
 
         <div class="x6-stage-hint">
-          <span v-if="blockActionsEnabled">多选后可直接提取为新蓝图块（蓝图）</span>
+          <span v-if="blockActionsEnabled">选中后可直接提取为素材</span>
           <span>双击空白处快速新建节点</span>
           <span>拖拽节点四周锚点创建连线</span>
           <span>双击节点或连线直接改文字</span>
         </div>
       </div>
 
-      <aside class="x6-inspector">
-        <div v-if="isTaskFlow" class="inspector-card">
-          <h4>任务顺序</h4>
-          <p v-if="taskSequenceSummary.length === 0" class="inspector-empty">连接任务节点后会在这里显示执行顺序。</p>
-          <ol v-else class="task-sequence-list">
-            <li v-for="(taskLabel, index) in taskSequenceSummary" :key="`${taskLabel}-${index}`">
-              {{ index + 1 }}. {{ taskLabel }}
-            </li>
-          </ol>
-          <p class="inspector-empty">每个任务节点只允许一条前驱和一条后继连线，用于表达明确的先后顺序。</p>
+      <aside v-if="inspectorVisible" class="x6-inspector">
+        <!-- Tab navigation -->
+        <div class="x6-inspector-tabs">
+          <button
+            type="button"
+            class="x6-inspector-tab x6-inspector-tab--close"
+            title="关闭侧边栏"
+            @click="inspectorVisible = false"
+          >
+            ⊖
+          </button>
+          <button
+            type="button"
+            class="x6-inspector-tab"
+            :class="{ active: inspectorTab === 'inspector' }"
+            @click="inspectorTab = 'inspector'"
+          >
+            属性
+          </button>
+          <button
+            type="button"
+            class="x6-inspector-tab"
+            :class="{ active: inspectorTab === 'library' }"
+            @click="inspectorTab = 'library'"
+          >
+            素材库
+          </button>
         </div>
 
-        <div class="inspector-card">
-          <h4>属性面板</h4>
+        <!-- Inspector panel content -->
+        <div v-if="inspectorTab === 'inspector'" class="x6-inspector__body">
+          <div v-if="isTaskFlow" class="inspector-card">
+            <h4>任务顺序</h4>
+            <p v-if="taskSequenceSummary.length === 0" class="inspector-empty">连接任务节点后会在这里显示执行顺序。</p>
+            <ol v-else class="task-sequence-list">
+              <li v-for="(taskLabel, index) in taskSequenceSummary" :key="`${taskLabel}-${index}`">
+                {{ index + 1 }}. {{ taskLabel }}
+              </li>
+            </ol>
+            <p class="inspector-empty">每个任务节点只允许一条前驱和一条后继连线，用于表达明确的先后顺序。</p>
+          </div>
+
+          <div class="inspector-card">
+            <h4>属性面板</h4>
 
           <template v-if="selectedCellsCount === 0 && !selectedCell">
             <p class="inspector-empty">选中节点或连线后可在这里编辑文字、颜色和线路样式。</p>
@@ -2556,6 +2645,12 @@ defineExpose({
             </label>
           </template>
         </div>
+        </div>
+
+        <!-- Library panel content -->
+        <div v-else class="x6-inspector__body x6-inspector__body--library">
+          <X6MaterialLibrary @insert="insertMaterial" @close="inspectorTab = 'inspector'" />
+        </div>
       </aside>
     </div>
   </div>
@@ -2580,6 +2675,47 @@ defineExpose({
   border-bottom: 1px solid #e3e7ef;
   background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(8px);
+}
+
+.x6-toolbar-restore {
+  display: block;
+  width: 100%;
+  padding: 4px 14px;
+  border: none;
+  border-bottom: 1px solid #e3e7ef;
+  background: rgba(255, 255, 255, 0.7);
+  color: #6b7280;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.x6-toolbar-restore:hover {
+  background: #f3f4f6;
+  color: #374151;
+}
+
+.x6-restore-bar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 14px;
+  border-bottom: 1px solid #e3e7ef;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.x6-restore-button {
+  padding: 2px 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 4px;
+  background: #fff;
+  color: #6b7280;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.x6-restore-button:hover {
+  border-color: #a5b4fc;
+  color: #4338ca;
 }
 
 .toolbar-group {
@@ -2632,10 +2768,34 @@ defineExpose({
   color: #cf1322;
 }
 
+.tool-button--icon {
+  padding: 7px 6px;
+  min-width: 32px;
+  text-align: center;
+  font-size: 16px;
+  line-height: 1;
+  color: #9ca3af;
+  border-color: transparent;
+}
+.tool-button--icon:hover:not(:disabled) {
+  border-color: #e5e7eb;
+  color: #374151;
+  box-shadow: none;
+}
+
+.tool-button--active {
+  background: #eef2ff;
+  border-color: #a5b4fc;
+  color: #4338ca;
+}
+
 .x6-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 260px;
   min-height: 560px;
+}
+.x6-workspace--no-inspector {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .x6-stage {
@@ -2803,9 +2963,64 @@ defineExpose({
 .x6-inspector {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px;
   background: rgba(248, 250, 253, 0.92);
+  overflow: hidden;
+}
+
+.x6-inspector-tabs {
+  display: flex;
+  border-bottom: 1px solid #e5e7eb;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.x6-inspector-tab {
+  flex: 1;
+  padding: 10px 8px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #6b7280;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.x6-inspector-tab:hover {
+  color: #374151;
+}
+
+.x6-inspector-tab.active {
+  color: #4338ca;
+  border-bottom-color: #4338ca;
+}
+
+.x6-inspector-tab--close {
+  flex: 0 0 auto;
+  padding: 10px 8px;
+  font-size: 14px;
+  color: #9ca3af;
+}
+
+.x6-inspector-tab--close:hover {
+  color: #ef4444;
+}
+
+.x6-inspector__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.x6-inspector__body--library {
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
 }
 
 .inspector-card {
