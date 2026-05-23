@@ -2289,28 +2289,35 @@ defineExpose({
         </button>
       </div>
       <div class="toolbar-group" v-if="isTaskFlow">
-        <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('round')">
-          新任务
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('round')">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="6" fill="#fff8e6" stroke="#d48806" stroke-width="1.2"/></svg>
+          <span class="tool-button__label">新任务</span>
         </button>
-        <button type="button" class="tool-button" :disabled="!isEditable" @click="addNode('ellipse')">
-          起止节点
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('ellipse')">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><ellipse cx="12" cy="13" rx="9" ry="8" fill="#e6f4ff" stroke="#1677ff" stroke-width="1.2"/></svg>
+          <span class="tool-button__label">起止节点</span>
         </button>
       </div>
       <div class="toolbar-group" v-else>
-        <button type="button" class="tool-button tool-button--primary" :disabled="!isEditable" @click="addNode('rect')">
-          矩形
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('rect')">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" fill="#fff7e6" stroke="#d48806" stroke-width="1.2"/></svg>
+          <span class="tool-button__label">矩形</span>
         </button>
-        <button type="button" class="tool-button" :disabled="!isEditable" @click="addNode('round')">
-          圆角矩形
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('round')">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="5" fill="#f6ffed" stroke="#389e0d" stroke-width="1.2"/></svg>
+          <span class="tool-button__label">圆角矩形</span>
         </button>
-        <button type="button" class="tool-button" :disabled="!isEditable" @click="addNode('ellipse')">
-          圆形
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('ellipse')">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><ellipse cx="12" cy="13" rx="9" ry="8" fill="#e6f4ff" stroke="#1677ff" stroke-width="1.2"/></svg>
+          <span class="tool-button__label">圆形</span>
         </button>
-        <button type="button" class="tool-button" :disabled="!isEditable" @click="addNode('diamond')">
-          菱形
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('diamond')">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><polygon points="12,3 22,13 12,23 2,13" fill="#fff1f0" stroke="#cf1322" stroke-width="1.2"/></svg>
+          <span class="tool-button__label">菱形</span>
         </button>
-        <button type="button" class="tool-button" :disabled="!isEditable" @click="insertUmlClassPreset">
-          UML 类图
+        <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="insertUmlClassPreset">
+          <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="1.5" fill="#fffbe6" stroke="#d4a017" stroke-width="1"/><line x1="3" y1="9" x2="21" y2="9" stroke="#d4a017" stroke-width="0.6"/><line x1="3" y1="15" x2="21" y2="15" stroke="#d4a017" stroke-width="0.6"/></svg>
+          <span class="tool-button__label">UML 类图</span>
         </button>
         <button type="button" class="tool-button" :disabled="!isEditable || objectModelStore.classes.length === 0" @click="syncAllUmlClassNodes">
           同步对象模型
@@ -2745,6 +2752,44 @@ defineExpose({
   font-weight: 600;
   cursor: pointer;
   transition: all 0.18s ease;
+}
+
+.tool-button--shape {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px 6px;
+  min-width: 52px;
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.tool-button--shape:hover:not(:disabled) {
+  background: #eef2ff;
+  border-color: #a5b4fc;
+}
+
+.tool-button--shape:disabled {
+  background: #f9fafb;
+}
+
+.tool-button__icon {
+  display: block;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.tool-button__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #374151;
+  white-space: nowrap;
+}
+
+.tool-button--shape:disabled .tool-button__label {
+  color: #b0b8c1;
 }
 
 .tool-button:hover:not(:disabled) {

@@ -242,6 +242,12 @@ function onRenameKeydown(e: KeyboardEvent) {
   border-radius: 8px;
   background: #fff;
   overflow: hidden;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.material-card:hover {
+  border-color: #a5b4fc;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.1);
 }
 
 .material-card__preview {
@@ -249,19 +255,19 @@ function onRenameKeydown(e: KeyboardEvent) {
   width: 100%;
   padding: 0;
   border: none;
-  background: transparent;
+  background: #fafafa;
   cursor: pointer;
   overflow: hidden;
 }
 
 .material-card__preview:hover {
-  background: #f3f4f6;
+  background: #f0f4ff;
 }
 
 .material-card__svg {
   width: 100%;
   height: auto;
-  aspect-ratio: 160 / 100;
+  aspect-ratio: 160 / 90;
   overflow: hidden;
 }
 
@@ -273,7 +279,7 @@ function onRenameKeydown(e: KeyboardEvent) {
 
 .material-card__placeholder {
   width: 100%;
-  aspect-ratio: 160 / 100;
+  aspect-ratio: 160 / 90;
   display: flex;
   align-items: center;
   justify-content: center;
