@@ -230,11 +230,17 @@ const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string })
 // --- TOC ---
 const refGroups = useExpandCollapse()
 
-const allRefGroupIds = computed(() =>
-  tocItems.value
-    .filter(i => i.sourceType === 'ref-group')
-    .map(i => i.refId!)
-)
+const allRefGroupIds = computed(() => {
+  const ids: string[] = []
+  const walk = (items: TocItem[]) => {
+    for (const item of items) {
+      if (item.sourceType === 'ref-group' && item.refId) ids.push(item.refId)
+      if (item.children) walk(item.children)
+    }
+  }
+  walk(tocItems.value)
+  return ids
+})
 
 /** Walk workspace page tree to find a page title by pageId. */
 function findPageTitle(pageId: string): string {
@@ -289,8 +295,8 @@ function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level
 
 /**
  * Tree-structured TOC items. Top-level entries are either:
- * - local headings (sourceType === 'local')
- * - ref-group entries (sourceType === 'ref-group') wrapping children from referenced content
+ * - local headings (sourceType === 'local'), with optional ref-group children
+ * - ref-group entries (sourceType === 'ref-group') before the first heading
  * Children are ref-child entries with sourceType === 'ref-child'.
  */
 const tocItems = computed<TocItem[]>(() => {
@@ -298,12 +304,12 @@ const tocItems = computed<TocItem[]>(() => {
   if (!editor) return []
 
   // 1. Headings from the local editor doc
-  const items: TocItem[] = []
+  const headings: TocItem[] = []
   editor.state.doc.descendants((node, pos) => {
     if (node.type.name === 'heading') {
       const text = node.textContent.trim()
       if (text) {
-        items.push({
+        headings.push({
           id: `${pos}-${node.attrs?.level}`,
           blockId: node.attrs?.blockId || `heading-${pos}`,
           level: node.attrs?.level || 1,
@@ -327,6 +333,7 @@ const tocItems = computed<TocItem[]>(() => {
   })
 
   // 3. Build ref-group items with children from referenced blocks/pages
+  const refGroups: TocItem[] = []
   for (const block of localBlocks.value) {
     if (block.type !== 'ref' || !block.refId) continue
     const refPos = refPositions.get(block.id)
@@ -341,8 +348,8 @@ const tocItems = computed<TocItem[]>(() => {
       if (refBlock) refBlocks = [refBlock]
     }
 
-    const headings = extractHeadingsFromBlocks(refBlocks)
-    if (headings.length === 0) continue
+    const extracted = extractHeadingsFromBlocks(refBlocks)
+    if (extracted.length === 0) continue
 
     // Determine group title
     let groupTitle: string
@@ -353,16 +360,26 @@ const tocItems = computed<TocItem[]>(() => {
       groupTitle = meta?.pageTitle || '引用块'
     }
 
-    const children: TocItem[] = headings.map((h, i) => ({
+    // Find the nearest local heading before this ref block to determine
+    // the parent heading level, then offset child heading levels so they
+    // start from the child level of that parent (parentLevel + 1).
+    const parentHeading = [...headings]
+      .reverse()
+      .find((i) => i.pos < refPos)
+    const baseLevel = parentHeading ? parentHeading.level + 1 : 1
+    const minChildLevel = Math.min(...extracted.map((h) => h.level))
+    const offset = Math.max(0, baseLevel - minChildLevel)
+
+    const children: TocItem[] = extracted.map((h, i) => ({
       id: `ref-child-${block.id}-${i}`,
       blockId: block.id,
-      level: h.level,
+      level: Math.min(6, h.level + offset),
       text: h.text,
       pos: refPos,
       sourceType: 'ref-child',
     }))
 
-    items.push({
+    refGroups.push({
       id: `ref-group-${block.id}`,
       blockId: block.id,
       level: 0,
@@ -374,20 +391,42 @@ const tocItems = computed<TocItem[]>(() => {
     })
   }
 
-  // Sort by document position so local headings and ref groups are interleaved
-  items.sort((a, b) => a.pos - b.pos)
+  // 4. Build hierarchical TOC: assign each ref-group as child of the
+  //    nearest preceding local heading. Ref-groups before the first
+  //    heading remain as top-level items.
+  if (refGroups.length === 0) return headings
 
-  return items
+  refGroups.sort((a, b) => a.pos - b.pos)
+  const result: TocItem[] = []
+  const firstHPos = headings.length > 0 ? headings[0].pos : Infinity
+
+  // Add ref-groups before the first heading as top-level items
+  for (const rg of refGroups) {
+    if (rg.pos < firstHPos) result.push(rg)
+  }
+
+  // Assign remaining ref-groups to their parent heading
+  for (let i = 0; i < headings.length; i++) {
+    const h = headings[i]
+    const nextPos = i + 1 < headings.length ? headings[i + 1].pos : Infinity
+    const children = refGroups.filter(rg => rg.pos >= h.pos && rg.pos < nextPos)
+    result.push(children.length > 0 ? { ...h, children } : h)
+  }
+
+  return result
 })
 
 /** Total flat heading count counting group children. */
 const tocFlatCount = computed(() => {
-  let count = 0
-  for (const item of tocItems.value) {
-    count += 1
-    if (item.children) count += item.children.length
+  const count = (items: TocItem[]): number => {
+    let n = 0
+    for (const item of items) {
+      n += 1
+      if (item.children) n += count(item.children)
+    }
+    return n
   }
-  return count
+  return count(tocItems.value)
 })
 
 const handleTocItemClick = (item: TocItem) => {
@@ -1003,36 +1042,73 @@ onBeforeUnmount(() => {
           </div>
           <div v-show="tocExpanded" class="page-toc__list">
             <template v-for="item in tocItems" :key="item.id">
-              <!-- Local heading item -->
-              <button
-                v-if="item.sourceType === 'local'"
-                type="button"
-                class="page-toc__item"
-                :class="{
-                  'page-toc__item--active': highlightedBlockId === item.blockId,
-                  [`page-toc__item--level-${item.level}`]: true,
-                }"
-                @click="handleTocItemClick(item)"
-              >
-                <span class="page-toc__bullet">H{{ item.level }}</span>
-                <span class="page-toc__text">{{ item.text }}</span>
-              </button>
+              <!-- Local heading with optional ref-group children -->
+              <div v-if="item.sourceType === 'local'" class="page-toc__local-group">
+                <button
+                  type="button"
+                  class="page-toc__item"
+                  :class="{
+                    'page-toc__item--active': highlightedBlockId === item.blockId,
+                    [`page-toc__item--level-${item.level}`]: true,
+                  }"
+                  @click="handleTocItemClick(item)"
+                >
+                  <span class="page-toc__bullet">H{{ item.level }}</span>
+                  <span class="page-toc__text">{{ item.text }}</span>
+                </button>
+                <!-- Ref-groups nested under this heading -->
+                <div v-if="item.children?.length" class="page-toc__local-children">
+                  <div
+                    v-for="child in item.children"
+                    :key="child.id"
+                    class="page-toc__group"
+                  >
+                    <button
+                      type="button"
+                      class="page-toc__item page-toc__item--ref"
+                      :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
+                      @click="refGroups.toggle(child.refId!)"
+                    >
+                      <span class="page-toc__bullet page-toc__bullet--group">
+                        {{ refGroups.isExpanded(child.refId!) ? '▼' : '▶' }}
+                      </span>
+                      <span class="page-toc__text page-toc__text--group">{{ child.text }}</span>
+                      <span class="page-toc__group-count">{{ child.children?.length }}</span>
+                    </button>
+                    <div v-if="refGroups.isExpanded(child.refId!)" class="page-toc__children">
+                      <button
+                        v-for="grandchild in child.children"
+                        :key="grandchild.id"
+                        type="button"
+                        class="page-toc__item page-toc__item--ref-child"
+                        :class="{
+                          'page-toc__item--active': highlightedBlockId === grandchild.blockId,
+                          [`page-toc__item--level-${grandchild.level}`]: true,
+                        }"
+                        @click="handleTocItemClick(grandchild)"
+                      >
+                        <span class="page-toc__bullet">H{{ grandchild.level }}</span>
+                        <span class="page-toc__text">{{ grandchild.text }}</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
 
-              <!-- Ref group: expandable entry wrapping referenced headings -->
+              <!-- Top-level ref-group (before any local heading) -->
               <div v-else-if="item.sourceType === 'ref-group'" class="page-toc__group">
                 <button
                   type="button"
                   class="page-toc__item page-toc__item--ref"
                   :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
                   @click="refGroups.toggle(item.refId!)"
-                  >
-                    <span class="page-toc__bullet page-toc__bullet--group">
-                      {{ refGroups.isExpanded(item.refId!) ? '▼' : '▶' }}
+                >
+                  <span class="page-toc__bullet page-toc__bullet--group">
+                    {{ refGroups.isExpanded(item.refId!) ? '▼' : '▶' }}
                   </span>
                   <span class="page-toc__text page-toc__text--group">{{ item.text }}</span>
                   <span class="page-toc__group-count">{{ item.children?.length }}</span>
                 </button>
-                <!-- Expanded child headings -->
                 <div v-if="refGroups.isExpanded(item.refId!)" class="page-toc__children">
                   <button
                     v-for="child in item.children"
@@ -1427,6 +1503,19 @@ onBeforeUnmount(() => {
 }
 
 /* --- Ref children: collapsed/expanded below group --- */
+.page-toc__local-children {
+  display: flex;
+  flex-direction: column;
+  margin-left: 16px;
+  padding-left: 8px;
+  border-left: 1px solid #e5e7eb;
+}
+.page-toc__local-children .page-toc__group {
+  margin-top: 2px;
+}
+.page-toc__local-children .page-toc__group:last-child {
+  margin-bottom: 4px;
+}
 .page-toc__children {
   display: flex;
   flex-direction: column;

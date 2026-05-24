@@ -11,6 +11,34 @@ import type { Block } from '@/api/types'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useWorkspaceStore } from '@/stores/workspace'
 
+/** Find the minimum heading level in markdown content (# = 1, ## = 2, etc.). */
+function minHeadingLevelInBlocks(blocks: Block[]): number {
+  let min = Infinity
+  for (const block of blocks) {
+    if (block.type !== 'richtext' && block.type !== 'richText') continue
+    if (!block.content) continue
+    const lines = block.content.split('\n')
+    for (const line of lines) {
+      const m = line.match(/^(#{1,6})\s+/)
+      if (m) min = Math.min(min, m[1].length)
+    }
+    if (block.children) {
+      const childMin = minHeadingLevelInBlocks(block.children)
+      if (childMin < min) min = childMin
+    }
+  }
+  return min
+}
+
+/** Shift heading levels in markdown content by `offset` (positive = deeper). */
+function shiftContentHeadings(content: string, offset: number): string {
+  if (offset === 0) return content
+  return content.replace(/^(#{1,6})(?=\s)/gm, (match) => {
+    const newLevel = Math.min(6, match.length + offset)
+    return '#'.repeat(newLevel)
+  })
+}
+
 interface CompoundBadge {
   annotationId: string
   color: string
@@ -37,6 +65,62 @@ const error = ref('')
 const refId = computed(() => String(props.node.attrs.refId ?? ''))
 const refType = computed<'block' | 'page'>(() => props.node.attrs.refType === 'page' ? 'page' : 'block')
 const referencedBlock = computed(() => refType.value === 'block' ? registryStore.getBlock(refId.value) : undefined)
+
+/** Compute effective heading offset and apply it to the given blocks. */
+function withShiftedHeadings(blocks: Block[]): Block[] {
+  const parentLevel = parentHeadingLevel.value
+  if (parentLevel === 0) return blocks
+  const minChild = minHeadingLevelInBlocks(blocks)
+  if (!isFinite(minChild)) return blocks
+  const offset = Math.max(0, parentLevel + 1 - minChild)
+  if (offset === 0) return blocks
+  return shiftBlocksHeadings(blocks, offset)
+}
+
+const shiftedPageBlocks = computed(() => withShiftedHeadings(pageBlocks.value))
+const shiftedReferencedBlock = computed(() => {
+  const block = referencedBlock.value
+  if (!block) return undefined
+  return withShiftedHeadings([block])[0]
+})
+
+/** Find the nearest preceding heading level in the editor doc. */
+const parentHeadingLevel = computed(() => {
+  const editor = props.editor
+  if (!editor) return 0
+  const pos = typeof props.getPos === 'function' ? props.getPos() : null
+  if (pos == null) return 0
+  let nearestPos = -1
+  let nearestLevel = 0
+  editor.state.doc.descendants((node, nodePos) => {
+    if (node.type.name === 'heading' && nodePos < pos && nodePos > nearestPos) {
+      nearestPos = nodePos
+      nearestLevel = node.attrs?.level || 1
+    }
+    return true
+  })
+  return nearestLevel
+})
+
+/** Adjust heading levels in a single block (rich text blocks only). */
+function shiftBlockHeadings(block: Block, offset: number): Block {
+  if (offset === 0) return block
+  if (block.type !== 'richtext' && block.type !== 'richText') return block
+  if (!block.content) return block
+  return { ...block, content: shiftContentHeadings(block.content, offset) }
+}
+
+/** Adjust heading levels in an array of blocks (recurses into children). */
+function shiftBlocksHeadings(blocks: Block[], offset: number): Block[] {
+  if (offset === 0) return blocks
+  return blocks.map((b) => {
+    const shifted = shiftBlockHeadings(b, offset)
+    if (shifted.children) {
+      return { ...shifted, children: shiftBlocksHeadings(shifted.children, offset) }
+    }
+    return shifted
+  })
+}
 
 const pageTitle = computed(() => {
   const find = (items: Array<{ id: string; title: string; children?: any[] }>): string | null => {
@@ -117,8 +201,8 @@ onMounted(() => {
       <div v-if="loading" class="ref-page-card__status">正在加载页面内容...</div>
       <div v-else-if="error" class="ref-page-card__status ref-page-card__status--error">{{ error }}</div>
       <div v-else class="ref-page-content">
-        <div v-if="pageBlocks.length === 0" class="ref-page-card__status">空页面</div>
-        <template v-for="block in pageBlocks" :key="block.id">
+        <div v-if="shiftedPageBlocks.length === 0" class="ref-page-card__status">空页面</div>
+        <template v-for="block in shiftedPageBlocks" :key="block.id">
           <TuEditor
             v-if="isRichTextBlock(block) && (block.content || '').trim()"
             :blocks="[block]"
@@ -156,7 +240,7 @@ onMounted(() => {
         引用自：{{ registryStore.getMeta(refId)?.pageTitle ?? '未知页面' }}
       </div>
       <ReferencedBlockRenderer
-        :block="referencedBlock"
+        :block="shiftedReferencedBlock"
         :editable="editor.isEditable"
         class="ref-block-card__content"
       />
