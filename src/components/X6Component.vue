@@ -1556,7 +1556,7 @@ function extractSelectionAsMaterial() {
   if (!data) return;
   const name = `素材 ${materialLibraryStore.items.length + 1}`;
   materialLibraryStore.addMaterial(name, data);
-  materialPanelVisible.value = true;
+  inspectorTab.value = 'library';
 }
 
 /** Insert a saved material's graph data onto the canvas at the viewport center. */

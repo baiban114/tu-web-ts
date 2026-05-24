@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { useMaterialLibraryStore, type MaterialItem } from '@/stores/materialLibrary';
 import type { GraphData } from '@/api/types';
-import { Graph } from '@antv/x6';
+import { Graph, Export } from '@antv/x6';
 
 const emit = defineEmits<{
   (e: 'insert', graphData: GraphData): void;
@@ -12,24 +12,26 @@ const emit = defineEmits<{
 const store = useMaterialLibraryStore();
 const renamingId = ref<string | null>(null);
 const renameText = ref('');
+const thumbnailMap = ref<Record<string, string>>({});
 
 const THUMBNAIL_SIZE = { width: 160, height: 100 };
 
 /** Generate an SVG preview string from graphData using an off-screen X6 graph. */
-function generateSvgPreview(data: GraphData): string {
+async function generateSvgPreview(data: GraphData): Promise<string> {
+  const container = document.createElement('div');
+  container.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
+  document.body.appendChild(container);
+  const preview = new Graph({
+    container,
+    width: THUMBNAIL_SIZE.width,
+    height: THUMBNAIL_SIZE.height,
+    grid: false,
+    background: { color: '#fafafa' },
+    interacting: false,
+    connecting: { allowBlank: false },
+  });
+  preview.use(new Export());
   try {
-    const container = document.createElement('div');
-    container.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none';
-    document.body.appendChild(container);
-    const preview = new Graph({
-      container,
-      width: THUMBNAIL_SIZE.width,
-      height: THUMBNAIL_SIZE.height,
-      grid: false,
-      background: { color: '#fafafa' },
-      interacting: false,
-      connecting: { allowBlank: false },
-    });
     const allRaw = data.cells ?? [...(data.nodes ?? []), ...(data.edges ?? [])];
     const cells = allRaw.map((raw) => {
       if (raw.shape && raw.shape !== 'edge') return { ...raw };
@@ -40,23 +42,39 @@ function generateSvgPreview(data: GraphData): string {
     if (preview.getCellCount() > 0) {
       preview.zoomToFit({ padding: 12, maxScale: 1 });
     }
-    const svg = preview.toSVG({ preserveDimensions: true });
-    preview.destroy();
-    document.body.removeChild(container);
-    return typeof svg === 'string' ? svg : svg?.outerHTML ?? '';
+    const svg = await preview.toSVGAsync({ preserveDimensions: true });
+    return svg;
   } catch {
     return '';
+  } finally {
+    preview.destroy();
+    document.body.removeChild(container);
   }
 }
 
-// Pre-compute SVGs for all materials (computed once per item; stable key via id)
-const thumbnailCache = new Map<string, string>();
-function getThumbnail(item: MaterialItem): string {
-  if (!thumbnailCache.has(item.id)) {
-    thumbnailCache.set(item.id, generateSvgPreview(item.graphData));
+async function generateThumbnail(item: MaterialItem) {
+  if (thumbnailMap.value[item.id]) return;
+  const svg = await generateSvgPreview(item.graphData);
+  if (svg) {
+    thumbnailMap.value[item.id] = svg;
   }
-  return thumbnailCache.get(item.id) ?? '';
 }
+
+function getThumbnail(item: MaterialItem): string {
+  return thumbnailMap.value[item.id] ?? '';
+}
+
+// Kick off async thumbnail generation for all items
+store.items.forEach(generateThumbnail);
+
+// Watch for new items added later
+watch(() => store.items.length, () => {
+  store.items.forEach((item) => {
+    if (!thumbnailMap.value[item.id]) {
+      generateThumbnail(item);
+    }
+  });
+});
 
 function handleInsert(item: MaterialItem) {
   emit('insert', item.graphData);
@@ -70,7 +88,7 @@ function handleDragStart(e: DragEvent, item: MaterialItem) {
 }
 
 function handleDelete(id: string) {
-  thumbnailCache.delete(id);
+  delete thumbnailMap.value[id];
   store.removeMaterial(id);
 }
 
