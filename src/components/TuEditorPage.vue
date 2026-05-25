@@ -25,10 +25,19 @@ interface TocItem {
   level: number
   text: string
   pos: number
-  sourceType: 'local' | 'ref-group' | 'ref-child'
+  sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'timeline' | 'spacer'
   children?: TocItem[]
   refId?: string
 }
+
+const NODEVIEW_TYPE_LABELS: Record<string, string> = {
+  x6: '画板',
+  table: '表格',
+  timeline: '时间轴',
+  spacer: '分割',
+}
+
+const nodeViewLabel = (type: string): string => NODEVIEW_TYPE_LABELS[type] || type
 
 const workspaceStore = useWorkspaceStore()
 const registryStore = useBlockRegistryStore()
@@ -353,14 +362,28 @@ const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return []
 
-  // 1. Headings from the local editor doc
-  const headings: TocItem[] = []
+  // Build lookup maps from localBlocks
+  const blockTitleMap = new Map<string, string>()
+  const refMetaMap = new Map<string, { refId: string; refType: string }>()
+  for (const block of localBlocks.value) {
+    if (block.id) {
+      if (block.title) blockTitleMap.set(block.id, block.title)
+      if (block.type === 'ref' && block.refId) {
+        refMetaMap.set(block.id, { refId: block.refId, refType: block.refType ?? 'block' })
+      }
+    }
+  }
+
+  // Collect all items from the editor doc
+  const allItems: TocItem[] = []
   editor.state.doc.descendants((node, pos) => {
-    if (node.type.name === 'heading') {
+    const typeName = node.type.name
+
+    if (typeName === 'heading') {
       const text = node.textContent.trim()
       if (text) {
-        headings.push({
-          id: `${pos}-${node.attrs?.level}`,
+        allItems.push({
+          id: `h-${pos}`,
           blockId: node.attrs?.blockId || `heading-${pos}`,
           level: node.attrs?.level || 1,
           text,
@@ -368,103 +391,122 @@ const tocItems = computed<TocItem[]>(() => {
           sourceType: 'local',
         })
       }
+      return true
     }
+
+    const blockId: string = node.attrs?.blockId || ''
+    if (!blockId) return true
+
+    if (typeName === 'x6Block') {
+      const title = node.attrs?.title || blockTitleMap.get(blockId) || '画板'
+      allItems.push({
+        id: `x6-${blockId}`,
+        blockId,
+        level: 0,
+        text: title,
+        pos,
+        sourceType: 'x6',
+      })
+    } else if (typeName === 'tableBlock') {
+      const title = node.attrs?.title || blockTitleMap.get(blockId) || '表格'
+      allItems.push({
+        id: `table-${blockId}`,
+        blockId,
+        level: 0,
+        text: title,
+        pos,
+        sourceType: 'table',
+      })
+    } else if (typeName === 'timelineBlock') {
+      const title = node.attrs?.title || blockTitleMap.get(blockId) || '时间轴'
+      allItems.push({
+        id: `tl-${blockId}`,
+        blockId,
+        level: 0,
+        text: title,
+        pos,
+        sourceType: 'timeline',
+      })
+    } else if (typeName === 'spacerBlock') {
+      allItems.push({
+        id: `sp-${blockId}`,
+        blockId,
+        level: 0,
+        text: '分割空白',
+        pos,
+        sourceType: 'spacer',
+      })
+    } else if (typeName === 'refBlock') {
+      const refId: string = node.attrs?.refId || refMetaMap.get(blockId)?.refId || ''
+      const refType: string = node.attrs?.refType || refMetaMap.get(blockId)?.refType || 'block'
+      if (!refId) return true
+
+      let refBlocks: Block[] = []
+      if (refType === 'page') {
+        refBlocks = registryStore.getPageBlocks(refId)
+      } else if (refType === 'block') {
+        const refBlock = registryStore.getBlock(refId)
+        if (refBlock) refBlocks = [refBlock]
+      }
+
+      const headings = extractHeadingsFromBlocks(refBlocks)
+
+      let groupTitle: string
+      if (refType === 'page') {
+        groupTitle = findPageTitle(refId) || refId
+      } else {
+        const meta = registryStore.getMeta(refId)
+        groupTitle = meta?.pageTitle || blockTitleMap.get(blockId) || '引用'
+      }
+
+      const children: TocItem[] = headings.map((h, i) => ({
+        id: `ref-child-${blockId}-${i}`,
+        blockId,
+        level: h.level,
+        text: h.text,
+        pos,
+        sourceType: 'ref-child',
+      }))
+
+      allItems.push({
+        id: `ref-group-${blockId}`,
+        blockId,
+        level: 0,
+        text: groupTitle,
+        pos,
+        sourceType: 'ref-group',
+        refId,
+        children: children.length > 0 ? children : undefined,
+      })
+    }
+
     return true
   })
 
-  // 2. Build a map of refBlock positions from the editor doc
-  const refPositions = new Map<string, number>()
-  editor.state.doc.descendants((node, pos) => {
-    if (node.type.name === 'refBlock') {
-      const blockId = node.attrs?.blockId
-      if (blockId) refPositions.set(blockId, pos)
-    }
-    return true
-  })
+  if (allItems.length === 0) return []
 
-  // 3. Build ref-group items with children from referenced blocks/pages
-  const refGroups: TocItem[] = []
-  const embeds = localEmbeds.value || []
-  for (const embed of embeds) {
-    if (embed.type !== 'ref' || !embed.refId) continue
-    const refPos = refPositions.get(embed.id)
-    if (refPos == null) continue
+  // Sort by document position
+  allItems.sort((a, b) => a.pos - b.pos)
 
-    let refBlocks: Block[] = []
+  // Group non-heading items under the nearest preceding heading
+  const treeItems: TocItem[] = []
+  let currentHeading: TocItem | null = null
 
-    if (embed.refType === 'page') {
-      refBlocks = registryStore.getPageBlocks(embed.refId)
-    } else if (embed.refType === 'block') {
-      const refBlock = registryStore.getBlock(embed.refId)
-      if (refBlock) refBlocks = [refBlock]
-    }
-
-    const extracted = extractHeadingsFromBlocks(refBlocks)
-    if (extracted.length === 0) continue
-
-    // Determine group title
-    let groupTitle: string
-    if (embed.refType === 'page') {
-      groupTitle = findPageTitle(embed.refId) || '未知页面'
+  for (const item of allItems) {
+    if (item.sourceType === 'local') {
+      currentHeading = item
+      treeItems.push(item)
     } else {
-      const meta = registryStore.getMeta(embed.refId)
-      groupTitle = meta?.pageTitle || '引用块'
+      if (currentHeading) {
+        if (!currentHeading.children) currentHeading.children = []
+        currentHeading.children.push(item)
+      } else {
+        treeItems.push(item)
+      }
     }
-
-    // Find the nearest local heading before this ref block to determine
-    // the parent heading level, then offset child heading levels so they
-    // start from the child level of that parent (parentLevel + 1).
-    const parentHeading = [...headings]
-      .reverse()
-      .find((i) => i.pos < refPos)
-    const baseLevel = parentHeading ? parentHeading.level + 1 : 1
-    const minChildLevel = Math.min(...extracted.map((h) => h.level))
-    const offset = Math.max(0, baseLevel - minChildLevel)
-
-    const children: TocItem[] = extracted.map((h, i) => ({
-      id: `ref-child-${embed.id}-${i}`,
-      blockId: embed.id,
-      level: Math.min(6, h.level + offset),
-      text: h.text,
-      pos: refPos,
-      sourceType: 'ref-child',
-    }))
-
-    refGroups.push({
-      id: `ref-group-${embed.id}`,
-      blockId: embed.id,
-      level: 0,
-      text: groupTitle,
-      pos: refPos,
-      sourceType: 'ref-group',
-      refId: embed.refId,
-      children,
-    })
   }
 
-  // 4. Build hierarchical TOC: assign each ref-group as child of the
-  //    nearest preceding local heading. Ref-groups before the first
-  //    heading remain as top-level items.
-  if (refGroups.length === 0) return headings
-
-  refGroups.sort((a, b) => a.pos - b.pos)
-  const result: TocItem[] = []
-  const firstHPos = headings.length > 0 ? headings[0].pos : Infinity
-
-  // Add ref-groups before the first heading as top-level items
-  for (const rg of refGroups) {
-    if (rg.pos < firstHPos) result.push(rg)
-  }
-
-  // Assign remaining ref-groups to their parent heading
-  for (let i = 0; i < headings.length; i++) {
-    const h = headings[i]
-    const nextPos = i + 1 < headings.length ? headings[i + 1].pos : Infinity
-    const children = refGroups.filter(rg => rg.pos >= h.pos && rg.pos < nextPos)
-    result.push(children.length > 0 ? { ...h, children } : h)
-  }
-
-  return result
+  return treeItems
 })
 
 /** Total flat heading count counting group children. */
@@ -1041,42 +1083,52 @@ onBeforeUnmount(() => {
                   <span class="page-toc__bullet">H{{ item.level }}</span>
                   <span class="page-toc__text">{{ item.text }}</span>
                 </button>
-                <!-- Ref-groups nested under this heading -->
+                <!-- Children nested under this heading -->
                 <div v-if="item.children?.length" class="page-toc__local-children">
-                  <div
-                    v-for="child in item.children"
-                    :key="child.id"
-                    class="page-toc__group"
-                  >
-                    <button
-                      type="button"
-                      class="page-toc__item page-toc__item--ref"
-                      :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
-                      @click="refGroups.toggle(child.refId!)"
-                    >
-                      <span class="page-toc__bullet page-toc__bullet--group">
-                        {{ refGroups.isExpanded(child.refId!) ? '▼' : '▶' }}
-                      </span>
-                      <span class="page-toc__text page-toc__text--group">{{ child.text }}</span>
-                      <span class="page-toc__group-count">{{ child.children?.length }}</span>
-                    </button>
-                    <div v-if="refGroups.isExpanded(child.refId!)" class="page-toc__children">
+                  <template v-for="child in item.children" :key="child.id">
+                    <!-- Ref-group child -->
+                    <div v-if="child.sourceType === 'ref-group'" class="page-toc__group">
                       <button
-                        v-for="grandchild in child.children"
-                        :key="grandchild.id"
                         type="button"
-                        class="page-toc__item page-toc__item--ref-child"
-                        :class="{
-                          'page-toc__item--active': highlightedBlockId === grandchild.blockId,
-                          [`page-toc__item--level-${grandchild.level}`]: true,
-                        }"
-                        @click="handleTocItemClick(grandchild)"
+                        class="page-toc__item page-toc__item--ref"
+                        :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
+                        @click="refGroups.toggle(child.refId!)"
                       >
-                        <span class="page-toc__bullet">H{{ grandchild.level }}</span>
-                        <span class="page-toc__text">{{ grandchild.text }}</span>
+                        <span class="page-toc__bullet page-toc__bullet--group">
+                          {{ refGroups.isExpanded(child.refId!) ? '▼' : '▶' }}
+                        </span>
+                        <span class="page-toc__text page-toc__text--group">{{ child.text }}</span>
+                        <span class="page-toc__group-count">{{ child.children?.length }}</span>
                       </button>
+                      <div v-if="refGroups.isExpanded(child.refId!)" class="page-toc__children">
+                        <button
+                          v-for="grandchild in child.children"
+                          :key="grandchild.id"
+                          type="button"
+                          class="page-toc__item page-toc__item--ref-child"
+                          :class="{
+                            'page-toc__item--active': highlightedBlockId === grandchild.blockId,
+                            [`page-toc__item--level-${grandchild.level}`]: true,
+                          }"
+                          @click="handleTocItemClick(grandchild)"
+                        >
+                          <span class="page-toc__bullet">H{{ grandchild.level }}</span>
+                          <span class="page-toc__text">{{ grandchild.text }}</span>
+                        </button>
+                      </div>
                     </div>
-                  </div>
+                    <!-- NodeView child -->
+                    <button
+                      v-else
+                      type="button"
+                      class="page-toc__item page-toc__item--nodeview"
+                      :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
+                      @click="handleTocItemClick(child)"
+                    >
+                      <span class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(child.sourceType) }}</span>
+                      <span class="page-toc__text">{{ child.text }}</span>
+                    </button>
+                  </template>
                 </div>
               </div>
 
@@ -1111,6 +1163,17 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
+              <!-- Top-level nodeView (before any local heading) -->
+              <button
+                v-else-if="['x6', 'table', 'timeline', 'spacer'].includes(item.sourceType)"
+                type="button"
+                class="page-toc__item page-toc__item--nodeview"
+                :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
+                @click="handleTocItemClick(item)"
+              >
+                <span class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(item.sourceType) }}</span>
+                <span class="page-toc__text">{{ item.text }}</span>
+              </button>
             </template>
           </div>
         </div>
@@ -1517,6 +1580,21 @@ onBeforeUnmount(() => {
 }
 .page-toc__item--ref-child .page-toc__bullet {
   color: #8b5cf6;
+}
+
+.page-toc__item--nodeview {
+  padding: 6px 10px 6px 14px;
+}
+.page-toc__item--nodeview:hover {
+  background: rgba(22, 119, 255, 0.08);
+}
+.page-toc__bullet--nodeview {
+  flex: 0 0 auto;
+  min-width: 34px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #1677ff;
+  letter-spacing: 0.04em;
 }
 
 .page-toc__text {
