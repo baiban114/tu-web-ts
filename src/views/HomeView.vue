@@ -2,10 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { ElEmpty } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
-import type { Block } from '@/api/types';
 import DevModePanel from '@/components/DevModePanel.vue';
 import LeftPanel from '@/components/LeftPanel.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
+import type { PageContent } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
 
 const store = useWorkspaceStore();
@@ -23,9 +23,8 @@ async function initializeWorkspace() {
 
 async function applyRouteSelection() {
   const pageId = typeof route.query.pageId === 'string' ? route.query.pageId : '';
-  const blockId = typeof route.query.blockId === 'string' ? route.query.blockId : null;
   if (!pageId) return;
-  await store.openPageAtBlock(pageId, blockId);
+  await store.selectPage(pageId);
 }
 
 const leftWidth = ref(240);
@@ -82,8 +81,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('mouseup', onMouseup);
 });
 
-function onContentChange(blocks: Block[]) {
-  void store.saveCurrentPage(blocks);
+function onContentChange(content: PageContent) {
+  void store.saveCurrentPage(content);
 }
 
 function onPageTitleChange(title: string) {
@@ -92,11 +91,11 @@ function onPageTitleChange(title: string) {
 }
 
 watch(
-  () => [route.query.pageId, route.query.blockId],
-  async ([nextPageId, nextBlockId]) => {
+  () => route.query.pageId,
+  async (nextPageId) => {
     if (typeof nextPageId !== 'string' || !nextPageId) return;
-    if (store.currentPageId === nextPageId && typeof nextBlockId !== 'string') return;
-    await store.openPageAtBlock(nextPageId, typeof nextBlockId === 'string' ? nextBlockId : null);
+    if (store.currentPageId === nextPageId) return;
+    await store.selectPage(nextPageId);
   },
 );
 </script>
@@ -138,7 +137,7 @@ watch(
         <!-- TipTap 编辑器 -->
         <TuEditorPage
           :key="store.currentPageId"
-          :contentList="store.currentBlocks"
+          :contentList="store.pageContent!"
           :page-title="store.currentPageTitle"
           :editable="true"
           @page-title-change="onPageTitleChange"

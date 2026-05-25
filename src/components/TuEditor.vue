@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { watch, onBeforeUnmount, onMounted, ref, computed, provide } from 'vue'
+import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
@@ -160,6 +160,129 @@ const handleCompoundBadgeClick = (blockId: string, annotationId: string, event: 
   emit('compound-badge-click', blockId, annotationId, event.clientY, event.clientX)
 }
 provide('onCompoundBadgeClick', handleCompoundBadgeClick)
+
+// --- Lasso (multi-select) ---
+const lassoSelectedBlockIds = ref(new Set<string>())
+provide('lassoSelectedBlockIds', lassoSelectedBlockIds)
+
+let lassoActive = false
+let lassoStartX = 0
+let lassoStartY = 0
+let lassoListenersAttached = false
+const lassoRect = ref<{ left: number; top: number; width: number; height: number } | null>(null)
+
+function updateLassoSelection() {
+  const rect = lassoRect.value
+  if (!rect || !editorEl.value) return
+
+  const wrappers = editorEl.value.querySelectorAll<HTMLElement>('[data-block-id]')
+  const newSelection = new Set<string>()
+
+  wrappers.forEach((el) => {
+    const elRect = el.getBoundingClientRect()
+    const overlap = !(
+      rect.left + rect.width < elRect.left ||
+      rect.left > elRect.left + elRect.width ||
+      rect.top + rect.height < elRect.top ||
+      rect.top > elRect.top + elRect.height
+    )
+    if (overlap) {
+      const bid = el.getAttribute('data-block-id')
+      if (bid) newSelection.add(bid)
+    }
+  })
+
+  lassoSelectedBlockIds.value = newSelection
+}
+
+function startLasso(clientX: number, clientY: number) {
+  lassoActive = true
+  lassoStartX = clientX
+  lassoStartY = clientY
+  lassoRect.value = { left: clientX, top: clientY, width: 0, height: 0 }
+  lassoSelectedBlockIds.value = new Set()
+
+  if (lassoListenersAttached) return
+  lassoListenersAttached = true
+
+  document.addEventListener('mousemove', handleLassoMouseMove)
+  document.addEventListener('mouseup', handleLassoMouseUp)
+}
+
+function handleLassoMouseMove(event: MouseEvent) {
+  if (!lassoActive) return
+  const x1 = Math.min(lassoStartX, event.clientX)
+  const y1 = Math.min(lassoStartY, event.clientY)
+  const x2 = Math.max(lassoStartX, event.clientX)
+  const y2 = Math.max(lassoStartY, event.clientY)
+
+  if (x2 - x1 < 5 && y2 - y1 < 5) return // Ignore tiny clicks
+
+  lassoRect.value = { left: x1, top: y1, width: x2 - x1, height: y2 - y1 }
+  updateLassoSelection()
+}
+
+function handleLassoMouseUp() {
+  if (!lassoActive) return
+  lassoActive = false
+  lassoRect.value = null
+
+  if (lassoListenersAttached) {
+    lassoListenersAttached = false
+    document.removeEventListener('mousemove', handleLassoMouseMove)
+    document.removeEventListener('mouseup', handleLassoMouseUp)
+  }
+}
+
+const handleDocumentKeyDown = (event: KeyboardEvent) => {
+  if ((event.key === 'Delete' || event.key === 'Backspace') && lassoSelectedBlockIds.value.size > 0) {
+    deleteLassoSelected()
+    event.preventDefault()
+  }
+}
+
+function clearLassoSelection() {
+  lassoSelectedBlockIds.value = new Set()
+}
+
+function deleteLassoSelected() {
+  if (!editor.value || lassoSelectedBlockIds.value.size === 0) return
+
+  const ids = lassoSelectedBlockIds.value
+  const doc = editor.value.state.doc
+
+  // Find all top-level node positions matching lasso-selected blockIds
+  const positions: number[] = []
+  doc.descendants((node, pos) => {
+    if (node.isBlock && node.attrs.blockId && ids.has(node.attrs.blockId)) {
+      positions.push(pos)
+    }
+    return true
+  })
+  positions.sort((a, b) => b - a) // descending → delete from end to avoid offset shifts
+
+  let tr = editor.value.state.tr
+  for (const pos of positions) {
+    const node = tr.doc.nodeAt(pos)
+    if (node) tr = tr.delete(pos, pos + node.nodeSize)
+  }
+  tr.scrollIntoView()
+  editor.value.view.dispatch(tr)
+  clearLassoSelection()
+
+  // Immediately flush content sync instead of waiting for 300ms debounce
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+  if (isMounted && editor.value) {
+    const json = editor.value.getJSON()
+    const blocks = tipTapToBlocks(json, props.blocks)
+    skipNextContentSync = true
+    emit('update:blocks', blocks)
+    emit('content-change', blocks)
+  }
+}
 
 const getBlockIdAtPos = (pos: number): string | undefined => {
   if (!editor.value) return undefined
@@ -413,6 +536,38 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   clearHideHandle()
 }
 
+// Lasso mousedown: capture phase so it fires BEFORE ProseMirror's handler
+const handleLassoStart = (event: MouseEvent) => {
+  if (!props.editable || event.button !== 0) return
+  if (!event.shiftKey) {
+    // Non-shift click clears lasso selection
+    if (lassoSelectedBlockIds.value.size > 0) {
+      clearLassoSelection()
+    }
+    return
+  }
+
+  const target = event.target as HTMLElement
+  const nodeView = target.closest('[data-block-id]')
+
+  if (nodeView) {
+    const bid = nodeView.getAttribute('data-block-id')
+    if (bid) {
+      const next = new Set(lassoSelectedBlockIds.value)
+      if (next.has(bid)) { next.delete(bid) } else { next.add(bid) }
+      lassoSelectedBlockIds.value = next
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    return
+  }
+
+  // Shift+click on empty area: start drag lasso, stop ProseMirror selection
+  startLasso(event.clientX, event.clientY)
+  event.preventDefault()
+  event.stopPropagation()
+}
+
 const handleEditorMouseDown = (event: MouseEvent) => {
   if (!props.editable || event.button !== 0) return
   selectionPointerDown = true
@@ -600,6 +755,13 @@ const editor = useEditor({
     attributes: {
       class: 'tu-editor-content',
     },
+    handleKeyDown: (view, event) => {
+      if ((event.key === 'Delete' || event.key === 'Backspace') && lassoSelectedBlockIds.value.size > 0) {
+        deleteLassoSelected()
+        return true
+      }
+      return false
+    },
   },
   onCreate: () => {
     isInternalUpdate = false
@@ -608,6 +770,13 @@ const editor = useEditor({
       editor.value.view.dom.addEventListener('mouseleave', handleEditorMouseLeave)
       editor.value.view.dom.addEventListener('mousedown', handleEditorMouseDown)
       document.addEventListener('mouseup', handleDocumentMouseUp, true)
+      document.addEventListener('keydown', handleDocumentKeyDown)
+
+      // nextTick so the template ref editorEl is available
+      nextTick(() => {
+        editorEl.value?.addEventListener('mousedown', handleLassoStart, { capture: true })
+      })
+
       lastDocSignature = getDocSignature()
 
       scrollContainer = editor.value.view.dom.closest('.content-scroll') as HTMLElement | null
@@ -726,6 +895,13 @@ onBeforeUnmount(() => {
     scrollContainer.removeEventListener('scroll', handleScrollInEditor)
     scrollContainer = null
   }
+  // Clean up lasso listeners if still attached
+  document.removeEventListener('keydown', handleDocumentKeyDown)
+  if (lassoListenersAttached) {
+    lassoListenersAttached = false
+    document.removeEventListener('mousemove', handleLassoMouseMove)
+    document.removeEventListener('mouseup', handleLassoMouseUp)
+  }
   if (editor.value) {
     try {
       const view = (editor.value as any).view
@@ -734,6 +910,8 @@ onBeforeUnmount(() => {
         view.dom.removeEventListener('mouseleave', handleEditorMouseLeave)
         view.dom.removeEventListener('mousedown', handleEditorMouseDown)
         document.removeEventListener('mouseup', handleDocumentMouseUp, true)
+        document.removeEventListener('keydown', handleDocumentKeyDown)
+        editorEl.value?.removeEventListener('mousedown', handleLassoStart, { capture: true })
       }
     } catch {
       // view already destroyed by Tiptap internal cleanup
@@ -821,6 +999,18 @@ defineExpose({
       @select="(key: string) => handleHandleSelect(key as HandleAction)"
       @menu-visibility-change="handleHandleMenuVisibilityChange"
       @mouseenter="clearHideHandle"
+    />
+    <div
+      v-if="lassoRect"
+      class="lasso-selection-rect"
+      :style="{
+        left: `${lassoRect.left}px`,
+        top: `${lassoRect.top}px`,
+        width: `${lassoRect.width}px`,
+        height: `${lassoRect.height}px`,
+      }"
+      @mousedown.prevent
+      @mouseup.stop
     />
   </div>
 </template>
@@ -988,5 +1178,14 @@ defineExpose({
 .slash-command-menu__label {
   flex: 1;
   min-width: 0;
+}
+
+.lasso-selection-rect {
+  position: fixed;
+  z-index: 1000000;
+  pointer-events: none;
+  background: rgba(22, 119, 255, 0.06);
+  border: 1px solid rgba(22, 119, 255, 0.35);
+  border-radius: 3px;
 }
 </style>

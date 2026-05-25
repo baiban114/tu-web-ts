@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
 import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import type { Block, BlockTag, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import type { Block, BlockTag, EmbeddedObject, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import { pageContentToTipTap, tipTapToPageContent } from '@/editor/converters'
 import TuEditor from './TuEditor.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
@@ -33,7 +34,7 @@ const workspaceStore = useWorkspaceStore()
 const registryStore = useBlockRegistryStore()
 
 interface Props {
-  contentList: Block[]
+  contentList: PageContent
   pageTitle?: string
   editable?: boolean
 }
@@ -44,17 +45,49 @@ const props = withDefaults(defineProps<Props>(), {
 })
 
 const emit = defineEmits<{
-  'content-change': [contentList: Block[]]
+  'content-change': [contentList: PageContent]
   'page-title-change': [title: string]
 }>()
 
 // --- Core state ---
-const localBlocks = ref<Block[]>([])
+const localContent = ref('')
+const localEmbeds = ref<EmbeddedObject[]>([])
+const localAnnotations = ref<TextAnnotation[]>([])
 const pageTitleDraft = ref('')
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const highlightedBlockId = ref<string | null>(null)
 const tocExpanded = ref(true)
+
+// Backward compat: convert PageContent → Block[] for template/TuEditor
+const localBlocks = computed<Block[]>(() => {
+  const blocks: Block[] = []
+  if ((localContent.value || '').trim()) {
+    blocks.push({
+      id: 'page-content',
+      type: 'richtext',
+      content: localContent.value,
+      metadata: { annotations: localAnnotations.value as unknown as any[] },
+    })
+  }
+  for (const embed of localEmbeds.value || []) {
+    blocks.push({
+      id: embed.id,
+      type: embed.type,
+      title: embed.title,
+      graphData: embed.graphData,
+      tableData: embed.tableData,
+      timelineData: embed.timelineData,
+      refId: embed.refId,
+      refType: embed.refType,
+      spacerHeight: embed.spacerHeight,
+      width: embed.width,
+      height: embed.height,
+      metadata: { ...embed.metadata, annotations: localAnnotations.value as unknown as any[] },
+    })
+  }
+  return blocks
+})
 
 // --- Selection state ---
 const hasSelection = ref(false)
@@ -107,30 +140,19 @@ const notePopoverAnnotations = ref<TextAnnotation[]>([])
 const notePopoverPos = ref({ top: 0, left: 0 })
 
 // --- Watchers ---
-// Track the blocks reference we most recently emitted upward. When the parent
-// hands those exact blocks back via `contentList`, we must NOT re-clone them
-// into localBlocks — doing so triggers a second TuEditor blocks watch after
-// `skipNextContentSync` is already consumed, which causes setContent to fire
-// and visibly rearrange interactive nodes (e.g. table rows collapsing).
-let pendingSelfEmittedBlocks: Block[] | null = null
-
-const emitLocalContentChange = (blocks: Block[] = localBlocks.value) => {
-  pendingSelfEmittedBlocks = blocks
-  emit('content-change', blocks)
+const emitLocalContentChange = (content: string, embeds: EmbeddedObject[], annotations: TextAnnotation[]) => {
+  emit('content-change', { content, embeds, annotations })
 }
 
 watch(
   () => props.contentList,
-  (val, oldVal) => {
-    if (val === oldVal) return
-    if (pendingSelfEmittedBlocks && val === pendingSelfEmittedBlocks) {
-      pendingSelfEmittedBlocks = null
-      return
-    }
-    pendingSelfEmittedBlocks = null
-    localBlocks.value = JSON.parse(JSON.stringify(val))
+  (val) => {
+    if (!val) return
+    localContent.value = val.content
+    localEmbeds.value = val.embeds
+    localAnnotations.value = val.annotations
   },
-  { immediate: true },
+  { immediate: true, deep: true },
 )
 
 watch(
@@ -153,8 +175,36 @@ const removeToast = (id: string) => {
 
 // --- Block sync ---
 const handleBlocksChange = (blocks: Block[]) => {
-  localBlocks.value = blocks
-  emitLocalContentChange(blocks)
+  // Legacy: TuEditor still emits Block[], convert back to PageContent
+  const tempPc: PageContent = { content: '', embeds: [], annotations: localAnnotations.value }
+  let contentParts: string[] = []
+  const embeds: EmbeddedObject[] = []
+
+  for (const block of blocks) {
+    if (block.type === 'richtext' || block.type === 'richText') {
+      if (block.content) contentParts.push(block.content)
+    } else {
+      embeds.push({
+        id: block.id,
+        type: block.type as EmbeddedObject['type'],
+        title: block.title,
+        graphData: block.graphData,
+        tableData: block.tableData,
+        timelineData: block.timelineData,
+        refId: block.refId,
+        refType: block.refType,
+        spacerHeight: block.spacerHeight,
+        width: block.width,
+        height: block.height,
+        metadata: block.metadata,
+      })
+      contentParts.push(`<!--tu:embed id="${block.id}" type="${block.type}"-->`)
+    }
+  }
+
+  localContent.value = contentParts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
+  localEmbeds.value = embeds
+  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
 }
 
 // --- Focus editor from title ---
@@ -334,17 +384,18 @@ const tocItems = computed<TocItem[]>(() => {
 
   // 3. Build ref-group items with children from referenced blocks/pages
   const refGroups: TocItem[] = []
-  for (const block of localBlocks.value) {
-    if (block.type !== 'ref' || !block.refId) continue
-    const refPos = refPositions.get(block.id)
+  const embeds = localEmbeds.value || []
+  for (const embed of embeds) {
+    if (embed.type !== 'ref' || !embed.refId) continue
+    const refPos = refPositions.get(embed.id)
     if (refPos == null) continue
 
     let refBlocks: Block[] = []
 
-    if (block.refType === 'page') {
-      refBlocks = registryStore.getPageBlocks(block.refId)
-    } else if (block.refType === 'block') {
-      const refBlock = registryStore.getBlock(block.refId)
+    if (embed.refType === 'page') {
+      refBlocks = registryStore.getPageBlocks(embed.refId)
+    } else if (embed.refType === 'block') {
+      const refBlock = registryStore.getBlock(embed.refId)
       if (refBlock) refBlocks = [refBlock]
     }
 
@@ -353,10 +404,10 @@ const tocItems = computed<TocItem[]>(() => {
 
     // Determine group title
     let groupTitle: string
-    if (block.refType === 'page') {
-      groupTitle = findPageTitle(block.refId) || '未知页面'
+    if (embed.refType === 'page') {
+      groupTitle = findPageTitle(embed.refId) || '未知页面'
     } else {
-      const meta = registryStore.getMeta(block.refId)
+      const meta = registryStore.getMeta(embed.refId)
       groupTitle = meta?.pageTitle || '引用块'
     }
 
@@ -371,8 +422,8 @@ const tocItems = computed<TocItem[]>(() => {
     const offset = Math.max(0, baseLevel - minChildLevel)
 
     const children: TocItem[] = extracted.map((h, i) => ({
-      id: `ref-child-${block.id}-${i}`,
-      blockId: block.id,
+      id: `ref-child-${embed.id}-${i}`,
+      blockId: embed.id,
       level: Math.min(6, h.level + offset),
       text: h.text,
       pos: refPos,
@@ -380,13 +431,13 @@ const tocItems = computed<TocItem[]>(() => {
     }))
 
     refGroups.push({
-      id: `ref-group-${block.id}`,
-      blockId: block.id,
+      id: `ref-group-${embed.id}`,
+      blockId: embed.id,
       level: 0,
       text: groupTitle,
       pos: refPos,
       sourceType: 'ref-group',
-      refId: block.refId,
+      refId: embed.refId,
       children,
     })
   }
@@ -557,13 +608,11 @@ const handleExtractSelectionButtonClick = () => {
 }
 
 // --- Tag editor ---
-const handleOpenTagEditor = (blockId: string) => {
-  const block = localBlocks.value.find(b => b.id === blockId)
-  if (!block) return
-  tagEditorBlockTags.value = getBlockTags(block)
+const handleOpenTagEditor = (_blockId: string) => {
+  tagEditorBlockTags.value = []
   tagEditorState.value = {
     visible: true,
-    blockId,
+    blockId: '',
     top: window.innerHeight / 2 - 160,
     left: window.innerWidth / 2 - 160,
   }
@@ -574,41 +623,27 @@ const closeTagEditor = () => {
   tagEditorState.value.blockId = ''
 }
 
-const updateBlockTags = (tags: BlockTag[]) => {
-  const block = localBlocks.value.find(b => b.id === tagEditorState.value.blockId)
-  if (!block) return
-  setBlockTags(block, tags)
-  emitLocalContentChange()
-  localBlocks.value = [...localBlocks.value]
+const updateBlockTags = (_tags: BlockTag[]) => {
+  // Tags are page-level in the new model — handled by metadata
 }
 
 const availableTags = computed(() => collectBlockTags(localBlocks.value))
-const editorAnnotations = computed<Record<string, TextAnnotation[]>>(() => {
-  const result: Record<string, TextAnnotation[]> = {}
-  for (const block of localBlocks.value) {
-    const annotations = block.metadata?.annotations as TextAnnotation[] | undefined
-    if (annotations?.length) {
-      result[block.id] = annotations
-    }
+const editorAnnotations = computed(() => {
+  // All annotations apply to the entire page content
+  if ((localAnnotations.value || []).length) {
+    return { 'page-content': localAnnotations.value ?? [] } as Record<string, TextAnnotation[]>
   }
-  return result
+  return {} as Record<string, TextAnnotation[]>
 })
-const allAnnotations = computed(() => Object.values(editorAnnotations.value).flat())
+const allAnnotations = computed(() => localAnnotations.value)
 
 // --- Note / Annotation ---
 const handleAddNoteFromSelection = () => {
   const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
   const hasText = !!payload.selectedText
-  const hasBlocks = selectionSpannedBlockIds.value.length > 0
-  if (!hasText && !hasBlocks) return
+  if (!hasText && selectionSpannedBlockIds.value.length === 0) return
 
-  const blockIndex = selectionBlockIndex.value >= 0 ? selectionBlockIndex.value : 0
-  const targetBlock = selectionBlockId.value
-    ? localBlocks.value.find(block => block.id === selectionBlockId.value)
-    : localBlocks.value[blockIndex]
-  if (!targetBlock) return
-
-  pendingNoteBlockId.value = targetBlock.id || ''
+  pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = payload.selectedText
   pendingNoteContextBefore.value = payload.contextBefore
   pendingNoteContextAfter.value = payload.contextAfter
@@ -622,14 +657,9 @@ const handleAddNoteFromSelection = () => {
 }
 
 const handleSaveAnnotation = (note: string) => {
-  if (!pendingNoteBlockId.value) return
-
   const now = Date.now()
   const existing = editingAnnotation.value
-  const block = localBlocks.value.find(b => b.id === pendingNoteBlockId.value)
-  if (!block) return
-
-  const annotations: TextAnnotation[] = (block.metadata?.annotations as TextAnnotation[]) || []
+  const annotations = localAnnotations.value
 
   if (existing) {
     const idx = annotations.findIndex(a => a.id === existing.id)
@@ -655,7 +685,7 @@ const handleSaveAnnotation = (note: string) => {
       updatedAt: now,
       from: hasText ? pendingNoteFrom.value : undefined,
       to: hasText ? pendingNoteTo.value : undefined,
-      blockId: pendingNoteBlockId.value,
+      blockId: '',
       anchorVersion: hasText ? 1 : undefined,
       lastResolvedAt: hasText ? now : undefined,
       unresolved: false,
@@ -666,9 +696,8 @@ const handleSaveAnnotation = (note: string) => {
     annotations.push(annotation)
   }
 
-  block.metadata = { ...(block.metadata || {}), annotations }
-  emitLocalContentChange()
-  localBlocks.value = [...localBlocks.value]
+  localAnnotations.value = [...annotations]
+  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
 
   noteEditorVisible.value = false
   editingAnnotation.value = undefined
@@ -702,11 +731,7 @@ const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: 
 }
 
 const getBlockAnnotations = (): TextAnnotation[] => {
-  return allAnnotations.value
-}
-
-const findBlockById = (blockId: string): Block | undefined => {
-  return localBlocks.value.find(block => block.id === blockId)
+  return localAnnotations.value
 }
 
 const getBlockDisplayType = (block: Block | undefined, fallback: string): string => {
@@ -726,59 +751,36 @@ const normalizeSpannedBlockMetadata = (
 ): SpannedBlockInfo[] => {
   const byId = new Map(metadata.map(item => [item.blockId, item]))
   return blockIds.map((blockId) => {
-    const block = findBlockById(blockId)
+    const embed = localEmbeds.value.find(e => e.id === blockId)
     const existing = byId.get(blockId)
     return {
       blockId,
-      blockType: getBlockDisplayType(block, existing?.blockType || 'block'),
-      title: existing?.title || block?.title,
+      blockType: embed?.type || existing?.blockType || 'block',
+      title: existing?.title || embed?.title,
     }
   })
-}
-
-const hasAnnotationAnchorChange = (previous: TextAnnotation, next: TextAnnotation): boolean => {
-  return previous.from !== next.from
-    || previous.to !== next.to
-    || previous.contextBefore !== next.contextBefore
-    || previous.contextAfter !== next.contextAfter
-    || previous.unresolved !== next.unresolved
-    || previous.anchorVersion !== next.anchorVersion
-    || previous.lastResolvedAt !== next.lastResolvedAt
-    || previous.blockId !== next.blockId
-    || previous.scope !== next.scope
-    || JSON.stringify(previous.spannedBlockIds ?? []) !== JSON.stringify(next.spannedBlockIds ?? [])
-    || JSON.stringify(previous.spannedBlockMetadata ?? []) !== JSON.stringify(next.spannedBlockMetadata ?? [])
 }
 
 const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
   if (annotationPersistTimer) clearTimeout(annotationPersistTimer)
   annotationPersistTimer = setTimeout(() => {
     annotationPersistTimer = null
-    const byId = new Map(mappedAnnotations.map((annotation) => [annotation.id, annotation]))
-    let changed = false
-    for (const block of localBlocks.value) {
-      const annotations = block.metadata?.annotations as TextAnnotation[] | undefined
-      if (!annotations?.length) continue
-      const next = annotations.map((annotation) => byId.get(annotation.id) ?? annotation)
-      if (next.some((annotation, index) => hasAnnotationAnchorChange(annotations[index], annotation))) {
-        block.metadata = { ...(block.metadata || {}), annotations: next }
-        changed = true
-      }
-    }
+    const byId = new Map(mappedAnnotations.map((a) => [a.id, a]))
+    const next = localAnnotations.value.map((a) => byId.get(a.id) ?? a)
+    const changed = next.some((a, i) => {
+      const prev = localAnnotations.value[i]
+      return prev.from !== a.from || prev.to !== a.to || prev.unresolved !== a.unresolved || prev.anchorVersion !== a.anchorVersion
+    })
     if (changed) {
-      emitLocalContentChange()
-      localBlocks.value = [...localBlocks.value]
+      localAnnotations.value = next
+      emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
     }
   }, 400)
 }
 
-const handleCompoundBadgeClick = (blockId: string, annotationId: string, clientY: number, clientX: number) => {
-  const related = sortAnnotationsByTimeDesc(allAnnotations.value.filter(annotation => (
-    annotation.id === annotationId
-    || annotation.spannedBlockIds?.includes(blockId)
-    || annotation.blockId === blockId
-  )))
-  const annotation = related.find(a => a.id === annotationId) ?? related[0]
+const handleCompoundBadgeClick = (_blockId: string, annotationId: string, clientY: number, clientX: number) => {
+  const related = sortAnnotationsByTimeDesc(localAnnotations.value.filter(a => a.id === annotationId))
+  const annotation = related[0] ?? localAnnotations.value.find(a => a.id === annotationId)
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = related.length ? related : [annotation]
@@ -789,13 +791,8 @@ const handleCompoundBadgeClick = (blockId: string, annotationId: string, clientY
 const handleEditAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target) return
-  const block = localBlocks.value.find(b => {
-    const anns = b.metadata?.annotations as TextAnnotation[] | undefined
-    return anns?.some(a => a.id === target.id)
-  })
-  if (!block) return
 
-  pendingNoteBlockId.value = block.id
+  pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = target.selectedText
   pendingNoteContextBefore.value = target.contextBefore
   pendingNoteContextAfter.value = target.contextAfter
@@ -807,19 +804,10 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
 const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target) return
-  const block = localBlocks.value.find(b => {
-    const anns = b.metadata?.annotations as TextAnnotation[] | undefined
-    return anns?.some(a => a.id === target.id)
-  })
-  if (!block) return
 
-  const annotations: TextAnnotation[] = (block.metadata?.annotations as TextAnnotation[]) || []
-  const idx = annotations.findIndex(a => a.id === target.id)
-  if (idx >= 0) {
-    annotations.splice(idx, 1)
-    block.metadata = { ...(block.metadata || {}), annotations }
-    emitLocalContentChange()
-  }
+  localAnnotations.value = localAnnotations.value.filter(a => a.id !== target.id)
+  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+
   notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
   notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
   notePopoverVisible.value = notePopoverAnnotations.value.length > 0
@@ -827,10 +815,7 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
 
 // --- Document tail insert ---
 const shouldShowTailInsert = computed(() => {
-  const blocks = localBlocks.value
-  if (blocks.length === 0) return true
-  const last = blocks[blocks.length - 1]
-  return last.type !== 'richtext' && last.type !== 'richText'
+  return !(localContent.value || '').trim()
 })
 
 const appendRichTextBlock = () => {

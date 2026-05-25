@@ -106,6 +106,47 @@ export interface TableBlockData {
   rowHeights?: number[];
 }
 
+/**
+ * 嵌入对象 — 非文本类型的内容，在 markdown content 中用占位符标记位置。
+ * 占位符格式: <!--tu:embed id="..." type="..."-->
+ */
+export interface EmbeddedObject {
+  id: string
+  type: 'x6' | 'table' | 'timeline' | 'ref' | 'spacer'
+  title?: string
+  graphData?: GraphData
+  tableData?: TableBlockData
+  timelineData?: Array<{
+    id: string
+    title: string
+    content: string
+    date: string
+    color: string
+    lightColor: string
+    type: 'normal' | 'milestone'
+  }>
+  refId?: string
+  refType?: 'block' | 'page'
+  spacerHeight?: number
+  width?: number | string
+  height?: number
+  metadata?: Record<string, unknown>
+}
+
+/**
+ * 页面级内容模型 — 取代 Block[]。
+ * - content: 整页富文本，一段连续 markdown，嵌入对象用占位符标记位置
+ * - embeds: 非文本嵌入对象
+ * - annotations: 页面级别划选标注
+ */
+export interface PageContent {
+  content: string
+  embeds: EmbeddedObject[]
+  annotations: TextAnnotation[]
+  metadata?: Record<string, unknown>
+}
+
+/** @deprecated 使用 EmbeddedObject + PageContent 替代 */
 export interface Block {
   id: string;
   type: 'richtext' | 'richText' | 'line' | 'x6' | 'ref' | 'container' | 'spacer' | 'table' | string;
@@ -148,7 +189,8 @@ export interface PageItem {
   children?: PageItem[];
 }
 
-export interface PageContent {
+/** @deprecated 使用新 PageContent 替代 */
+export interface PageBlocks {
   pageId: string;
   blocks: Block[];
 }

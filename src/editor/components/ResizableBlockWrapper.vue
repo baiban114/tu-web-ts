@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, inject, onBeforeUnmount, ref, type Ref } from 'vue'
 
 interface ResizableAxes {
   width?: boolean
@@ -36,6 +36,10 @@ const dragWidth = ref<number | null>(null)
 const dragHeight = ref<number | null>(null)
 
 const showHandles = computed(() => props.selected || hovered.value)
+
+// Lasso selection state (multi-select for batch operations)
+const lassoSelectedBlockIds = inject('lassoSelectedBlockIds') as Ref<Set<string>>
+const isLassoSelected = computed(() => lassoSelectedBlockIds?.value.has(props.blockId) ?? false)
 
 const wrapperStyle = computed(() => {
   const style: Record<string, string> = {}
@@ -128,7 +132,9 @@ onBeforeUnmount(() => {
     :class="{
       'resizable-block-wrapper--selected': selected,
       'resizable-block-wrapper--dragging': dragging != null,
+      'resizable-block-wrapper--lasso-selected': isLassoSelected,
     }"
+    :data-block-id="blockId || undefined"
     :style="wrapperStyle"
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
@@ -189,6 +195,11 @@ onBeforeUnmount(() => {
 
 .resizable-block-wrapper--dragging {
   transition: none;
+}
+
+.resizable-block-wrapper--lasso-selected {
+  border-color: #fa8c16;
+  box-shadow: 0 0 0 2px rgba(250, 140, 22, 0.2), inset 0 0 0 1px rgba(250, 140, 22, 0.08);
 }
 
 .resizable-block-wrapper__header {

@@ -47,7 +47,6 @@ async function generateSvgPreview(data: GraphData): Promise<string> {
   } catch {
     return '';
   } finally {
-    preview.destroy();
     document.body.removeChild(container);
   }
 }

@@ -1,7 +1,8 @@
-import type { Block } from '@/api/types';
+import type { Block, EmbeddedObject, PageContent } from '@/api/types';
 import { blockHasTags } from '@/utils/blockMetadata';
 
 const CUSTOM_BLOCK_FENCE = 'tu-block';
+const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g;
 
 function sanitizeLineEndings(markdown: string): string {
   return markdown.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
@@ -131,6 +132,7 @@ function serializeStructuredBlock(block: Block): string {
   ].join('\n');
 }
 
+/** @deprecated Use serializePageContentToMarkdown instead */
 export function serializeBlocksToMarkdown(blocks: Block[]): string {
   const chunks = blocks
     .map((block) => {
@@ -149,6 +151,7 @@ export function serializeBlocksToMarkdown(blocks: Block[]): string {
   return chunks.join('\n\n');
 }
 
+/** @deprecated Use parseMarkdownToPageContent instead */
 export function parseMarkdownToBlocks(markdown: string, sourceKey = Date.now().toString(36)): Block[] {
   const chunks = splitMarkdownIntoChunks(markdown);
   if (chunks.length === 0) {
@@ -175,4 +178,70 @@ export function parseMarkdownToBlocks(markdown: string, sourceKey = Date.now().t
       sourceChunkIndex: index,
     };
   });
+}
+
+// ─── New Public API ─────────────────────────────────────────────────────────
+
+/**
+ * Parse a plain markdown string into PageContent.
+ * Handles both old-style ```tu-block fences and new-style <!--tu:embed--> placeholders.
+ */
+export function parseMarkdownToPageContent(markdown: string): PageContent {
+  const normalized = sanitizeLineEndings(markdown)
+  const embeds: EmbeddedObject[] = []
+  let embedCount = 0
+
+  // Replace old-style ```tu-block fences with <!--tu:embed--> placeholders
+  const converted = normalized.replace(
+    /```tu-block\s*\n([\s\S]*?)\n```/g,
+    (_match, jsonStr: string) => {
+      try {
+        const block = JSON.parse(jsonStr) as Block
+        const id = block.id || `embed-${Date.now()}-${embedCount++}`
+        embeds.push({
+          id,
+          type: block.type as EmbeddedObject['type'],
+          title: block.title,
+          graphData: block.graphData,
+          tableData: block.tableData,
+          timelineData: block.timelineData,
+          refId: block.refId,
+          refType: block.refType,
+          spacerHeight: block.spacerHeight,
+          width: block.width,
+          height: block.height,
+          metadata: block.metadata,
+        })
+        return `<!--tu:embed id="${id}" type="${block.type}"-->`
+      } catch {
+        return _match
+      }
+    },
+  )
+
+  // Collect annotations (currently none from markdown import)
+  return {
+    content: converted.trim(),
+    embeds,
+    annotations: [],
+  }
+}
+
+/**
+ * Serialize PageContent to a plain markdown string.
+ * Embed objects become <!--tu:embed--> placeholders in the markdown.
+ */
+export function serializePageContentToMarkdown(pc: PageContent): string {
+  if (!pc.embeds.length) return pc.content
+
+  // Replace embed placeholders with their actual content for clean export.
+  // If the embed has no rich text representation, keep the placeholder.
+  let result = pc.content
+
+  for (const embed of pc.embeds) {
+    const placeholder = `<!--tu:embed id="${embed.id}" type="${embed.type}"-->`
+    // Keep placeholder in the markdown — it will be resolved by the editor
+  }
+
+  return result
 }

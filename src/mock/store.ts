@@ -1,6 +1,7 @@
 import type {
   Block,
   BlockWithMeta,
+  EmbeddedObject,
   ImportRoadmapPayload,
   ImportRoadmapResult,
   KnowledgeBase,
@@ -14,10 +15,75 @@ import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '
 interface MockState {
   knowledgeBases: KnowledgeBase[];
   pages: Array<Omit<PageItem, 'children'>>;
-  contents: Record<string, Block[]>;
+  contents: Record<string, PageContent>;
 }
 
 const STORAGE_KEY = 'tu:mock-state';
+
+function blocksToPageContent(blocks: Block[]): PageContent {
+  const parts: string[] = []
+  const embeds: EmbeddedObject[] = []
+  const referencedEmbedIds = collectEmbedIdsFromBlocks(blocks)
+  const seenEmbedIds = new Set<string>()
+
+  for (const block of blocks) {
+    if (block.type === 'richtext' || block.type === 'richText') {
+      if (block.content) parts.push(block.content)
+      continue
+    }
+    if (seenEmbedIds.has(block.id)) continue
+    seenEmbedIds.add(block.id)
+
+    const embedId = block.id
+    const embed: EmbeddedObject = {
+      id: embedId,
+      type: block.type as EmbeddedObject['type'],
+      title: block.title,
+      graphData: block.graphData,
+      tableData: block.tableData,
+      timelineData: block.timelineData,
+      refId: block.refId,
+      refType: block.refType,
+      spacerHeight: block.spacerHeight,
+      width: block.width,
+      height: block.height,
+      metadata: block.metadata,
+    }
+    embeds.push(embed)
+    if (!referencedEmbedIds.has(embedId)) {
+      parts.push(`\n\n<!--tu:embed id="${embedId}" type="${embed.type}"-->\n\n`)
+    }
+  }
+
+  return {
+    content: parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim(),
+    embeds,
+    annotations: [],
+  }
+}
+
+function collectEmbedIdsFromBlocks(blocks: Block[]): Set<string> {
+  const ids = new Set<string>()
+  for (const block of blocks) {
+    if (block.type !== 'richtext' && block.type !== 'richText') continue
+    for (const id of collectEmbedIdsFromContent(block.content || '')) {
+      ids.add(id)
+    }
+  }
+  return ids
+}
+
+function collectEmbedIdsFromContent(content: string): Set<string> {
+  const ids = new Set<string>()
+  const embedRe = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
+  let match: RegExpExecArray | null
+
+  while ((match = embedRe.exec(content)) !== null) {
+    ids.add(match[1])
+  }
+
+  return ids
+}
 
 const initialState: MockState = {
   knowledgeBases: [
@@ -41,7 +107,7 @@ const initialState: MockState = {
     { id: 'p-demo-4', kbId: 'kb-demo-2', parentId: null, title: 'API 文档', order: 0 },
   ],
   contents: {
-    'p-demo-1': [
+    'p-demo-1': blocksToPageContent([
       {
         id: 'b-demo-1',
         type: 'richtext',
@@ -61,8 +127,8 @@ const initialState: MockState = {
           ],
         },
       },
-    ],
-    'p-demo-2': [
+    ]),
+    'p-demo-2': blocksToPageContent([
       {
         id: 'b-demo-2',
         type: 'richtext',
@@ -73,21 +139,21 @@ const initialState: MockState = {
         type: 'ref',
         refId: 'b-demo-1',
       },
-    ],
-    'p-demo-3': [
+    ]),
+    'p-demo-3': blocksToPageContent([
       {
         id: 'b-demo-3',
         type: 'richtext',
         content: '这里可以继续补充子页面内容。',
       },
-    ],
-    'p-demo-4': [
+    ]),
+    'p-demo-4': blocksToPageContent([
       {
         id: 'b-demo-4',
         type: 'richtext',
         content: '# API 文档\n\n开发者模式允许在 mock 和后端之间切换，而不改业务代码。',
       },
-    ],
+    ]),
   },
 };
 
@@ -177,31 +243,30 @@ function getPageOrThrow(pageId: string): Omit<PageItem, 'children'> {
   return page;
 }
 
-function visitBlocks(blocks: Block[], visitor: (block: Block) => void): void {
-  for (const block of blocks) {
-    visitor(block);
-    if (block.children?.length) {
-      visitBlocks(block.children, visitor);
-    }
-  }
+/** @deprecated embeds no longer have children */
+function visitBlocks(_blocks: PageContent | Block[], _visitor: (block: Block) => void): void {
+  // no-op in new model
 }
 
-function updateBlockInPage(
+function updateEmbedInPage(
   pageId: string,
   blockId: string,
-  updater: (block: Block) => void,
+  updater: (embed: EmbeddedObject) => void,
 ): boolean {
-  const blocks = state.contents[pageId] ?? [];
+  const pageContent = state.contents[pageId];
+  if (!pageContent) return false;
   let updated = false;
 
-  visitBlocks(blocks, (block) => {
-    if (block.id !== blockId || updated) return;
-    updater(block);
-    updated = true;
-  });
+  for (const embed of pageContent.embeds) {
+    if (embed.id === blockId) {
+      updater(embed);
+      updated = true;
+      break
+    }
+  }
 
   if (updated) {
-    state.contents[pageId] = cloneState(blocks);
+    state.contents[pageId] = cloneState(pageContent);
     persistState();
   }
 
@@ -264,13 +329,11 @@ function createRoadmapPageMock(kbId: string, parentId: string | null, node: Road
   state.pages.push(page);
 
   const body = firstText(node.content, node.description);
-  state.contents[page.id] = [
-    {
-      id: nextId('b'),
-      type: 'richtext',
-      content: `# ${page.title}${body ? `\n\n${body}` : ''}`,
-    },
-  ];
+  state.contents[page.id] = {
+    content: `# ${page.title}${body ? `\n\n${body}` : ''}`,
+    embeds: [],
+    annotations: [],
+  };
 
   (node.children ?? []).forEach((child, index) => createRoadmapPageMock(kbId, page.id, child, index));
   return { ...cloneState(page), children: [] };
@@ -332,15 +395,12 @@ export function getPageTreeMock(kbId: string): PageItem[] {
 
 export function getPageContentMock(pageId: string): PageContent {
   getPageOrThrow(pageId);
-  return {
-    pageId,
-    blocks: cloneState(state.contents[pageId] ?? []),
-  };
+  return cloneState(state.contents[pageId] ?? { content: '', embeds: [], annotations: [] });
 }
 
-export function savePageContentMock(pageId: string, blocks: Block[]): void {
+export function savePageContentMock(pageId: string, content: PageContent): void {
   getPageOrThrow(pageId);
-  state.contents[pageId] = cloneState(blocks);
+  state.contents[pageId] = cloneState(content);
   persistState();
 }
 
@@ -358,7 +418,7 @@ export function createPageMock(
     order: siblings.length,
   };
   state.pages.push(page);
-  state.contents[page.id] = [];
+  state.contents[page.id] = { content: '', embeds: [], annotations: [] };
   persistState();
   return { ...cloneState(page), children: [] };
 }
@@ -393,23 +453,34 @@ export function listAllBlocksMock(): BlockWithMeta[] {
   const items: BlockWithMeta[] = [];
 
   for (const page of state.pages) {
-    const blocks = state.contents[page.id] ?? [];
-    visitBlocks(blocks, (block) => {
-      if (block.type === 'ref' || block.type === 'spacer') return;
-      items.push({
-        block: cloneState(block),
-        pageId: page.id,
-        pageTitle: page.title,
-      });
-    });
+    const pc = state.contents[page.id];
+    if (!pc) continue;
+    for (const embed of pc.embeds) {
+      if (embed.type === 'ref' || embed.type === 'spacer') continue;
+      const block: Block = {
+        id: embed.id,
+        type: embed.type,
+        title: embed.title,
+        graphData: embed.graphData,
+        tableData: embed.tableData,
+        timelineData: embed.timelineData,
+        refId: embed.refId,
+        refType: embed.refType,
+        spacerHeight: embed.spacerHeight,
+        width: embed.width,
+        height: embed.height,
+        metadata: embed.metadata,
+      }
+      items.push({ block, pageId: page.id, pageTitle: page.title });
+    }
   }
 
   return items;
 }
 
 export function updateBlockContentMock(pageId: string, blockId: string, content: string): void {
-  const updated = updateBlockInPage(pageId, blockId, (block) => {
-    block.content = content;
+  const updated = updateEmbedInPage(pageId, blockId, (embed) => {
+    if (embed.type === 'x6') embed.graphData = undefined
   });
 
   if (!updated) {
@@ -418,8 +489,8 @@ export function updateBlockContentMock(pageId: string, blockId: string, content:
 }
 
 export function updateBlockGraphDataMock(pageId: string, blockId: string, graphData: Block['graphData']): void {
-  const updated = updateBlockInPage(pageId, blockId, (block) => {
-    block.graphData = cloneState(graphData);
+  const updated = updateEmbedInPage(pageId, blockId, (embed) => {
+    if (embed.type === 'x6') embed.graphData = cloneState(graphData) as EmbeddedObject['graphData'];
   });
 
   if (!updated) {
@@ -428,11 +499,10 @@ export function updateBlockGraphDataMock(pageId: string, blockId: string, graphD
 }
 
 export function updateBlockMock(pageId: string, blockId: string, nextBlock: Block): void {
-  const updated = updateBlockInPage(pageId, blockId, (block) => {
-    Object.keys(block).forEach((key) => {
-      delete (block as Record<string, unknown>)[key];
-    });
-    Object.assign(block, cloneState({ ...nextBlock, id: blockId }));
+  const updated = updateEmbedInPage(pageId, blockId, (embed) => {
+    if (nextBlock.graphData) embed.graphData = cloneState(nextBlock.graphData) as EmbeddedObject['graphData'];
+    if (nextBlock.tableData) embed.tableData = cloneState(nextBlock.tableData);
+    if (nextBlock.content) embed.type = 'x6';
   });
 
   if (!updated) {
@@ -440,19 +510,18 @@ export function updateBlockMock(pageId: string, blockId: string, nextBlock: Bloc
   }
 }
 
-export function syncBlocksMock(pageId: string, blocks: Block[]): void {
-  savePageContentMock(pageId, blocks);
+/** @deprecated Use savePageContentMock directly */
+export function syncBlocksMock(pageId: string, _blocks: Block[]): void {
+  const pc = getPageContentMock(pageId);
+  savePageContentMock(pageId, pc);
 }
 
-export function deleteAnnotationReferenceMock(pageId: string, blockId: string, annotationId: string): void {
-  const blocks = state.contents[pageId];
-  if (!blocks) throw new Error(`Page not found: ${pageId}`);
-  const block = blocks.find((b) => b.id === blockId);
-  if (!block) throw new Error(`Block not found: ${blockId}`);
-  const annotations = (block.metadata?.annotations || []) as TextAnnotation[];
-  const filtered = annotations.filter((a) => a.id !== annotationId);
-  if (filtered.length === annotations.length) throw new Error(`Annotation not found: ${annotationId}`);
-  block.metadata = { ...(block.metadata || {}), annotations: filtered };
+export function deleteAnnotationReferenceMock(pageId: string, _blockId: string, annotationId: string): void {
+  const pc = state.contents[pageId];
+  if (!pc) throw new Error(`Page not found: ${pageId}`);
+  const filtered = pc.annotations.filter((a) => a.id !== annotationId);
+  if (filtered.length === pc.annotations.length) throw new Error(`Annotation not found: ${annotationId}`);
+  pc.annotations = filtered;
   persistState();
 }
 
@@ -470,42 +539,40 @@ export function listReferencesMock(params: ListReferencesParams = {}): ListRefer
     : Object.keys(state.contents);
 
   for (const pageId of targetPages) {
-    const blocks = state.contents[pageId] || [];
+    const pc = state.contents[pageId];
+    if (!pc) continue;
     const pageTitle = findPageTitle(pageId);
 
-    for (const block of blocks) {
-      const annotations = (block.metadata?.annotations || []) as TextAnnotation[];
-      for (const ann of annotations) {
-        if (params.q) {
-          const q = params.q.toLowerCase();
-          const text = `${ann.selectedText} ${ann.note} ${ann.contextBefore} ${ann.contextAfter}`.toLowerCase();
-          if (!text.includes(q)) continue;
-        }
-
-        results.push({
-          id: ann.id,
-          category: 'annotation',
-          editable: true,
-          source: {
-            pageId,
-            pageTitle,
-            blockId: block.id,
-            blockType: block.type || 'richtext',
-            sourceKind: 'annotation',
-            sourceLocator: ann.id,
-          },
-          target: {
-            kind: 'annotation',
-            blockPreview: ann.selectedText,
-            resourceItemTitle: ann.note || '(无备注)',
-          },
-          status: 'ok',
-          citation: {
-            displayText: ann.selectedText,
-            note: ann.note,
-          },
-        });
+    for (const ann of (pc.annotations || [])) {
+      if (params.q) {
+        const q = params.q.toLowerCase();
+        const text = `${ann.selectedText} ${ann.note} ${ann.contextBefore} ${ann.contextAfter}`.toLowerCase();
+        if (!text.includes(q)) continue;
       }
+
+      results.push({
+        id: ann.id,
+        category: 'annotation',
+        editable: true,
+        source: {
+          pageId,
+          pageTitle,
+          blockId: '',
+          blockType: 'richtext',
+          sourceKind: 'annotation',
+          sourceLocator: ann.id,
+        },
+        target: {
+          kind: 'annotation',
+          blockPreview: ann.selectedText,
+          resourceItemTitle: ann.note || '(无备注)',
+        },
+        status: 'ok',
+        citation: {
+          displayText: ann.selectedText,
+          note: ann.note,
+        },
+      });
     }
   }
 

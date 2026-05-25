@@ -7,7 +7,7 @@ import TuEditor from '@/components/TuEditor.vue'
 import X6Component from '@/components/X6Component.vue'
 import TableBlock from '@/components/TableBlock.vue'
 import { getPageContent } from '@/api/page'
-import type { Block } from '@/api/types'
+import type { Block, PageContent } from '@/api/types'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useWorkspaceStore } from '@/stores/workspace'
 
@@ -149,14 +149,42 @@ const loadPageReference = async () => {
   loading.value = true
   error.value = ''
   try {
-    const blocks = await getPageContent(refId.value)
-    pageBlocks.value = blocks
-    registryStore.registerBlocks(blocks, refId.value, pageTitle.value)
+    const pc: PageContent = await getPageContent(refId.value)
+    pageBlocks.value = pageContentToLegacyBlocks(pc)
+    registryStore.registerPageContent(pc, refId.value, pageTitle.value)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '页面内容加载失败'
   } finally {
     loading.value = false
   }
+}
+
+function pageContentToLegacyBlocks(pc: PageContent): Block[] {
+  const blocks: Block[] = []
+  if (pc.content.trim()) {
+    blocks.push({
+      id: `ref-content-${refId.value}`,
+      type: 'richtext',
+      content: pc.content,
+    })
+  }
+  for (const embed of pc.embeds) {
+    blocks.push({
+      id: embed.id,
+      type: embed.type,
+      title: embed.title,
+      graphData: embed.graphData,
+      tableData: embed.tableData,
+      timelineData: embed.timelineData,
+      refId: embed.refId,
+      refType: embed.refType,
+      spacerHeight: embed.spacerHeight,
+      width: embed.width,
+      height: embed.height,
+      metadata: embed.metadata,
+    })
+  }
+  return blocks
 }
 
 const openReferencedPage = async () => {

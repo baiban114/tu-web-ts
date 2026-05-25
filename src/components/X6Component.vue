@@ -1434,10 +1434,11 @@ function buildMaterialGraphData(): GraphData | null {
 
   if (!selectedNodes.length) return null;
 
-  const nodes = selectedNodes.map((node) => node.toJSON() as CellData);
-  const edges = selectedEdges.map((edge) => edge.toJSON() as CellData);
+  const nodeData = selectedNodes.map((node) => ({ id: node.id, ...node.toJSON() }));
+  const edgeData = selectedEdges.map((edge) => ({ id: edge.id, ...edge.toJSON() }));
 
-  return normalizeGraphData({ cells: [...nodes, ...edges], nodes, edges });
+  const raw = { cells: [...nodeData, ...edgeData], nodes: nodeData, edges: edgeData } as unknown as GraphData
+  return normalizeGraphData(raw)
 }
 
 function getRefInsertPosition() {
@@ -1552,8 +1553,9 @@ function pasteSelection() {
 /** Extract selected cells as a reusable material and open the library panel. */
 function extractSelectionAsMaterial() {
   if (!graph || !props.blockActionsEnabled) return;
-  const data = buildMaterialGraphData();
-  if (!data) return;
+  const rawData = buildMaterialGraphData();
+  if (!rawData) return;
+  const data = rawData as import('@/api/types').GraphData;
   const name = `素材 ${materialLibraryStore.items.length + 1}`;
   materialLibraryStore.addMaterial(name, data);
   inspectorTab.value = 'library';
@@ -1949,7 +1951,7 @@ function bindKeyboardShortcuts() {
 
   if (props.blockActionsEnabled) {
     graph.bindKey(['ctrl+shift+e', 'meta+shift+e'], () => {
-      extractSelectionAsBlock();
+      extractSelectionAsMaterial();
       return false;
     });
   }

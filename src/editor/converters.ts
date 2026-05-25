@@ -1,87 +1,56 @@
-﻿import type { Block } from '@/api/types'
+﻿import type { Block, EmbeddedObject, PageContent } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
 
-let idCounter = 0
-function generateId(): string {
-  return 'tipTap-block-' + Date.now() + '-' + (++idCounter)
-}
+// ─── Embed placeholder regex ───────────────────────────────────────────────
+const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
 
-function createEmptyParagraph(blockId?: string): JSONContent {
-  return {
-    type: 'paragraph',
-    attrs: blockId ? { blockId } : undefined,
-  }
-}
+// ─── New public API ─────────────────────────────────────────────────────────
 
-export function blocksToTipTap(blocks: Block[]): JSONContent {
+/**
+ * Convert PageContent to a Tiptap/ProseMirror document.
+ * - Markdown content is parsed into paragraph/heading/list/etc. nodes
+ * - Embed placeholders (<!--tu:embed...-->) are replaced by the corresponding node view nodes
+ */
+export function pageContentToTipTap(pc: PageContent): JSONContent {
   const children: JSONContent[] = []
+  const seenEmbedIds = new Set<string>()
 
-  for (const block of blocks) {
-    if (isRichTextBlock(block)) {
-      const nodes = markdownToTipTapNodes(block.content || '', block.id)
-      children.push(...nodes)
-    } else if (block.type === 'x6') {
-      children.push({
-        type: 'x6Block',
-        attrs: {
-          blockId: block.id,
-          title: block.title || '',
-          width: block.width ?? null,
-          height: block.height ?? null,
-          graphData: block.graphData || { nodes: [], edges: [] },
-          metadata: block.metadata || {},
-        },
-      })
-    } else if (block.type === 'table') {
-      children.push({
-        type: 'tableBlock',
-        attrs: {
-          blockId: block.id,
-          title: block.title || '',
-          width: block.width ?? null,
-          height: block.height ?? null,
-          tableData: block.tableData || { headers: [], rows: [] },
-        },
-      })
-    } else if (block.type === 'line') {
-      children.push({
-        type: 'timelineBlock',
-        attrs: {
-          blockId: block.id,
-          title: block.title || '',
-          width: block.width ?? null,
-          height: block.height ?? null,
-          timelineData: block.timelineData || [],
-        },
-      })
-    } else if (block.type === 'ref') {
-      children.push({
-        type: 'refBlock',
-        attrs: {
-          blockId: block.id,
-          refId: block.refId || '',
-          refType: block.refType || 'block',
-          width: block.width ?? null,
-          height: block.height ?? null,
-        },
-      })
-    } else if (block.type === 'spacer') {
-      children.push({
-        type: 'spacerBlock',
-        attrs: {
-          blockId: block.id,
-          width: null,
-          height: block.spacerHeight || 40,
-          spacerHeight: block.spacerHeight || 40,
-        },
-      })
-    } else if (block.type === 'container' && block.children) {
-      // Flatten container children into top-level doc (no containerBlock extension)
-      children.push(...blocksToTipTap(block.children).content || [])
+  // Split content by embed placeholders
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+
+  // Reset regex state
+  EMBED_RE.lastIndex = 0
+
+  while ((match = EMBED_RE.exec(pc.content)) !== null) {
+    // Emit rich text before this placeholder
+    const textBefore = pc.content.slice(lastIndex, match.index)
+    if (textBefore.trim()) {
+      children.push(...parseMarkdown(textBefore))
     }
+
+    // Emit embed node
+    const embedId = match[1]
+    const embedType = match[2]
+    const embed = pc.embeds.find((e) => e.id === embedId)
+    if (!seenEmbedIds.has(embedId)) {
+      const embedNode = embedToTipTapNode(embed, embedId, embedType)
+      if (embedNode) {
+        children.push(embedNode)
+        seenEmbedIds.add(embedId)
+      }
+    }
+
+    lastIndex = match.index + match[0].length
   }
 
-  // Ensure doc has at least one block so it's not empty
+  // Emit remaining text after last placeholder
+  const textAfter = pc.content.slice(lastIndex)
+  if (textAfter.trim()) {
+    children.push(...parseMarkdown(textAfter))
+  }
+
+  // Ensure doc has at least one node
   if (children.length === 0) {
     children.push(createEmptyParagraph())
   }
@@ -89,143 +58,312 @@ export function blocksToTipTap(blocks: Block[]): JSONContent {
   return { type: 'doc', content: children }
 }
 
-export function tipTapToBlocks(json: JSONContent, originalBlocks: Block[]): Block[] {
-  const blocks: Block[] = []
-  if (!json.content) return blocks
+/**
+ * Convert a Tiptap/ProseMirror document back to PageContent.
+ * - Node view nodes (x6Block, tableBlock, etc.) are extracted as EmbeddedObject[]
+ *   and replaced with <!--tu:embed...--> placeholders in the markdown content
+ * - Rich text nodes are serialized to markdown
+ */
+export function tipTapToPageContent(doc: JSONContent): Pick<PageContent, 'content' | 'embeds'> {
+  const embeds: EmbeddedObject[] = []
+  const markdownParts: string[] = []
+  const seenEmbedIds = new Set<string>()
 
-  // Build a map of original blocks keyed by id for fast lookup
-  const originalBlockMap = new Map<string, Block>()
-  const walk = (list: Block[]) => {
-    for (const b of list) {
-      originalBlockMap.set(b.id, b)
-      if (b.children) walk(b.children)
-    }
-  }
-  walk(originalBlocks)
+  if (!doc.content) return { content: '', embeds: [] }
 
-  const richTextNodes: JSONContent[] = []
-  let currentRichTextBlockId: string | null = null
-
-  const flushRichText = () => {
-    if (richTextNodes.length === 0) return
-    const id = currentRichTextBlockId || generateId()
-    const existing = originalBlockMap.get(id)
-    blocks.push({
-      id,
-      type: 'richtext',
-      content: tipTapNodesToMarkdown(richTextNodes),
-      metadata: existing?.metadata,
-    })
-    richTextNodes.length = 0
-    currentRichTextBlockId = null
-  }
-
-  for (const node of json.content) {
-    if (isTipTapRichTextNode(node)) {
-      const nodeBlockId = node.attrs?.blockId
-      const nodeBlockIdStr: string = typeof nodeBlockId === 'string' ? nodeBlockId : ''
-      const curIdStr: string = currentRichTextBlockId ?? ''
-
-      if (nodeBlockIdStr !== curIdStr && richTextNodes.length > 0) {
-        flushRichText()
+  for (const node of doc.content) {
+    if (isEmbedNode(node)) {
+      const embed = tipTapNodeToEmbed(node)
+      if (embed && !seenEmbedIds.has(embed.id)) {
+        embeds.push(embed)
+        markdownParts.push(`<!--tu:embed id="${embed.id}" type="${embed.type}"-->`)
+        seenEmbedIds.add(embed.id)
       }
-      if (richTextNodes.length === 0) {
-        currentRichTextBlockId = nodeBlockIdStr || null
-      }
-      richTextNodes.push(node)
     } else {
-      flushRichText()
-      const converted = convertNonRichTextNode(node, originalBlockMap)
-      if (converted) blocks.push(converted)
+      markdownParts.push(nodeToMarkdown(node))
     }
   }
 
-  flushRichText()
-  return blocks
+  return {
+    content: markdownParts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim(),
+    embeds,
+  }
 }
 
-function isRichTextBlock(block: Block): boolean {
-  return block.type === 'richtext' || block.type === 'richText'
+// ─── Backward-compatible wrappers (deprecated) ─────────────────────────────
+
+/** @deprecated Use pageContentToTipTap instead */
+export function blocksToTipTap(blocks: Block[]): JSONContent {
+  const pageContent = legacyBlocksToPageContent(blocks)
+  return pageContentToTipTap(pageContent)
 }
 
-function isTipTapRichTextNode(node: JSONContent): boolean {
-  return ['heading', 'paragraph', 'bulletList', 'orderedList', 'blockquote', 'horizontalRule', 'taskList', 'image'].includes(node.type || '')
+/** @deprecated Use tipTapToPageContent instead */
+export function tipTapToBlocks(json: JSONContent, _originalBlocks?: Block[]): Block[] {
+  const { content, embeds } = tipTapToPageContent(json)
+  return pageContentToLegacyBlocks(content, embeds)
 }
 
-function convertNonRichTextNode(node: JSONContent, originalBlockMap: Map<string, Block>): Block | null {
-  const blockId = node.attrs?.blockId
-  const existingBlock = blockId ? originalBlockMap.get(blockId) : undefined
+// ─── Internal helpers ──────────────────────────────────────────────────────
 
-  switch (node.type) {
-    case 'x6Block':
+function createEmptyParagraph(): JSONContent {
+  return { type: 'paragraph' }
+}
+
+function isEmbedNode(node: JSONContent): boolean {
+  return ['x6Block', 'tableBlock', 'timelineBlock', 'refBlock', 'spacerBlock'].includes(node.type || '')
+}
+
+function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, embedType: string): JSONContent | null {
+  if (embed) embedType = embed.type // use actual type from embed data
+
+  switch (embedType) {
+    case 'x6':
       return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'x6',
-        title: node.attrs?.title ?? existingBlock?.title ?? '',
-        width: node.attrs?.width ?? existingBlock?.width,
-        height: node.attrs?.height ?? existingBlock?.height,
-        graphData: node.attrs?.graphData ?? existingBlock?.graphData ?? { nodes: [], edges: [] },
-        metadata: node.attrs?.metadata ?? existingBlock?.metadata,
+        type: 'x6Block',
+        attrs: {
+          blockId: embedId,
+          title: embed?.title || '',
+          width: embed?.width ?? null,
+          height: embed?.height ?? null,
+          graphData: embed?.graphData || { nodes: [], edges: [] },
+          metadata: embed?.metadata || {},
+        },
       }
-    case 'timelineBlock':
+    case 'table':
       return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'line',
-        title: node.attrs?.title ?? existingBlock?.title ?? '',
-        width: node.attrs?.width ?? existingBlock?.width,
-        height: node.attrs?.height ?? existingBlock?.height,
-        timelineData: node.attrs?.timelineData ?? existingBlock?.timelineData ?? [],
+        type: 'tableBlock',
+        attrs: {
+          blockId: embedId,
+          title: embed?.title || '',
+          width: embed?.width ?? null,
+          height: embed?.height ?? null,
+          tableData: embed?.tableData || { headers: [], rows: [] },
+        },
       }
-    case 'refBlock':
+    case 'timeline':
       return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'ref',
-        refId: node.attrs?.refId ?? existingBlock?.refId ?? '',
-        refType: node.attrs?.refType ?? existingBlock?.refType ?? 'block',
-        width: node.attrs?.width ?? existingBlock?.width,
-        height: node.attrs?.height ?? existingBlock?.height,
+        type: 'timelineBlock',
+        attrs: {
+          blockId: embedId,
+          title: embed?.title || '',
+          width: embed?.width ?? null,
+          height: embed?.height ?? null,
+          timelineData: embed?.timelineData || [],
+        },
       }
-    case 'tableBlock':
+    case 'ref':
       return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'table',
-        title: node.attrs?.title ?? existingBlock?.title ?? '',
-        width: node.attrs?.width ?? existingBlock?.width,
-        height: node.attrs?.height ?? existingBlock?.height,
-        tableData: node.attrs?.tableData ?? existingBlock?.tableData ?? { headers: [], rows: [] },
+        type: 'refBlock',
+        attrs: {
+          blockId: embedId,
+          refId: embed?.refId || '',
+          refType: embed?.refType || 'block',
+          width: embed?.width ?? null,
+          height: embed?.height ?? null,
+        },
       }
-    case 'spacerBlock':
+    case 'spacer':
       return {
-        id: blockId || existingBlock?.id || generateId(),
-        type: 'spacer',
-        spacerHeight: node.attrs?.height ?? node.attrs?.spacerHeight ?? existingBlock?.spacerHeight ?? 40,
-        height: node.attrs?.height ?? node.attrs?.spacerHeight ?? existingBlock?.spacerHeight ?? 40,
+        type: 'spacerBlock',
+        attrs: {
+          blockId: embedId,
+          width: null,
+          height: embed?.spacerHeight || 40,
+          spacerHeight: embed?.spacerHeight || 40,
+        },
       }
     default:
       return null
   }
 }
 
-function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[] {
-  if (!markdown.trim()) {
-    return [{
-      type: 'paragraph',
-      attrs: { blockId },
-    }]
+function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
+  const blockId = node.attrs?.blockId
+  if (!blockId) return null
+
+  switch (node.type) {
+    case 'x6Block':
+      return {
+        id: blockId,
+        type: 'x6',
+        title: node.attrs?.title || '',
+        width: node.attrs?.width ?? undefined,
+        height: node.attrs?.height ?? undefined,
+        graphData: node.attrs?.graphData || { nodes: [], edges: [] },
+        metadata: node.attrs?.metadata,
+      }
+    case 'timelineBlock':
+      return {
+        id: blockId,
+        type: 'timeline',
+        title: node.attrs?.title || '',
+        width: node.attrs?.width ?? undefined,
+        height: node.attrs?.height ?? undefined,
+        timelineData: node.attrs?.timelineData || [],
+      }
+    case 'refBlock':
+      return {
+        id: blockId,
+        type: 'ref',
+        refId: node.attrs?.refId || '',
+        refType: node.attrs?.refType || 'block',
+        width: node.attrs?.width ?? undefined,
+        height: node.attrs?.height ?? undefined,
+      }
+    case 'tableBlock':
+      return {
+        id: blockId,
+        type: 'table',
+        title: node.attrs?.title || '',
+        width: node.attrs?.width ?? undefined,
+        height: node.attrs?.height ?? undefined,
+        tableData: node.attrs?.tableData || { headers: [], rows: [] },
+      }
+    case 'spacerBlock':
+      return {
+        id: blockId,
+        type: 'spacer',
+        spacerHeight: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
+        height: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
+      }
+    default:
+      return null
+  }
+}
+
+// ─── Legacy conversion helpers (for backward-compat wrappers) ──────────────
+
+function legacyBlocksToPageContent(blocks: Block[]): PageContent {
+  const parts: string[] = []
+  const embeds: EmbeddedObject[] = []
+  const referencedEmbedIds = collectEmbedIdsFromBlocks(blocks)
+  const seenEmbedIds = new Set<string>()
+
+  for (const block of blocks) {
+    if (block.type === 'richtext' || block.type === 'richText') {
+      if (block.content) parts.push(block.content)
+      continue
+    }
+    if (seenEmbedIds.has(block.id)) continue
+    seenEmbedIds.add(block.id)
+
+    const embed: EmbeddedObject = {
+      id: block.id,
+      type: block.type as EmbeddedObject['type'],
+      title: block.title,
+      graphData: block.graphData,
+      tableData: block.tableData,
+      timelineData: block.timelineData,
+      refId: block.refId,
+      refType: block.refType,
+      spacerHeight: block.spacerHeight,
+      width: block.width,
+      height: block.height,
+      metadata: block.metadata,
+    }
+    embeds.push(embed)
+    if (!referencedEmbedIds.has(block.id)) {
+      parts.push(`<!--tu:embed id="${block.id}" type="${block.type}"-->`)
+    }
   }
 
-  // Split by \n\n to get paragraph blocks — this correctly preserves empty paragraphs
-  // (split by \n alone doubles empty segments due to \n\n separators)
+  return {
+    content: parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim(),
+    embeds,
+    annotations: [],
+  }
+}
+
+function pageContentToLegacyBlocks(content: string, embeds: EmbeddedObject[]): Block[] {
+  const blocks: Block[] = []
+  const seenEmbedIds = new Set<string>()
+
+  // Split content by embed placeholders
+  let lastIndex = 0
+  let match: RegExpExecArray | null
+  EMBED_RE.lastIndex = 0
+
+  while ((match = EMBED_RE.exec(content)) !== null) {
+    const textBefore = content.slice(lastIndex, match.index)
+    if (textBefore.trim()) {
+      blocks.push({
+        id: `richtext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        type: 'richtext',
+        content: textBefore.trim(),
+      })
+    }
+
+    const embedId = match[1]
+    const embed = embeds.find((e) => e.id === embedId)
+    if (embed && !seenEmbedIds.has(embedId)) {
+      blocks.push({
+        id: embed.id,
+        type: embed.type,
+        title: embed.title,
+        graphData: embed.graphData,
+        tableData: embed.tableData,
+        timelineData: embed.timelineData,
+        refId: embed.refId,
+        refType: embed.refType,
+        spacerHeight: embed.spacerHeight,
+        width: embed.width,
+        height: embed.height,
+        metadata: embed.metadata,
+      })
+      seenEmbedIds.add(embedId)
+    }
+
+    lastIndex = match.index + match[0].length
+  }
+
+  const textAfter = content.slice(lastIndex)
+  if (textAfter.trim()) {
+    blocks.push({
+      id: `richtext-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type: 'richtext',
+      content: textAfter.trim(),
+    })
+  }
+
+  return blocks
+}
+
+function collectEmbedIdsFromBlocks(blocks: Block[]): Set<string> {
+  const ids = new Set<string>()
+  for (const block of blocks) {
+    if (block.type !== 'richtext' && block.type !== 'richText') continue
+    for (const id of collectEmbedIdsFromContent(block.content || '')) {
+      ids.add(id)
+    }
+  }
+  return ids
+}
+
+function collectEmbedIdsFromContent(content: string): Set<string> {
+  const ids = new Set<string>()
+  EMBED_RE.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = EMBED_RE.exec(content)) !== null) {
+    ids.add(match[1])
+  }
+  return ids
+}
+
+// ─── Markdown → ProseMirror nodes (adapted from old code, no longer needs blockId) ──
+
+function parseMarkdown(markdown: string): JSONContent[] {
+  if (!markdown.trim()) return []
+
   const paragraphs = markdown.split('\n\n')
   const nodes: JSONContent[] = []
 
   for (const para of paragraphs) {
     if (!para.trim()) {
-      nodes.push({ type: 'paragraph', attrs: { blockId } })
+      nodes.push({ type: 'paragraph' })
       continue
     }
 
-    // Each paragraph is a single line in our serialization, but handle multi-line gracefully
     const innerLines = para.split('\n')
     let currentLines: string[] = []
 
@@ -235,21 +373,19 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
-            attrs: { blockId },
             content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
         nodes.push({
           type: 'heading',
-          attrs: { level: headingMatch[1].length, blockId },
+          attrs: { level: headingMatch[1].length },
           content: parseInlineMarkdown(headingMatch[2]),
         })
       } else if (line.startsWith('- [ ] ') || line.startsWith('- [x] ')) {
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
-            attrs: { blockId },
             content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
@@ -257,7 +393,7 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
         const checked = line.startsWith('- [x]')
         const text = line.replace(/^- \[[ x]\] /, '')
         if (!nodes.find((n) => n.type === 'taskList')) {
-          nodes.push({ type: 'taskList', attrs: { blockId } })
+          nodes.push({ type: 'taskList' })
         }
         const taskList = nodes.find((n) => n.type === 'taskList')!
         ;(taskList.content = taskList.content || []).push({
@@ -269,13 +405,12 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
-            attrs: { blockId },
             content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
         if (!nodes.find((n) => n.type === 'bulletList')) {
-          nodes.push({ type: 'bulletList', attrs: { blockId } })
+          nodes.push({ type: 'bulletList' })
         }
         const list = nodes.find((n) => n.type === 'bulletList')!
         ;(list.content = list.content || []).push({
@@ -286,13 +421,12 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
-            attrs: { blockId },
             content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
         if (!nodes.find((n) => n.type === 'orderedList')) {
-          nodes.push({ type: 'orderedList', attrs: { blockId } })
+          nodes.push({ type: 'orderedList' })
         }
         const list = nodes.find((n) => n.type === 'orderedList')!
         ;(list.content = list.content || []).push({
@@ -303,46 +437,43 @@ function markdownToTipTapNodes(markdown: string, blockId: string): JSONContent[]
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
-            attrs: { blockId },
             content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
         nodes.push({
           type: 'blockquote',
-          attrs: { blockId },
           content: [{ type: 'paragraph', content: parseInlineMarkdown(line.slice(2)) }],
         })
-    } else if (line.startsWith('```')) {
-      currentLines.push(line)
+      } else if (line.startsWith('```')) {
+        currentLines.push(line)
       } else if (line.startsWith('---')) {
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
-            attrs: { blockId },
             content: parseInlineMarkdown(currentLines.join('\n')),
           })
           currentLines = []
         }
-        nodes.push({ type: 'horizontalRule', attrs: { blockId } })
+        nodes.push({ type: 'horizontalRule' })
       } else {
         currentLines.push(line)
       }
     }
 
-    // Flush remaining accumulated lines
     if (currentLines.length > 0) {
       const text = currentLines.join('\n')
       nodes.push({
         type: 'paragraph',
-        attrs: { blockId },
         content: text ? parseInlineMarkdown(text) : [],
       })
     }
   }
 
-  return nodes.length > 0 ? nodes : [{ type: 'paragraph', attrs: { blockId } }]
+  return nodes.length > 0 ? nodes : [{ type: 'paragraph' }]
 }
+
+// ─── Inline markdown parsing (same as before, no changes needed) ───────────
 
 export function parseInlineMarkdown(text: string): JSONContent[] {
   const parts: JSONContent[] = []
@@ -403,6 +534,9 @@ export function parseInlineMarkdown(text: string): JSONContent[] {
   return parts
 }
 
+// ─── ProseMirror nodes → Markdown (same structure as before) ──────────────
+
+/** @deprecated internal helper kept for backward compat */
 export function tipTapNodesToMarkdown(nodes: JSONContent[]): string {
   return nodes.map((node) => nodeToMarkdown(node)).join('\n\n')
 }
@@ -451,4 +585,3 @@ function contentToMarkdown(content: JSONContent[]): string {
     return ''
   }).join('')
 }
-

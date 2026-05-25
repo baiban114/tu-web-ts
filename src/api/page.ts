@@ -13,9 +13,9 @@ import {
   updateBlockGraphDataMock,
 } from '@/mock/store';
 import { request } from './http';
-import type { Block, BlockWithMeta, PageContent, PageItem } from './types';
+import type { Block, BlockWithMeta, EmbeddedObject, PageBlocks, PageContent, PageItem } from './types';
 
-export type { Block, BlockWithMeta, PageContent, PageItem } from './types';
+export type { Block, BlockWithMeta, PageBlocks, PageContent, PageItem } from './types';
 
 export async function getPageTree(kbId: string): Promise<PageItem[]> {
   if (isMockDataSource()) {
@@ -24,22 +24,138 @@ export async function getPageTree(kbId: string): Promise<PageItem[]> {
   return request<PageItem[]>(`/api/kbs/${kbId}/pages/tree`);
 }
 
-export async function getPageContent(pageId: string): Promise<Block[]> {
-  if (isMockDataSource()) {
-    const data = getPageContentMock(pageId);
-    return data.blocks ?? [];
+/** Backend still returns the old { pageId, blocks } format — convert to PageContent */
+function legacyBlocksToPageContent(data: { pageId: string; blocks: Block[] }): PageContent {
+  const parts: string[] = []
+  const embeds: EmbeddedObject[] = []
+  const referencedEmbedIds = new Set<string>()
+
+  const allAnnotations: PageContent['annotations'] = []
+
+  for (const block of data.blocks) {
+    if (block.type === 'richtext' || block.type === 'richText') {
+      for (const embedId of collectEmbedIdsFromContent(block.content || '')) {
+        referencedEmbedIds.add(embedId)
+      }
+    }
   }
-  const data = await request<PageContent>(`/api/pages/${pageId}/content`);
-  return data.blocks ?? [];
+
+  for (const block of data.blocks) {
+    if (block.type === 'richtext' || block.type === 'richText') {
+      if (block.content) parts.push(block.content)
+      const blockAnnotations = (block.metadata?.annotations ?? []) as unknown as PageContent['annotations']
+      for (const a of blockAnnotations) {
+        if (!allAnnotations.find(ex => ex.id === a.id)) {
+          allAnnotations.push(a)
+        }
+      }
+      continue
+    }
+
+    if (!embeds.find((embed) => embed.id === block.id)) {
+      const embedId = block.id
+      embeds.push({
+        id: embedId,
+        type: block.type as EmbeddedObject['type'],
+        title: block.title,
+        graphData: block.graphData,
+        tableData: block.tableData,
+        timelineData: block.timelineData,
+        refId: block.refId,
+        refType: block.refType as EmbeddedObject['refType'],
+        spacerHeight: block.spacerHeight,
+        width: block.width,
+        height: block.height,
+        metadata: block.metadata,
+      })
+      if (!referencedEmbedIds.has(embedId)) {
+        parts.push(`\n\n<!--tu:embed id="${embedId}" type="${block.type}"-->\n\n`)
+      }
+    }
+  }
+
+  return {
+    content: parts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim(),
+    embeds,
+    annotations: allAnnotations,
+  }
 }
 
-export async function savePageContent(pageId: string, blocks: Block[]): Promise<void> {
-  if (isMockDataSource()) {
-    return savePageContentMock(pageId, blocks);
+function collectEmbedIdsFromContent(content: string): Set<string> {
+  const ids = new Set<string>()
+  const embedRe = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
+  let match: RegExpExecArray | null
+
+  while ((match = embedRe.exec(content)) !== null) {
+    ids.add(match[1])
   }
-  await request<PageContent>(`/api/pages/${pageId}/content`, {
+
+  return ids
+}
+
+export async function getPageContent(pageId: string): Promise<PageContent> {
+  if (isMockDataSource()) {
+    return getPageContentMock(pageId);
+  }
+  const data = await request<{ pageId: string; blocks: Block[] }>(`/api/pages/${pageId}/content`);
+  return legacyBlocksToPageContent(data);
+}
+
+/** Convert PageContent back to the old { blocks } format the backend expects */
+function pageContentToLegacyBlocks(pc: PageContent): { blocks: Block[] } {
+  const blocks: Block[] = []
+
+  if (pc.content) {
+    const annotationMap: Record<string, PageContent['annotations']> = {}
+    for (const a of pc.annotations || []) {
+      const key = a.blockId || 'page-content'
+      if (!annotationMap[key]) annotationMap[key] = []
+      annotationMap[key].push(a)
+    }
+
+    const richtextBlock: Block = {
+      id: 'page-content-' + Date.now(),
+      type: 'richtext',
+      content: pc.content,
+      metadata: { annotations: annotationMap['page-content'] || annotationMap[''] || [] },
+    }
+    blocks.push(richtextBlock)
+
+    for (const embed of pc.embeds || []) {
+      const block: Block = {
+        id: embed.id,
+        type: embed.type,
+        title: embed.title,
+        graphData: embed.graphData,
+        tableData: embed.tableData,
+        timelineData: embed.timelineData,
+        refId: embed.refId,
+        refType: embed.refType,
+        spacerHeight: embed.spacerHeight,
+        width: embed.width,
+        height: embed.height,
+        metadata: { ...embed.metadata },
+      }
+      blocks.push(block)
+
+      const embedAnnotations = annotationMap[embed.id]
+      if (embedAnnotations?.length) {
+        block.metadata = { ...block.metadata, annotations: embedAnnotations }
+      }
+    }
+  }
+
+  return { blocks }
+}
+
+export async function savePageContent(pageId: string, content: PageContent): Promise<void> {
+  if (isMockDataSource()) {
+    return savePageContentMock(pageId, content);
+  }
+  const legacy = pageContentToLegacyBlocks(content);
+  await request(`/api/pages/${pageId}/content`, {
     method: 'PUT',
-    body: JSON.stringify({ blocks }),
+    body: JSON.stringify(legacy),
   });
 }
 

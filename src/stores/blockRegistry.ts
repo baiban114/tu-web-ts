@@ -7,7 +7,7 @@ import {
   updateBlockGraphData,
   type BlockWithMeta,
 } from '@/api/page';
-import type { Block } from '@/api/types';
+import type { Block, PageContent, EmbeddedObject } from '@/api/types';
 
 export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   const registry = reactive(new Map<string, BlockWithMeta>());
@@ -23,12 +23,34 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     }
   }
 
+  /** @deprecated Use registerPageContent instead */
   function registerBlocks(blocks: Block[], pageId: string, pageTitle: string) {
     for (const block of blocks) {
       if (block.type === 'ref' || block.type === 'spacer') continue;
       registry.set(block.id, { block: { ...block }, pageId, pageTitle });
     }
     pageBlocks.set(pageId, blocks);
+  }
+
+  function registerPageContent(pc: PageContent, pageId: string, pageTitle: string) {
+    for (const embed of pc.embeds || []) {
+      if (embed.type === 'ref' || embed.type === 'spacer') continue;
+      const block: Block = {
+        id: embed.id,
+        type: embed.type,
+        title: embed.title,
+        graphData: embed.graphData,
+        tableData: embed.tableData,
+        timelineData: embed.timelineData,
+        refId: embed.refId,
+        refType: embed.refType,
+        spacerHeight: embed.spacerHeight,
+        width: embed.width,
+        height: embed.height,
+        metadata: embed.metadata,
+      }
+      registry.set(embed.id, { block, pageId, pageTitle });
+    }
   }
 
   function getBlock(id: string): Block | undefined {
@@ -78,6 +100,7 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
     registry,
     loadAll,
     registerBlocks,
+    registerPageContent,
     getBlock,
     getPageBlocks,
     getMeta,

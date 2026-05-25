@@ -16,14 +16,14 @@ import {
   movePage,
   renamePage,
 } from '@/api/page';
-import type { Block, GraphData, PageItem } from '@/api/types';
+import type { Block, GraphData, PageContent, PageItem } from '@/api/types';
 import type { ImportRoadmapPayload } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
 import {
   deriveMarkdownPageTitle,
-  parseMarkdownToBlocks,
-  serializeBlocksToMarkdown,
+  parseMarkdownToPageContent,
+  serializePageContentToMarkdown,
 } from '@/utils/markdownImport';
 import { parseGraphToSourcePatch } from '@/utils/graphSources';
 
@@ -55,9 +55,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const currentKbId = ref<string | null>(null);
   const pageTree = ref<PageItem[]>([]);
   const currentPageId = ref<string | null>(null);
-  const currentBlocks = ref<Block[]>([]);
+  const pageContent = ref<PageContent | null>(null);
   const currentPageTitleOverride = ref('');
-  const focusedBlockId = ref<string | null>(null);
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
   const registryStore = useBlockRegistryStore();
@@ -94,9 +93,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentKbId.value = null;
     currentPageId.value = null;
     currentPageTitleOverride.value = '';
-    focusedBlockId.value = null;
     pageTree.value = [];
-    currentBlocks.value = [];
+    pageContent.value = null;
     blockSyncManager.setPageId(null);
     registryStore.clear();
   }
@@ -127,7 +125,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentPageId.value = null;
     currentPageTitleOverride.value = '';
     blockSyncManager.setPageId(null);
-    currentBlocks.value = [];
+    pageContent.value = null;
     registryStore.clear();
     pageTree.value = await getPageTree(kbId);
     const firstPage = findFirstPage(pageTree.value);
@@ -137,14 +135,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function selectPage(pageId: string) {
     currentPageId.value = pageId;
     currentPageTitleOverride.value = '';
-    focusedBlockId.value = null;
     blockSyncManager.setPageId(pageId);
     loading.value = true;
     try {
-      currentBlocks.value = await getPageContent(pageId);
-      currentPageTitleOverride.value = resolvePageTitle(pageId, currentBlocks.value);
-      const pageTitle = currentPageTitle.value;
-      registryStore.registerBlocks(currentBlocks.value, pageId, pageTitle);
+      const data = await getPageContent(pageId);
+      pageContent.value = data;
+      currentPageTitleOverride.value = resolvePageTitle(pageId, data);
+      registryStore.registerPageContent(data, pageId, currentPageTitle.value);
     } finally {
       loading.value = false;
     }
@@ -163,25 +160,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return walk(pageTree.value) ?? pageId;
   }
 
-  function extractTitleFromBlocks(blocks: Block[]): string {
-    for (const block of blocks) {
-      if ((block.type === 'richtext' || block.type === 'richText') && typeof block.content === 'string') {
-        const match = block.content.replace(/\r\n/g, '\n').match(/^\s*#\s+(.+?)\s*#*\s*(?:\n|$)/m);
-        const title = match?.[1]?.trim();
-        if (title) return title;
-      }
-      if (block.children?.length) {
-        const childTitle = extractTitleFromBlocks(block.children);
-        if (childTitle) return childTitle;
-      }
-    }
-    return '';
+  function extractTitleFromContent(content: string): string {
+    const match = content.replace(/\r\n/g, '\n').match(/^\s*#\s+(.+?)\s*#*\s*(?:\n|$)/m);
+    return match?.[1]?.trim() ?? '';
   }
 
-  function resolvePageTitle(pageId: string, blocks: Block[]): string {
+  function resolvePageTitle(pageId: string, pc: PageContent): string {
     const treeTitle = findPageTitle(pageId);
     if (treeTitle && treeTitle !== pageId) return treeTitle;
-    return extractTitleFromBlocks(blocks);
+    return extractTitleFromContent(pc.content);
   }
 
   function flattenPages(nodes: PageItem[]): PageItem[] {
@@ -281,11 +268,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function scheduleLocalFileSave(pageId: string, blocks: Block[]) {
+  function scheduleLocalFileSave(pageId: string, pc: PageContent) {
     const binding = localFileBindings.value[pageId];
     if (!binding) return;
 
-    const markdown = serializeBlocksToMarkdown(blocks);
+    const markdown = serializePageContentToMarkdown(pc);
     binding.pendingContent = markdown;
 
     if (!binding.directSaveSupported || !binding.fileHandle) {
@@ -313,28 +300,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }, LOCAL_FILE_SAVE_DELAY);
   }
 
-  async function saveCurrentPage(blocks: Block[]) {
+  async function saveCurrentPage(content: PageContent) {
     if (!currentPageId.value) return;
 
     const pageId = currentPageId.value;
-    currentBlocks.value = blocks;
+    pageContent.value = content;
 
     try {
-      await savePageContent(pageId, blocks);
+      await savePageContent(pageId, content);
     } finally {
-      scheduleLocalFileSave(pageId, blocks);
+      scheduleLocalFileSave(pageId, content);
     }
-  }
-
-  async function openPageAtBlock(pageId: string, blockId: string | null) {
-    await selectPage(pageId);
-    focusedBlockId.value = blockId;
-  }
-
-  function consumeFocusedBlockId(): string | null {
-    const value = focusedBlockId.value;
-    focusedBlockId.value = null;
-    return value;
   }
 
   async function reloadWorkspace() {
@@ -374,9 +350,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const markdown = await file.text();
     const pageTitle = deriveMarkdownPageTitle(file.name);
     const page = await createPage(currentKbId.value, null, pageTitle);
-    const blocks = parseMarkdownToBlocks(markdown, `${page.id}-${Date.now().toString(36)}`);
+    const pc = parseMarkdownToPageContent(markdown);
 
-    await savePageContent(page.id, blocks);
+    await savePageContent(page.id, pc);
     bindLocalFileToPage(page.id, file.name, markdown, options);
     pageTree.value = await getPageTree(currentKbId.value);
     await selectPage(page.id);
@@ -446,7 +422,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       currentPageId.value = null;
       currentPageTitleOverride.value = '';
       blockSyncManager.setPageId(null);
-      currentBlocks.value = [];
+      pageContent.value = null;
     }
   }
 
@@ -468,7 +444,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (currentPageId.value === id) {
       currentPageTitleOverride.value = title;
-      registryStore.registerBlocks(currentBlocks.value, id, title);
+      if (pageContent.value) {
+        registryStore.registerPageContent(pageContent.value, id, title);
+      }
     }
   }
 
@@ -477,17 +455,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentKbId,
     pageTree,
     currentPageId,
-    currentBlocks,
+    pageContent,
     currentPageTitle,
-    focusedBlockId,
     loading,
     currentLocalFileBinding,
     loadKbList,
     reloadWorkspace,
     selectKb,
     selectPage,
-    openPageAtBlock,
-    consumeFocusedBlockId,
     saveCurrentPage,
     addKb,
     removeKb,
