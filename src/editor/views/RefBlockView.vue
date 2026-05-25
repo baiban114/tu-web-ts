@@ -244,10 +244,6 @@ onMounted(() => {
       @compound-badge-click="handleBadgeClick"
     >
     <div v-if="refType === 'page'" class="ref-page-card">
-      <button type="button" class="ref-page-card__header" @click="openReferencedPage">
-        <span class="ref-page-card__label">页面引用</span>
-        <span class="ref-page-card__title">{{ pageTitle }}</span>
-      </button>
       <div v-if="loading" class="ref-page-card__status">正在加载页面内容...</div>
       <div v-else-if="error" class="ref-page-card__status ref-page-card__status--error">{{ error }}</div>
       <div v-else class="ref-page-content">
@@ -303,7 +299,7 @@ onMounted(() => {
 .ref-page-card,
 .ref-block-card {
   overflow: hidden;
-  border: 1px solid #d6e4ff;
+  border: 1px solid transparent;
   border-radius: 8px;
   background: #f8fbff;
 }
@@ -349,8 +345,6 @@ onMounted(() => {
 .ref-page-content {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px;
 }
 
 .ref-page-content__block,
@@ -384,5 +378,10 @@ onMounted(() => {
 
 .ref-block-card__content {
   min-width: 0;
+}
+
+/* Remove TuEditor inner padding inside ref content */
+.ref-page-content :deep(.tu-editor-content) {
+  padding: 0 !important;
 }
 </style>
