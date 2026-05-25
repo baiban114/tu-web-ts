@@ -22,6 +22,8 @@ const props = defineProps({
   blockId: { type: String, default: '' },
   blockType: { type: String, default: '' },
   compoundBadges: { type: Object as () => CompoundBadge[], default: () => [] },
+  headingLevel: { type: Number, default: 0 },
+  headingText: { type: String, default: '' },
 })
 
 const emit = defineEmits<{
@@ -152,6 +154,12 @@ onBeforeUnmount(() => {
       />
     </div>
 
+    <component
+      :is="'h' + headingLevel"
+      v-if="headingLevel > 0 && headingText"
+      class="resizable-block-wrapper__heading"
+    >{{ headingText }}</component>
+
     <slot />
 
     <div
@@ -237,6 +245,16 @@ onBeforeUnmount(() => {
   color: #4338ca;
   font-weight: 600;
 }
+
+.resizable-block-wrapper__heading {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+h1.resizable-block-wrapper__heading { font-size: 2em; }
+h2.resizable-block-wrapper__heading { font-size: 1.5em; }
+h3.resizable-block-wrapper__heading { font-size: 1.25em; }
+h4.resizable-block-wrapper__heading { font-size: 1.1em; }
 
 .resizable-handle {
   position: absolute;

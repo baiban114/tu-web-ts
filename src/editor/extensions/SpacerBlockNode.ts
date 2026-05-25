@@ -13,9 +13,12 @@ export const SpacerBlockNode = Node.create({
   addAttributes() {
     return {
       blockId: { default: '' },
+      title: { default: '' },
+      headingLevel: { default: 0 },
       spacerHeight: { default: 40 },
       width: { default: null },
       height: { default: 40 },
+      metadata: { default: {} },
     }
   },
 

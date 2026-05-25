@@ -114,6 +114,11 @@ function isEmbedNode(node: JSONContent): boolean {
   return ['x6Block', 'tableBlock', 'timelineBlock', 'refBlock', 'spacerBlock'].includes(node.type || '')
 }
 
+function getHeadingLevel(embed: EmbeddedObject | undefined): number {
+  const ts = (embed?.metadata as any)?.tocSettings
+  return ts?.titleLevel ?? 0
+}
+
 function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, embedType: string): JSONContent | null {
   if (embed) embedType = embed.type // use actual type from embed data
 
@@ -124,6 +129,7 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
         attrs: {
           blockId: embedId,
           title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
           width: embed?.width ?? null,
           height: embed?.height ?? null,
           graphData: embed?.graphData || { nodes: [], edges: [] },
@@ -136,9 +142,11 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
         attrs: {
           blockId: embedId,
           title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
           width: embed?.width ?? null,
           height: embed?.height ?? null,
           tableData: embed?.tableData || { headers: [], rows: [] },
+          metadata: embed?.metadata || {},
         },
       }
     case 'timeline':
@@ -147,9 +155,11 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
         attrs: {
           blockId: embedId,
           title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
           width: embed?.width ?? null,
           height: embed?.height ?? null,
           timelineData: embed?.timelineData || [],
+          metadata: embed?.metadata || {},
         },
       }
     case 'ref':
@@ -157,10 +167,13 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
         type: 'refBlock',
         attrs: {
           blockId: embedId,
+          title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
           refId: embed?.refId || '',
           refType: embed?.refType || 'block',
           width: embed?.width ?? null,
           height: embed?.height ?? null,
+          metadata: embed?.metadata || {},
         },
       }
     case 'spacer':
@@ -168,9 +181,12 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
         type: 'spacerBlock',
         attrs: {
           blockId: embedId,
+          title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
           width: null,
           height: embed?.spacerHeight || 40,
           spacerHeight: embed?.spacerHeight || 40,
+          metadata: embed?.metadata || {},
         },
       }
     default:
@@ -201,15 +217,18 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
         timelineData: node.attrs?.timelineData || [],
+        metadata: node.attrs?.metadata,
       }
     case 'refBlock':
       return {
         id: blockId,
         type: 'ref',
+        title: node.attrs?.title || '',
         refId: node.attrs?.refId || '',
         refType: node.attrs?.refType || 'block',
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
+        metadata: node.attrs?.metadata,
       }
     case 'tableBlock':
       return {
@@ -219,13 +238,16 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
         tableData: node.attrs?.tableData || { headers: [], rows: [] },
+        metadata: node.attrs?.metadata,
       }
     case 'spacerBlock':
       return {
         id: blockId,
         type: 'spacer',
+        title: node.attrs?.title || '',
         spacerHeight: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
         height: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
+        metadata: node.attrs?.metadata,
       }
     default:
       return null

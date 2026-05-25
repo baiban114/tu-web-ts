@@ -17,6 +17,9 @@ const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, eve
 const blockId = computed(() => props.node.attrs.blockId || '')
 const compoundBadges = computed(() => unref(compoundAnnotationBadges)[blockId.value] || [])
 
+const headingLevel = computed(() => props.node.attrs.headingLevel || 0)
+const headingText = computed(() => props.node.attrs.title || '')
+
 const timelineData = computed({
   get: () => props.node.attrs.timelineData,
   set: (val) => props.updateAttributes({ timelineData: val }),
@@ -41,6 +44,8 @@ const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) 
       :block-id="blockId"
       block-type="line"
       :compound-badges="compoundBadges"
+      :heading-level="headingLevel"
+      :heading-text="headingText"
       @resize="onResize"
       @compound-badge-click="handleBadgeClick"
     >

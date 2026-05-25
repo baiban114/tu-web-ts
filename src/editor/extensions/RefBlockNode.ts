@@ -13,10 +13,13 @@ export const RefBlockNode = Node.create({
   addAttributes() {
     return {
       blockId: { default: '' },
+      title: { default: '' },
+      headingLevel: { default: 0 },
       refId: { default: '' },
       refType: { default: 'block' },
       width: { default: null },
       height: { default: null },
+      metadata: { default: {} },
     }
   },
 

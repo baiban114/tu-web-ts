@@ -90,10 +90,26 @@ const openTocSettings = (embedId: string, event: MouseEvent, sourceType?: string
 
 const saveTocSettings = () => {
   if (tocSettingsPopup.embedId) {
+    const nextSettings = { ...tocSettingsDraft }
     try {
-      setTocSettings(tocSettingsPopup.embedId, { ...tocSettingsDraft })
+      setTocSettings(tocSettingsPopup.embedId, nextSettings)
     } catch {
       console.warn('Failed to save TOC settings')
+    }
+    // Keep ProseMirror attrs in sync so the next conversion does not drop tocSettings.
+    const editor = tuEditorRef.value?.editor
+    if (editor) {
+      const tr = editor.state.tr
+      editor.state.doc.descendants((node, pos) => {
+        if (node.attrs?.blockId === tocSettingsPopup.embedId) {
+          const headingLevel = nextSettings.titleLevel ?? 0
+          const metadata = { ...(node.attrs.metadata || {}), tocSettings: nextSettings }
+          tr.setNodeMarkup(pos, undefined, { ...node.attrs, headingLevel, metadata })
+          return false
+        }
+        return true
+      })
+      if (tr.steps.length > 0) editor.view.dispatch(tr)
     }
   }
   tocSettingsPopup.visible = false
@@ -441,19 +457,41 @@ const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string })
 }
 
 // --- TOC ---
-const refGroups = useExpandCollapse()
+const tocExpand = useExpandCollapse()
 
-const allRefGroupIds = computed(() => {
+const getTocExpandKey = (item: TocItem): string => item.id
+
+const allExpandableTocIds = computed(() => {
   const ids: string[] = []
   const walk = (items: TocItem[]) => {
     for (const item of items) {
-      if (item.sourceType === 'ref-group' && item.blockId) ids.push(item.blockId)
+      if (item.children?.length) ids.push(getTocExpandKey(item))
       if (item.children) walk(item.children)
     }
   }
   walk(tocItems.value)
   return ids
 })
+
+const allTocItemsExpanded = computed(() => {
+  const ids = allExpandableTocIds.value
+  return ids.length > 0 && ids.every(id => tocExpand.isExpanded(id))
+})
+
+const toggleAllTocItems = () => {
+  const ids = allExpandableTocIds.value
+  if (ids.length === 0) return
+  if (allTocItemsExpanded.value) tocExpand.collapseAll()
+  else tocExpand.expandAll(ids)
+}
+
+const toggleTocItem = (item: TocItem) => {
+  if (item.children?.length) tocExpand.toggle(getTocExpandKey(item))
+}
+
+const isTocItemExpanded = (item: TocItem): boolean => {
+  return tocExpand.isExpanded(getTocExpandKey(item))
+}
 
 /** Walk workspace page tree to find a page title by pageId. */
 function findPageTitle(pageId: string): string {
@@ -505,6 +543,24 @@ function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level
   }
   walk(blocks)
   return result
+}
+
+const clampHeadingLevel = (level: number): number => Math.min(6, Math.max(1, level))
+
+const getRefAutoTitleLevel = (items: TocItem[], refPos: number): number => {
+  let nearestPos = -1
+  let nearestLevel = 0
+  for (const item of items) {
+    if (item.sourceType !== 'local') continue
+    if (item.pos >= refPos || item.pos <= nearestPos) continue
+    nearestPos = item.pos
+    nearestLevel = item.level
+  }
+  return clampHeadingLevel(nearestLevel + 1)
+}
+
+const normalizeChildHeadingLevel = (childLevel: number, minChildLevel: number, parentLevel: number): number => {
+  return clampHeadingLevel(parentLevel + 1 + Math.max(0, childLevel - minChildLevel))
 }
 
 /**
@@ -627,11 +683,13 @@ const tocItems = computed<TocItem[]>(() => {
       const tocSettings = tocSettingsMap.get(blockId)
       const minLevel = tocSettings?.minContentLevel ?? 1
       const filteredHeadings = headings.filter(h => h.level >= minLevel)
+      const refLevel = tocSettings?.titleLevel ?? getRefAutoTitleLevel(allItems, pos)
+      const minChildLevel = filteredHeadings.reduce((min, h) => Math.min(min, h.level), Infinity)
       const children: TocItem[] = filteredHeadings.map((h, i) => ({
         id: `ref-child-${blockId}-${i}`,
         blockId,
         refId,
-        level: h.level,
+        level: Number.isFinite(minChildLevel) ? normalizeChildHeadingLevel(h.level, minChildLevel, refLevel) : h.level,
         text: h.text,
         pos,
         sourceType: 'ref-child',
@@ -645,7 +703,6 @@ const tocItems = computed<TocItem[]>(() => {
         }
       } else {
         const displayTitle = groupTitle
-        const refLevel = tocSettings?.titleLevel ?? 0
 
         allItems.push({
           id: `ref-group-${blockId}`,
@@ -1306,13 +1363,13 @@ onBeforeUnmount(() => {
             <span class="page-toc__meta">{{ tocFlatCount }}</span>
             <span class="page-toc__toggle">收起</span>
           </button>
-          <div v-if="tocExpanded && allRefGroupIds.length > 0" class="page-toc__actions">
+          <div v-if="tocExpanded && allExpandableTocIds.length > 0" class="page-toc__actions">
             <button
               type="button"
               class="page-toc__action-btn"
-              @click="allRefGroupIds.length > 0 && refGroups.allCollapsed() ? refGroups.expandAll(allRefGroupIds) : refGroups.collapseAll()"
+              @click="toggleAllTocItems"
             >
-              {{ refGroups.allCollapsed() ? '全部展开' : '全部收起' }}
+              {{ allTocItemsExpanded ? '全部收起' : '全部展开' }}
             </button>
           </div>
           <div v-show="tocExpanded" class="page-toc__list">
@@ -1332,20 +1389,24 @@ onBeforeUnmount(() => {
                   <span class="page-toc__text">{{ item.text }}</span>
                 </button>
                 <!-- Children nested under this heading -->
-                <div v-if="item.children?.length" class="page-toc__local-children">
+                <div v-if="item.children?.length && isTocItemExpanded(item)" class="page-toc__local-children">
                   <template v-for="child in item.children" :key="child.id">
                     <!-- Ref-group child -->
                     <div v-if="child.sourceType === 'ref-group'" class="page-toc__group">
                       <button
                         type="button"
-                        class="page-toc__item page-toc__item--ref"
-                        :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
-                        @click="refGroups.toggle(child.blockId); handleTocItemClick(child)"
+                        :class="[
+                          'page-toc__item',
+                          child.level > 0 ? `page-toc__item--level-${child.level}` : 'page-toc__item--ref',
+                          { 'page-toc__item--active': highlightedBlockId === child.blockId },
+                        ]"
+                        @click="toggleTocItem(child); handleTocItemClick(child)"
                       >
-                        <span class="page-toc__bullet page-toc__bullet--group">
-                          {{ refGroups.isExpanded(child.blockId) ? '▼' : '▶' }}
+                        <span v-if="child.level > 0" class="page-toc__bullet">H{{ child.level }}</span>
+                        <span v-else class="page-toc__bullet page-toc__bullet--group">
+                          {{ isTocItemExpanded(child) ? '▼' : '▶' }}
                         </span>
-                        <span v-if="child.text" class="page-toc__text page-toc__text--group">{{ child.text }}</span>
+                        <span v-if="child.text" class="page-toc__text">{{ child.text }}</span>
                         <span class="page-toc__group-count">{{ child.children?.length }}</span>
                         <span
                           class="page-toc__settings-trigger"
@@ -1353,12 +1414,12 @@ onBeforeUnmount(() => {
                           @click.stop="openTocSettings(child.blockId, $event, 'ref-group')"
                         >⚙</span>
                       </button>
-                      <div v-if="refGroups.isExpanded(child.blockId)" class="page-toc__children">
+                      <div v-if="child.children?.length && isTocItemExpanded(child)" class="page-toc__children">
                         <button
                           v-for="grandchild in child.children"
                           :key="grandchild.id"
                           type="button"
-                          class="page-toc__item page-toc__item--ref-child"
+                          class="page-toc__item"
                           :class="{
                             'page-toc__item--active': highlightedBlockId === grandchild.blockId,
                             [`page-toc__item--level-${grandchild.level}`]: true,
@@ -1374,11 +1435,15 @@ onBeforeUnmount(() => {
                     <button
                       v-else
                       type="button"
-                      class="page-toc__item page-toc__item--nodeview"
-                      :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
+                      :class="[
+                        'page-toc__item',
+                        child.level > 0 ? `page-toc__item--level-${child.level}` : 'page-toc__item--nodeview',
+                        { 'page-toc__item--active': highlightedBlockId === child.blockId },
+                      ]"
                       @click="handleTocItemClick(child)"
                     >
-                      <span class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(child.sourceType) }}</span>
+                      <span v-if="child.level > 0" class="page-toc__bullet">H{{ child.level }}</span>
+                      <span v-else class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(child.sourceType) }}</span>
                       <span class="page-toc__text">{{ child.text }}</span>
                       <span
                         class="page-toc__settings-trigger"
@@ -1394,14 +1459,18 @@ onBeforeUnmount(() => {
               <div v-else-if="item.sourceType === 'ref-group'" class="page-toc__group">
                 <button
                   type="button"
-                  class="page-toc__item page-toc__item--ref"
-                  :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
-                  @click="refGroups.toggle(item.blockId); handleTocItemClick(item)"
+                  :class="[
+                    'page-toc__item',
+                    item.level > 0 ? `page-toc__item--level-${item.level}` : 'page-toc__item--ref',
+                    { 'page-toc__item--active': highlightedBlockId === item.blockId },
+                  ]"
+                  @click="toggleTocItem(item); handleTocItemClick(item)"
                 >
-                  <span class="page-toc__bullet page-toc__bullet--group">
-                    {{ refGroups.isExpanded(item.blockId) ? '▼' : '▶' }}
+                  <span v-if="item.level > 0" class="page-toc__bullet">H{{ item.level }}</span>
+                  <span v-else class="page-toc__bullet page-toc__bullet--group">
+                    {{ isTocItemExpanded(item) ? '▼' : '▶' }}
                   </span>
-                  <span v-if="item.text" class="page-toc__text page-toc__text--group">{{ item.text }}</span>
+                  <span v-if="item.text" class="page-toc__text">{{ item.text }}</span>
                   <span class="page-toc__group-count">{{ item.children?.length }}</span>
                   <span
                     class="page-toc__settings-trigger"
@@ -1409,12 +1478,12 @@ onBeforeUnmount(() => {
                     @click.stop="openTocSettings(item.blockId, $event, 'ref-group')"
                   >⚙</span>
                 </button>
-                <div v-if="refGroups.isExpanded(item.blockId)" class="page-toc__children">
+                <div v-if="item.children?.length && isTocItemExpanded(item)" class="page-toc__children">
                   <button
                     v-for="child in item.children"
                     :key="child.id"
                     type="button"
-                    class="page-toc__item page-toc__item--ref-child"
+                    class="page-toc__item"
                     :class="{
                       'page-toc__item--active': highlightedBlockId === child.blockId,
                       [`page-toc__item--level-${child.level}`]: true,
@@ -1450,11 +1519,15 @@ onBeforeUnmount(() => {
               <button
                 v-else-if="['x6', 'table', 'timeline', 'spacer'].includes(item.sourceType)"
                 type="button"
-                class="page-toc__item page-toc__item--nodeview"
-                :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
+                :class="[
+                  'page-toc__item',
+                  item.level > 0 ? `page-toc__item--level-${item.level}` : 'page-toc__item--nodeview',
+                  { 'page-toc__item--active': highlightedBlockId === item.blockId },
+                ]"
                 @click="handleTocItemClick(item)"
               >
-                <span class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(item.sourceType) }}</span>
+                <span v-if="item.level > 0" class="page-toc__bullet">H{{ item.level }}</span>
+                <span v-else class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(item.sourceType) }}</span>
                 <span class="page-toc__text">{{ item.text }}</span>
                 <span
                   class="page-toc__settings-trigger"
@@ -1878,11 +1951,7 @@ onBeforeUnmount(() => {
   font-size: 10px !important;
   min-width: 20px !important;
 }
-.page-toc__text--group {
-  font-weight: 600 !important;
-  color: #5b21b6 !important;
-  font-size: 12px !important;
-}
+
 .page-toc__group-count {
   flex: 0 0 auto;
   min-width: 18px;
@@ -1893,6 +1962,18 @@ onBeforeUnmount(() => {
   font-size: 10px;
   font-weight: 700;
   text-align: center;
+}
+
+/* --- Ref-child items inside ref-group (purple heading) --- */
+.page-toc__children .page-toc__item:hover {
+  background: rgba(139, 92, 246, 0.08);
+}
+.page-toc__children .page-toc__item--active {
+  background: rgba(139, 92, 246, 0.14);
+}
+.page-toc__children .page-toc__bullet,
+.page-toc__inline-ref-child .page-toc__bullet {
+  color: #8b5cf6;
 }
 
 /* --- Ref children: collapsed/expanded below group --- */
@@ -1916,16 +1997,7 @@ onBeforeUnmount(() => {
   padding-left: 8px;
   border-left: 1px solid #e5e7eb;
 }
-.page-toc__item--ref-child {
-  padding-top: 4px;
-  padding-bottom: 4px;
-}
-.page-toc__item--ref-child:hover {
-  background: rgba(139, 92, 246, 0.08);
-}
-.page-toc__item--ref-child .page-toc__bullet {
-  color: #8b5cf6;
-}
+
 
 .page-toc__item--nodeview {
   padding: 6px 10px 6px 14px;

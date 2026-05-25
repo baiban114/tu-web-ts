@@ -14,9 +14,11 @@ export const TableBlockNode = Node.create({
     return {
       blockId: { default: '' },
       title: { default: '' },
+      headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
       tableData: { default: { headers: [], rows: [] } },
+      metadata: { default: {} },
     }
   },
 

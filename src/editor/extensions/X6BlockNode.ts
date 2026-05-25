@@ -14,6 +14,7 @@ export const X6BlockNode = Node.create({
     return {
       blockId: { default: '' },
       title: { default: '' },
+      headingLevel: { default: 0 },
       width: { default: null },
       height: { default: null },
       graphData: { default: { nodes: [], edges: [] } },

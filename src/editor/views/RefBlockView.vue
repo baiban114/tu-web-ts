@@ -68,7 +68,7 @@ const referencedBlock = computed(() => refType.value === 'block' ? registryStore
 
 /** Compute effective heading offset and apply it to the given blocks. */
 function withShiftedHeadings(blocks: Block[]): Block[] {
-  const parentLevel = parentHeadingLevel.value
+  const parentLevel = referencedContentParentLevel.value
   if (parentLevel === 0) return blocks
   const minChild = minHeadingLevelInBlocks(blocks)
   if (!isFinite(minChild)) return blocks
@@ -132,6 +132,23 @@ const pageTitle = computed(() => {
     return null
   }
   return find(workspaceStore.pageTree) ?? '未知页面'
+})
+
+const tocSettings = computed(() => (props.node.attrs.metadata as any)?.tocSettings ?? null)
+const headingLevel = computed(() => {
+  if (tocSettings.value?.hideTitle) return 0
+  const explicitLevel = Number(props.node.attrs.headingLevel || tocSettings.value?.titleLevel || 0)
+  if (explicitLevel > 0) return Math.min(6, Math.max(1, explicitLevel))
+  return Math.min(6, Math.max(1, parentHeadingLevel.value + 1))
+})
+const headingText = computed(() => {
+  if (tocSettings.value?.hideTitle) return ''
+  if (props.node.attrs.title) return props.node.attrs.title
+  if (refType.value === 'page') return pageTitle.value
+  return registryStore.getMeta(refId.value)?.pageTitle ?? '引用'
+})
+const referencedContentParentLevel = computed(() => {
+  return headingLevel.value > 0 ? headingLevel.value : parentHeadingLevel.value
 })
 
 const isRichTextBlock = (block: Block): boolean => block.type === 'richtext' || block.type === 'richText'
@@ -221,6 +238,8 @@ onMounted(() => {
       :block-id="blockId"
       block-type="ref"
       :compound-badges="compoundBadges"
+      :heading-level="headingLevel"
+      :heading-text="headingText"
       @resize="onResize"
       @compound-badge-click="handleBadgeClick"
     >
