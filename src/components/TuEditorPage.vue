@@ -243,7 +243,7 @@ const handleSelectionChange = (
   if (selHasSelection && tuEditorRef.value) {
     const pos = tuEditorRef.value.getSelectionPosition?.()
     if (pos) {
-      selectionPosition.value = { top: pos.top + 4, left: pos.left }
+      selectionPosition.value = { top: pos.top - 40, left: pos.left }
     }
     selectionToolbarTimer = setTimeout(() => {
       selectionToolbarTimer = null

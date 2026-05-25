@@ -38,7 +38,6 @@ const emit = defineEmits<{
   position: fixed;
   z-index: 1000002;
   transform: translateX(-50%);
-  margin-top: 6px;
   pointer-events: none;
 }
 
