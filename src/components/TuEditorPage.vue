@@ -41,8 +41,9 @@ const NODEVIEW_TYPE_LABELS: Record<string, string> = {
 const nodeViewLabel = (type: string): string => NODEVIEW_TYPE_LABELS[type] || type
 
 interface TocSettings {
-  parentBlockId: string | null
+  titleLevel: number | null
   hideTitle: boolean
+  minContentLevel: number
 }
 
 const getTocSettings = (embedId: string): TocSettings | null => {
@@ -61,37 +62,29 @@ const setTocSettings = (embedId: string, settings: TocSettings) => {
 const tocSettingsPopup = reactive({
   visible: false,
   embedId: '',
+  sourceType: '',
   top: 0,
   left: 0,
 })
 
 const tocSettingsDraft = reactive<TocSettings>({
-  parentBlockId: null,
+  titleLevel: null,
   hideTitle: false,
+  minContentLevel: 1,
 })
 
-const allHeadings = computed(() => {
-  const headings: Array<{ blockId: string; text: string; level: number }> = []
-  const walk = (items: TocItem[]) => {
-    for (const item of items) {
-      if (item.sourceType === 'local') {
-        headings.push({ blockId: item.blockId, text: item.text, level: item.level })
-      }
-      if (item.children) walk(item.children)
-    }
-  }
-  walk(tocItems.value)
-  return headings
-})
-
-const openTocSettings = (embedId: string, event: MouseEvent) => {
+const openTocSettings = (embedId: string, event: MouseEvent, sourceType?: string) => {
   if (!event || !embedId) return
   const settings = getTocSettings(embedId)
-  tocSettingsDraft.parentBlockId = settings?.parentBlockId ?? null
+  tocSettingsDraft.titleLevel = settings?.titleLevel ?? null
   tocSettingsDraft.hideTitle = settings?.hideTitle ?? false
+  tocSettingsDraft.minContentLevel = settings?.minContentLevel ?? 1
   tocSettingsPopup.embedId = embedId
+  tocSettingsPopup.sourceType = sourceType || ''
   tocSettingsPopup.top = event.clientY - 8
-  tocSettingsPopup.left = event.clientX + 10
+  const estimatedWidth = 240
+  const desiredLeft = event.clientX + 10
+  tocSettingsPopup.left = Math.min(desiredLeft, window.innerWidth - estimatedWidth - 12)
   tocSettingsPopup.visible = true
 }
 
@@ -109,6 +102,96 @@ const saveTocSettings = () => {
 const closeTocSettings = () => {
   tocSettingsPopup.visible = false
 }
+
+const handleSettingsDocClick = (e: MouseEvent) => {
+  const popover = document.querySelector('.toc-settings-popover')
+  if (!popover || !popover.contains(e.target as Node)) {
+    closeTocSettings()
+  }
+}
+watch(() => tocSettingsPopup.visible, (visible, wasVisible) => {
+  if (visible && !wasVisible) nextTick(() => document.addEventListener('click', handleSettingsDocClick))
+  else if (!visible && wasVisible) document.removeEventListener('click', handleSettingsDocClick)
+})
+
+// --- NodeView floating toolbar ---
+const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'timelineBlock', 'spacerBlock', 'refBlock']
+
+const nodeViewToolbar = reactive({
+  visible: false,
+  blockId: '',
+  sourceType: '',
+  top: 0,
+  left: 0,
+})
+
+const deleteSelectedNodeView = () => {
+  const editor = tuEditorRef.value?.editor
+  if (editor && nodeViewToolbar.blockId) {
+    editor.commands.deleteBlock(nodeViewToolbar.blockId)
+  }
+  nodeViewToolbar.visible = false
+}
+
+const duplicateSelectedNodeView = () => {
+  if (nodeViewToolbar.blockId) {
+    tuEditorRef.value?.duplicateBlock?.(nodeViewToolbar.blockId)
+  }
+  nodeViewToolbar.visible = false
+}
+
+const openNodeViewToolbarSettings = (event: MouseEvent) => {
+  openTocSettings(nodeViewToolbar.blockId, event, nodeViewToolbar.sourceType)
+  nodeViewToolbar.visible = false
+}
+
+const handleBlockClick = (blockId: string, event: MouseEvent) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  // Find block type from editor doc
+  let typeName = ''
+  editor.state.doc.descendants((node) => {
+    if (node.attrs?.blockId === blockId) {
+      typeName = node.type.name
+      return false
+    }
+    return true
+  })
+  if (!NODEVIEW_TYPES.includes(typeName)) return
+
+  const rect = (event.target as HTMLElement).closest('[data-block-id]')?.getBoundingClientRect()
+  if (!rect) return
+  nodeViewToolbar.blockId = blockId
+  nodeViewToolbar.sourceType = typeName
+  nodeViewToolbar.top = rect.top - 40
+  nodeViewToolbar.left = rect.left + rect.width / 2
+  nodeViewToolbar.visible = true
+}
+
+const handleToolbarDocClick = (e: MouseEvent) => {
+  const toolbar = document.querySelector('.nodeview-toolbar')
+  if (!toolbar || !toolbar.contains(e.target as Node)) {
+    // Don't close if clicking on another nodeView — capture mousedown repositions it
+    if ((e.target as HTMLElement).closest('[data-block-id]')) return
+    nodeViewToolbar.visible = false
+  }
+}
+const handleToolbarKeydown = (e: KeyboardEvent) => {
+  if (e.key === 'Escape') nodeViewToolbar.visible = false
+}
+
+watch(() => nodeViewToolbar.visible, (visible, wasVisible) => {
+  if (visible && !wasVisible) {
+    nextTick(() => {
+      document.addEventListener('click', handleToolbarDocClick)
+      document.addEventListener('keydown', handleToolbarKeydown)
+    })
+  } else if (!visible && wasVisible) {
+    document.removeEventListener('click', handleToolbarDocClick)
+    document.removeEventListener('keydown', handleToolbarKeydown)
+  }
+})
 
 const workspaceStore = useWorkspaceStore()
 const registryStore = useBlockRegistryStore()
@@ -425,10 +508,12 @@ function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level
 }
 
 /**
- * Tree-structured TOC items. Top-level entries are either:
- * - local headings (sourceType === 'local'), with optional ref-group children
- * - ref-group entries (sourceType === 'ref-group') before the first heading
- * Children are ref-child entries with sourceType === 'ref-child'.
+ * Tree-structured TOC items. Top-level entries are:
+ * - local headings (sourceType === 'local')
+ * - ref-group entries with explicit titleLevel (sourceType === 'ref-group', level > 0)
+ * - standalone ref-child headings (sourceType === 'ref-child', when hideTitle=true)
+ * - any item with explicit titleLevel (level > 0: ref-group, x6, table, timeline, spacer)
+ * Remaining items are grouped under the nearest preceding heading-like entry.
  */
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
@@ -474,41 +559,45 @@ const tocItems = computed<TocItem[]>(() => {
     if (!blockId) return true
 
     if (typeName === 'x6Block') {
+      const nvSettings = tocSettingsMap.get(blockId)
       const title = node.attrs?.title || blockTitleMap.get(blockId) || '画板'
       allItems.push({
         id: `x6-${blockId}`,
         blockId,
-        level: 0,
-        text: title,
+        level: nvSettings?.titleLevel ?? 0,
+        text: nvSettings?.hideTitle ? '' : title,
         pos,
         sourceType: 'x6',
       })
     } else if (typeName === 'tableBlock') {
+      const nvSettings = tocSettingsMap.get(blockId)
       const title = node.attrs?.title || blockTitleMap.get(blockId) || '表格'
       allItems.push({
         id: `table-${blockId}`,
         blockId,
-        level: 0,
-        text: title,
+        level: nvSettings?.titleLevel ?? 0,
+        text: nvSettings?.hideTitle ? '' : title,
         pos,
         sourceType: 'table',
       })
     } else if (typeName === 'timelineBlock') {
+      const nvSettings = tocSettingsMap.get(blockId)
       const title = node.attrs?.title || blockTitleMap.get(blockId) || '时间轴'
       allItems.push({
         id: `tl-${blockId}`,
         blockId,
-        level: 0,
-        text: title,
+        level: nvSettings?.titleLevel ?? 0,
+        text: nvSettings?.hideTitle ? '' : title,
         pos,
         sourceType: 'timeline',
       })
     } else if (typeName === 'spacerBlock') {
+      const nvSettings = tocSettingsMap.get(blockId)
       allItems.push({
         id: `sp-${blockId}`,
         blockId,
-        level: 0,
-        text: '分割空白',
+        level: nvSettings?.titleLevel ?? 0,
+        text: nvSettings?.hideTitle ? '' : '分割空白',
         pos,
         sourceType: 'spacer',
       })
@@ -535,7 +624,10 @@ const tocItems = computed<TocItem[]>(() => {
         groupTitle = meta?.pageTitle || blockTitleMap.get(blockId) || '引用'
       }
 
-      const children: TocItem[] = headings.map((h, i) => ({
+      const tocSettings = tocSettingsMap.get(blockId)
+      const minLevel = tocSettings?.minContentLevel ?? 1
+      const filteredHeadings = headings.filter(h => h.level >= minLevel)
+      const children: TocItem[] = filteredHeadings.map((h, i) => ({
         id: `ref-child-${blockId}-${i}`,
         blockId,
         refId,
@@ -546,19 +638,26 @@ const tocItems = computed<TocItem[]>(() => {
         targetText: h.text,
       }))
 
-      const tocSettings = tocSettingsMap.get(blockId)
-      const displayTitle = tocSettings?.hideTitle ? '' : groupTitle
+      if (tocSettings?.hideTitle) {
+        // Flatten children directly as standalone heading entries
+        for (const child of children) {
+          allItems.push(child)
+        }
+      } else {
+        const displayTitle = groupTitle
+        const refLevel = tocSettings?.titleLevel ?? 0
 
-      allItems.push({
-        id: `ref-group-${blockId}`,
-        blockId,
-        level: 0,
-        text: displayTitle,
-        pos,
-        sourceType: 'ref-group',
-        refId,
-        children: children.length > 0 ? children : undefined,
-      })
+        allItems.push({
+          id: `ref-group-${blockId}`,
+          blockId,
+          level: refLevel,
+          text: displayTitle,
+          pos,
+          sourceType: 'ref-group',
+          refId,
+          children: children.length > 0 ? children : undefined,
+        })
+      }
     }
 
     return true
@@ -569,40 +668,20 @@ const tocItems = computed<TocItem[]>(() => {
   // Sort by document position
   allItems.sort((a, b) => a.pos - b.pos)
 
-  // Build heading map for override lookups
-  const headingMap = new Map<string, TocItem>()
-  for (const item of allItems) {
-    if (item.sourceType === 'local' && item.blockId) {
-      headingMap.set(item.blockId, item)
-    }
-  }
-
-  // Group non-heading items under the nearest preceding heading,
-  // respecting manual TOC settings overrides
+  // Group items into heading hierarchy
   const treeItems: TocItem[] = []
   let currentHeading: TocItem | null = null
 
   for (const item of allItems) {
-    if (item.sourceType === 'local') {
+    if (item.sourceType === 'local' || item.sourceType === 'ref-child' || item.level > 0) {
       currentHeading = item
       treeItems.push(item)
     } else {
-      const overrides = item.sourceType === 'ref-group' ? tocSettingsMap.get(item.blockId) : null
-      const parentOverride = overrides?.parentBlockId
-
-      if (parentOverride === '__top__') {
-        treeItems.push(item)
-      } else if (parentOverride && headingMap.has(parentOverride)) {
-        const parent = headingMap.get(parentOverride)!
-        if (!parent.children) parent.children = []
-        parent.children.push(item)
+      if (currentHeading) {
+        if (!currentHeading.children) currentHeading.children = []
+        currentHeading.children.push(item)
       } else {
-        if (currentHeading) {
-          if (!currentHeading.children) currentHeading.children = []
-          currentHeading.children.push(item)
-        } else {
-          treeItems.push(item)
-        }
+        treeItems.push(item)
       }
     }
   }
@@ -1198,6 +1277,7 @@ onBeforeUnmount(() => {
           @compound-badge-click="handleCompoundBadgeClick"
           @open-block-picker="handleOpenBlockPicker"
           @open-tag-editor="handleOpenTagEditor"
+          @block-click="handleBlockClick"
         />
 
         <!-- 文档末尾插入按钮 -->
@@ -1270,7 +1350,7 @@ onBeforeUnmount(() => {
                         <span
                           class="page-toc__settings-trigger"
                           title="目录设置"
-                          @click.stop="openTocSettings(child.blockId, $event)"
+                          @click.stop="openTocSettings(child.blockId, $event, 'ref-group')"
                         >⚙</span>
                       </button>
                       <div v-if="refGroups.isExpanded(child.blockId)" class="page-toc__children">
@@ -1300,6 +1380,11 @@ onBeforeUnmount(() => {
                     >
                       <span class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(child.sourceType) }}</span>
                       <span class="page-toc__text">{{ child.text }}</span>
+                      <span
+                        class="page-toc__settings-trigger"
+                        title="目录设置"
+                        @click.stop="openTocSettings(child.blockId, $event, child.sourceType)"
+                      >⚙</span>
                     </button>
                   </template>
                 </div>
@@ -1321,7 +1406,7 @@ onBeforeUnmount(() => {
                   <span
                     class="page-toc__settings-trigger"
                     title="目录设置"
-                    @click.stop="openTocSettings(item.blockId, $event)"
+                    @click.stop="openTocSettings(item.blockId, $event, 'ref-group')"
                   >⚙</span>
                 </button>
                 <div v-if="refGroups.isExpanded(item.blockId)" class="page-toc__children">
@@ -1341,6 +1426,26 @@ onBeforeUnmount(() => {
                   </button>
                 </div>
               </div>
+              <!-- Standalone ref-child (hideTitle) -->
+              <div v-else-if="item.sourceType === 'ref-child'" class="page-toc__inline-ref-child">
+                <button
+                  type="button"
+                  class="page-toc__item"
+                  :class="{
+                    'page-toc__item--active': highlightedBlockId === item.blockId,
+                    [`page-toc__item--level-${item.level}`]: true,
+                  }"
+                  @click="handleTocItemClick(item)"
+                >
+                  <span class="page-toc__bullet">H{{ item.level }}</span>
+                  <span class="page-toc__text">{{ item.text }}</span>
+                  <span
+                    class="page-toc__settings-trigger"
+                    title="目录设置"
+                    @click.stop="openTocSettings(item.blockId, $event, 'ref-group')"
+                  >⚙</span>
+                </button>
+              </div>
               <!-- Top-level nodeView (before any local heading) -->
               <button
                 v-else-if="['x6', 'table', 'timeline', 'spacer'].includes(item.sourceType)"
@@ -1351,6 +1456,11 @@ onBeforeUnmount(() => {
               >
                 <span class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(item.sourceType) }}</span>
                 <span class="page-toc__text">{{ item.text }}</span>
+                <span
+                  class="page-toc__settings-trigger"
+                  title="目录设置"
+                  @click.stop="openTocSettings(item.blockId, $event, item.sourceType)"
+                >⚙</span>
               </button>
             </template>
           </div>
@@ -1368,6 +1478,19 @@ onBeforeUnmount(() => {
         目录
       </button>
 
+      <!-- NodeView floating toolbar -->
+      <div
+        v-if="nodeViewToolbar.visible"
+        class="nodeview-toolbar"
+        :style="{ top: nodeViewToolbar.top + 'px', left: nodeViewToolbar.left + 'px' }"
+        @mousedown.stop
+        @click.stop
+      >
+        <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
+        <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
+        <button class="nodeview-toolbar__btn" @click="openNodeViewToolbarSettings">目录设置</button>
+      </div>
+
       <!-- TOC settings popover -->
       <div
         v-if="tocSettingsPopup.visible"
@@ -1378,15 +1501,15 @@ onBeforeUnmount(() => {
         @keydown.esc="closeTocSettings"
       >
         <div class="toc-settings-popover__field">
-          <label class="toc-settings-popover__label">上级标题</label>
-          <select v-model="tocSettingsDraft.parentBlockId" class="toc-settings-popover__select">
+          <label class="toc-settings-popover__label">标题级别</label>
+          <select v-model.number="tocSettingsDraft.titleLevel" class="toc-settings-popover__select">
             <option :value="null">自动</option>
-            <option value="__top__">顶层</option>
-            <option
-              v-for="h in allHeadings"
-              :key="h.blockId"
-              :value="h.blockId"
-            >H{{ h.level }}: {{ h.text }}</option>
+            <option :value="1">H1</option>
+            <option :value="2">H2</option>
+            <option :value="3">H3</option>
+            <option :value="4">H4</option>
+            <option :value="5">H5</option>
+            <option :value="6">H6</option>
           </select>
         </div>
         <div class="toc-settings-popover__field">
@@ -1394,6 +1517,17 @@ onBeforeUnmount(() => {
             <input type="checkbox" v-model="tocSettingsDraft.hideTitle" />
             隐藏标题
           </label>
+        </div>
+        <div v-if="tocSettingsPopup.sourceType === 'ref-group'" class="toc-settings-popover__field">
+          <label class="toc-settings-popover__label">内容最小标题</label>
+          <select v-model.number="tocSettingsDraft.minContentLevel" class="toc-settings-popover__select">
+            <option :value="1">H1</option>
+            <option :value="2">H2</option>
+            <option :value="3">H3</option>
+            <option :value="4">H4</option>
+            <option :value="5">H5</option>
+            <option :value="6">H6</option>
+          </select>
         </div>
         <div class="toc-settings-popover__actions">
           <button class="toc-settings-popover__btn" @click="saveTocSettings">保存</button>
@@ -1855,7 +1989,11 @@ onBeforeUnmount(() => {
   transition: opacity 0.15s, background 0.15s, color 0.15s;
 }
 .page-toc__item--ref:hover .page-toc__settings-trigger,
-.page-toc__item--ref:focus-within .page-toc__settings-trigger {
+.page-toc__item--ref:focus-within .page-toc__settings-trigger,
+.page-toc__item--nodeview:hover .page-toc__settings-trigger,
+.page-toc__item--nodeview:focus-within .page-toc__settings-trigger,
+.page-toc__inline-ref-child:hover .page-toc__settings-trigger,
+.page-toc__inline-ref-child:focus-within .page-toc__settings-trigger {
   opacity: 1;
 }
 .page-toc__settings-trigger:hover {
@@ -1938,6 +2076,31 @@ onBeforeUnmount(() => {
   color: #374151;
 }
 .toc-settings-popover__btn--cancel:hover {
+  background: #f3f4f6;
+}
+
+.nodeview-toolbar {
+  position: fixed;
+  z-index: 1000003;
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+}
+.nodeview-toolbar__btn {
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #374151;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.nodeview-toolbar__btn:hover {
   background: #f3f4f6;
 }
 </style>

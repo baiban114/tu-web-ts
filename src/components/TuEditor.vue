@@ -536,10 +536,18 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   clearHideHandle()
 }
 
-// Lasso mousedown: capture phase so it fires BEFORE ProseMirror's handler
+// Lasso mousedown: capture phase so it fires BEFORE ProseMirror's handler and @*.stop
 const handleLassoStart = (event: MouseEvent) => {
   if (!props.editable || event.button !== 0) return
+
+  // Detect nodeView clicks (non-Shift) — capture phase bypasses @*.stop on nodeView roots
   if (!event.shiftKey) {
+    const target = event.target as HTMLElement
+    const nodeView = target.closest('[data-block-id]')
+    if (nodeView) {
+      const bid = nodeView.getAttribute('data-block-id')
+      if (bid) emit('block-click', bid, event)
+    }
     // Non-shift click clears lasso selection
     if (lassoSelectedBlockIds.value.size > 0) {
       clearLassoSelection()
@@ -920,6 +928,35 @@ onBeforeUnmount(() => {
   editor.value?.destroy()
 })
 
+function findBlockPos(doc: any, blockId: string): number | null {
+  let pos: number | null = null
+  doc.descendants((node: any, p: number) => {
+    if (node.attrs?.blockId === blockId) { pos = p; return false }
+    return true
+  })
+  return pos
+}
+
+function duplicateBlock(blockId: string) {
+  const ed = editor.value
+  if (!ed) return
+  const pos = findBlockPos(ed.state.doc, blockId)
+  if (pos === null) return
+  const node = ed.state.doc.nodeAt(pos)
+  if (!node) return
+  const to = pos + node.nodeSize
+  const slice = ed.state.doc.slice(pos, to)
+  const json = slice.toJSON()
+  if (json) {
+    const assignNewId = (n: Record<string, any>) => {
+      if (n.attrs?.blockId) n.attrs.blockId = generateBlockId()
+      if (n.content) n.content.forEach(assignNewId)
+    }
+    assignNewId(json)
+  }
+  ed.chain().focus().insertContentAt(to, json).run()
+}
+
 defineExpose({
   editor,
   getSelectionAsMarkdown: () => {
@@ -966,6 +1003,7 @@ defineExpose({
   },
   completePendingRefInsert,
   focus: () => editor.value?.commands.focus(),
+  duplicateBlock,
 })
 </script>
 
