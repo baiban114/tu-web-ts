@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
+import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import type { Block, BlockTag, EmbeddedObject, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import { pageContentToTipTap, tipTapToPageContent } from '@/editor/converters'
 import TuEditor from './TuEditor.vue'
@@ -28,6 +28,7 @@ interface TocItem {
   sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'timeline' | 'spacer'
   children?: TocItem[]
   refId?: string
+  targetText?: string
 }
 
 const NODEVIEW_TYPE_LABELS: Record<string, string> = {
@@ -38,6 +39,76 @@ const NODEVIEW_TYPE_LABELS: Record<string, string> = {
 }
 
 const nodeViewLabel = (type: string): string => NODEVIEW_TYPE_LABELS[type] || type
+
+interface TocSettings {
+  parentBlockId: string | null
+  hideTitle: boolean
+}
+
+const getTocSettings = (embedId: string): TocSettings | null => {
+  const embed = localEmbeds.value.find(e => e.id === embedId)
+  return (embed?.metadata as any)?.tocSettings ?? null
+}
+
+const setTocSettings = (embedId: string, settings: TocSettings) => {
+  const embed = localEmbeds.value.find(e => e.id === embedId)
+  if (!embed) return
+  embed.metadata = { ...(embed.metadata || {}), tocSettings: settings }
+  localEmbeds.value = [...localEmbeds.value]
+  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+}
+
+const tocSettingsPopup = reactive({
+  visible: false,
+  embedId: '',
+  top: 0,
+  left: 0,
+})
+
+const tocSettingsDraft = reactive<TocSettings>({
+  parentBlockId: null,
+  hideTitle: false,
+})
+
+const allHeadings = computed(() => {
+  const headings: Array<{ blockId: string; text: string; level: number }> = []
+  const walk = (items: TocItem[]) => {
+    for (const item of items) {
+      if (item.sourceType === 'local') {
+        headings.push({ blockId: item.blockId, text: item.text, level: item.level })
+      }
+      if (item.children) walk(item.children)
+    }
+  }
+  walk(tocItems.value)
+  return headings
+})
+
+const openTocSettings = (embedId: string, event: MouseEvent) => {
+  if (!event || !embedId) return
+  const settings = getTocSettings(embedId)
+  tocSettingsDraft.parentBlockId = settings?.parentBlockId ?? null
+  tocSettingsDraft.hideTitle = settings?.hideTitle ?? false
+  tocSettingsPopup.embedId = embedId
+  tocSettingsPopup.top = event.clientY - 8
+  tocSettingsPopup.left = event.clientX + 10
+  tocSettingsPopup.visible = true
+}
+
+const saveTocSettings = () => {
+  if (tocSettingsPopup.embedId) {
+    try {
+      setTocSettings(tocSettingsPopup.embedId, { ...tocSettingsDraft })
+    } catch {
+      console.warn('Failed to save TOC settings')
+    }
+  }
+  tocSettingsPopup.visible = false
+}
+
+const closeTocSettings = () => {
+  tocSettingsPopup.visible = false
+}
 
 const workspaceStore = useWorkspaceStore()
 const registryStore = useBlockRegistryStore()
@@ -293,7 +364,7 @@ const allRefGroupIds = computed(() => {
   const ids: string[] = []
   const walk = (items: TocItem[]) => {
     for (const item of items) {
-      if (item.sourceType === 'ref-group' && item.refId) ids.push(item.refId)
+      if (item.sourceType === 'ref-group' && item.blockId) ids.push(item.blockId)
       if (item.children) walk(item.children)
     }
   }
@@ -318,8 +389,8 @@ function findPageTitle(pageId: string): string {
 
 /** Extract heading-like structures from a list of blocks (richtext markdown content).
  *  Used to surface headings from referenced pages/blocks in the current page TOC. */
-function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level: number }> {
-  const result: Array<{ text: string; level: number }> = []
+function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level: number; blockId: string }> {
+  const result: Array<{ text: string; level: number; blockId: string }> = []
   const seen = new Set<string>()
   const walk = (list: Block[]) => {
     for (const block of list) {
@@ -338,9 +409,10 @@ function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level
             text = text.replace(/\*(.+?)\*/g, '$1')
             text = text.replace(/`(.+?)`/g, '$1')
             text = text.replace(/\[(.+?)\]\(.+?\)/g, '$1')
-            if (text && !seen.has(text)) {
-              seen.add(text)
-              result.push({ text, level })
+            const key = `${block.id}:${text}`
+            if (text && !seen.has(key)) {
+              seen.add(key)
+              result.push({ text, level, blockId: block.id })
             }
           }
         }
@@ -365,11 +437,15 @@ const tocItems = computed<TocItem[]>(() => {
   // Build lookup maps from localBlocks
   const blockTitleMap = new Map<string, string>()
   const refMetaMap = new Map<string, { refId: string; refType: string }>()
+  const tocSettingsMap = new Map<string, TocSettings>()
   for (const block of localBlocks.value) {
     if (block.id) {
       if (block.title) blockTitleMap.set(block.id, block.title)
       if (block.type === 'ref' && block.refId) {
         refMetaMap.set(block.id, { refId: block.refId, refType: block.refType ?? 'block' })
+      }
+      if (block.metadata?.tocSettings) {
+        tocSettingsMap.set(block.id, block.metadata.tocSettings as TocSettings)
       }
     }
   }
@@ -462,17 +538,22 @@ const tocItems = computed<TocItem[]>(() => {
       const children: TocItem[] = headings.map((h, i) => ({
         id: `ref-child-${blockId}-${i}`,
         blockId,
+        refId,
         level: h.level,
         text: h.text,
         pos,
         sourceType: 'ref-child',
+        targetText: h.text,
       }))
+
+      const tocSettings = tocSettingsMap.get(blockId)
+      const displayTitle = tocSettings?.hideTitle ? '' : groupTitle
 
       allItems.push({
         id: `ref-group-${blockId}`,
         blockId,
         level: 0,
-        text: groupTitle,
+        text: displayTitle,
         pos,
         sourceType: 'ref-group',
         refId,
@@ -488,7 +569,16 @@ const tocItems = computed<TocItem[]>(() => {
   // Sort by document position
   allItems.sort((a, b) => a.pos - b.pos)
 
-  // Group non-heading items under the nearest preceding heading
+  // Build heading map for override lookups
+  const headingMap = new Map<string, TocItem>()
+  for (const item of allItems) {
+    if (item.sourceType === 'local' && item.blockId) {
+      headingMap.set(item.blockId, item)
+    }
+  }
+
+  // Group non-heading items under the nearest preceding heading,
+  // respecting manual TOC settings overrides
   const treeItems: TocItem[] = []
   let currentHeading: TocItem | null = null
 
@@ -497,11 +587,22 @@ const tocItems = computed<TocItem[]>(() => {
       currentHeading = item
       treeItems.push(item)
     } else {
-      if (currentHeading) {
-        if (!currentHeading.children) currentHeading.children = []
-        currentHeading.children.push(item)
-      } else {
+      const overrides = item.sourceType === 'ref-group' ? tocSettingsMap.get(item.blockId) : null
+      const parentOverride = overrides?.parentBlockId
+
+      if (parentOverride === '__top__') {
         treeItems.push(item)
+      } else if (parentOverride && headingMap.has(parentOverride)) {
+        const parent = headingMap.get(parentOverride)!
+        if (!parent.children) parent.children = []
+        parent.children.push(item)
+      } else {
+        if (currentHeading) {
+          if (!currentHeading.children) currentHeading.children = []
+          currentHeading.children.push(item)
+        } else {
+          treeItems.push(item)
+        }
       }
     }
   }
@@ -522,16 +623,83 @@ const tocFlatCount = computed(() => {
   return count(tocItems.value)
 })
 
+const getEditorScrollContainer = (): HTMLElement | Window => {
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  return editorDom?.closest('.content-scroll') as HTMLElement | null ?? window
+}
+
+const scrollElementIntoEditorView = (el: HTMLElement) => {
+  const scrollContainer = getEditorScrollContainer()
+  if (scrollContainer instanceof HTMLElement) {
+    const containerRect = scrollContainer.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    const targetTop = scrollContainer.scrollTop + elRect.top - containerRect.top - 88
+    scrollContainer.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' })
+    return
+  }
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+}
+
+const findHeadingElementInRefBlock = (blockId: string, headingText?: string): HTMLElement | null => {
+  if (!headingText) return null
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  const refRoot = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  if (!refRoot) return null
+  const headings = refRoot.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')
+  for (const heading of headings) {
+    if (heading.textContent?.trim() === headingText.trim()) return heading
+  }
+  return null
+}
+
+const findTocTargetElement = (item: TocItem): HTMLElement | null => {
+  if (item.sourceType === 'ref-child') {
+    return findHeadingElementInRefBlock(item.blockId, item.targetText || item.text)
+  }
+
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return null
+
+  const nodeDom = editor.view.nodeDOM(item.pos)
+  if (nodeDom instanceof HTMLElement) return nodeDom
+  if (nodeDom instanceof Text) return nodeDom.parentElement
+
+  const editorDom = editor.view.dom
+  if (item.blockId) {
+    const byBlockId = editorDom.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(item.blockId)}"]`)
+    if (byBlockId) return byBlockId
+  }
+
+  try {
+    const coords = editor.view.coordsAtPos(item.pos)
+    const element = document.elementFromPoint(coords.left, coords.top)
+    return element instanceof HTMLElement ? element.closest<HTMLElement>('.ProseMirror > *') ?? element : null
+  } catch {
+    return null
+  }
+}
+
 const handleTocItemClick = (item: TocItem) => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
 
-  const from = item.pos
-  const to = from + (editor.state.doc.nodeAt(from)?.nodeSize || 0)
-  editor.commands.setTextSelection({ from, to })
-  editor.commands.scrollIntoView()
-  highlightedBlockId.value = item.blockId
-  setTimeout(() => { highlightedBlockId.value = null }, 2000)
+  const docSize = editor.state.doc.content.size
+  const from = Math.max(0, Math.min(item.pos, docSize))
+  const targetNode = editor.state.doc.nodeAt(from)
+  try {
+    if (targetNode?.isTextblock || targetNode?.isInline) {
+      editor.commands.setTextSelection({ from, to: from + 1 })
+    } else if (targetNode) {
+      editor.commands.setNodeSelection(from)
+    }
+    const targetEl = findTocTargetElement(item)
+    if (targetEl) scrollElementIntoEditorView(targetEl)
+    else editor.commands.scrollIntoView()
+    highlightedBlockId.value = item.blockId
+    setTimeout(() => { highlightedBlockId.value = null }, 2000)
+  } catch {
+    // Position may be stale after editor rebuild; ignore silently
+  }
 }
 
 // --- Link insertion ---
@@ -1092,15 +1260,20 @@ onBeforeUnmount(() => {
                         type="button"
                         class="page-toc__item page-toc__item--ref"
                         :class="{ 'page-toc__item--active': highlightedBlockId === child.blockId }"
-                        @click="refGroups.toggle(child.refId!)"
+                        @click="refGroups.toggle(child.blockId); handleTocItemClick(child)"
                       >
                         <span class="page-toc__bullet page-toc__bullet--group">
-                          {{ refGroups.isExpanded(child.refId!) ? '▼' : '▶' }}
+                          {{ refGroups.isExpanded(child.blockId) ? '▼' : '▶' }}
                         </span>
-                        <span class="page-toc__text page-toc__text--group">{{ child.text }}</span>
+                        <span v-if="child.text" class="page-toc__text page-toc__text--group">{{ child.text }}</span>
                         <span class="page-toc__group-count">{{ child.children?.length }}</span>
+                        <span
+                          class="page-toc__settings-trigger"
+                          title="目录设置"
+                          @click.stop="openTocSettings(child.blockId, $event)"
+                        >⚙</span>
                       </button>
-                      <div v-if="refGroups.isExpanded(child.refId!)" class="page-toc__children">
+                      <div v-if="refGroups.isExpanded(child.blockId)" class="page-toc__children">
                         <button
                           v-for="grandchild in child.children"
                           :key="grandchild.id"
@@ -1138,15 +1311,20 @@ onBeforeUnmount(() => {
                   type="button"
                   class="page-toc__item page-toc__item--ref"
                   :class="{ 'page-toc__item--active': highlightedBlockId === item.blockId }"
-                  @click="refGroups.toggle(item.refId!)"
+                  @click="refGroups.toggle(item.blockId); handleTocItemClick(item)"
                 >
                   <span class="page-toc__bullet page-toc__bullet--group">
-                    {{ refGroups.isExpanded(item.refId!) ? '▼' : '▶' }}
+                    {{ refGroups.isExpanded(item.blockId) ? '▼' : '▶' }}
                   </span>
-                  <span class="page-toc__text page-toc__text--group">{{ item.text }}</span>
+                  <span v-if="item.text" class="page-toc__text page-toc__text--group">{{ item.text }}</span>
                   <span class="page-toc__group-count">{{ item.children?.length }}</span>
+                  <span
+                    class="page-toc__settings-trigger"
+                    title="目录设置"
+                    @click.stop="openTocSettings(item.blockId, $event)"
+                  >⚙</span>
                 </button>
-                <div v-if="refGroups.isExpanded(item.refId!)" class="page-toc__children">
+                <div v-if="refGroups.isExpanded(item.blockId)" class="page-toc__children">
                   <button
                     v-for="child in item.children"
                     :key="child.id"
@@ -1189,6 +1367,39 @@ onBeforeUnmount(() => {
       >
         目录
       </button>
+
+      <!-- TOC settings popover -->
+      <div
+        v-if="tocSettingsPopup.visible"
+        class="toc-settings-popover"
+        :style="{ top: tocSettingsPopup.top + 'px', left: tocSettingsPopup.left + 'px' }"
+        @mousedown.stop
+        @click.stop
+        @keydown.esc="closeTocSettings"
+      >
+        <div class="toc-settings-popover__field">
+          <label class="toc-settings-popover__label">上级标题</label>
+          <select v-model="tocSettingsDraft.parentBlockId" class="toc-settings-popover__select">
+            <option :value="null">自动</option>
+            <option value="__top__">顶层</option>
+            <option
+              v-for="h in allHeadings"
+              :key="h.blockId"
+              :value="h.blockId"
+            >H{{ h.level }}: {{ h.text }}</option>
+          </select>
+        </div>
+        <div class="toc-settings-popover__field">
+          <label class="toc-settings-popover__checkbox-label">
+            <input type="checkbox" v-model="tocSettingsDraft.hideTitle" />
+            隐藏标题
+          </label>
+        </div>
+        <div class="toc-settings-popover__actions">
+          <button class="toc-settings-popover__btn" @click="saveTocSettings">保存</button>
+          <button class="toc-settings-popover__btn toc-settings-popover__btn--cancel" @click="closeTocSettings">取消</button>
+        </div>
+      </div>
     </div>
 
     <!-- 选中文本工具栏 -->
@@ -1623,6 +1834,111 @@ onBeforeUnmount(() => {
 
 .page-toc__item--level-6 {
   padding-left: 58px;
+}
+
+.page-toc__settings-trigger {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 13px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+.page-toc__item--ref:hover .page-toc__settings-trigger,
+.page-toc__item--ref:focus-within .page-toc__settings-trigger {
+  opacity: 1;
+}
+.page-toc__settings-trigger:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #4b5563;
+}
+
+.toc-settings-popover {
+  position: fixed;
+  z-index: 1000003;
+  min-width: 200px;
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.14);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.toc-settings-popover__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.toc-settings-popover__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #374151;
+}
+.toc-settings-popover__select {
+  padding: 6px 8px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #1f2937;
+  background: #fff;
+  outline: none;
+  cursor: pointer;
+}
+.toc-settings-popover__select:focus {
+  border-color: #1677ff;
+  box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.12);
+}
+.toc-settings-popover__checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #374151;
+  cursor: pointer;
+}
+.toc-settings-popover__checkbox-label input {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.toc-settings-popover__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+.toc-settings-popover__btn {
+  padding: 5px 12px;
+  border: 1px solid #1677ff;
+  border-radius: 6px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.toc-settings-popover__btn:hover {
+  background: #4096ff;
+}
+.toc-settings-popover__btn--cancel {
+  border-color: #d1d5db;
+  background: #fff;
+  color: #374151;
+}
+.toc-settings-popover__btn--cancel:hover {
+  background: #f3f4f6;
 }
 </style>
 

@@ -150,8 +150,8 @@ const loadPageReference = async () => {
   error.value = ''
   try {
     const pc: PageContent = await getPageContent(refId.value)
-    pageBlocks.value = pageContentToLegacyBlocks(pc)
     registryStore.registerPageContent(pc, refId.value, pageTitle.value)
+    pageBlocks.value = pageContentToLegacyBlocks(pc)
   } catch (err) {
     error.value = err instanceof Error ? err.message : '页面内容加载失败'
   } finally {
@@ -160,16 +160,19 @@ const loadPageReference = async () => {
 }
 
 function pageContentToLegacyBlocks(pc: PageContent): Block[] {
-  const blocks: Block[] = []
+  const blocks = registryStore.getPageBlocks(refId.value)
+  if (blocks.length > 0) return blocks
+
+  const blocksFallback: Block[] = []
   if (pc.content.trim()) {
-    blocks.push({
+    blocksFallback.push({
       id: `ref-content-${refId.value}`,
       type: 'richtext',
       content: pc.content,
     })
   }
   for (const embed of pc.embeds) {
-    blocks.push({
+    blocksFallback.push({
       id: embed.id,
       type: embed.type,
       title: embed.title,
@@ -184,7 +187,7 @@ function pageContentToLegacyBlocks(pc: PageContent): Block[] {
       metadata: embed.metadata,
     })
   }
-  return blocks
+  return blocksFallback
 }
 
 const openReferencedPage = async () => {

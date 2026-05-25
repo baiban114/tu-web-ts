@@ -9,6 +9,74 @@ import {
 } from '@/api/page';
 import type { Block, PageContent, EmbeddedObject } from '@/api/types';
 
+const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g;
+
+function pageContentToBlocks(pc: PageContent): Block[] {
+  const blocks: Block[] = [];
+  const embedById = new Map((pc.embeds || []).map((embed) => [embed.id, embed]));
+  const usedEmbedIds = new Set<string>();
+
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  EMBED_RE.lastIndex = 0;
+
+  while ((match = EMBED_RE.exec(pc.content || '')) !== null) {
+    const textBefore = pc.content.slice(lastIndex, match.index);
+    if (textBefore.trim()) {
+      blocks.push({
+        id: `page-content-${blocks.length}`,
+        type: 'richtext',
+        content: textBefore.trim(),
+        metadata: { annotations: pc.annotations || [] },
+      });
+    }
+
+    const embed = embedById.get(match[1]);
+    if (embed && !usedEmbedIds.has(embed.id)) {
+      blocks.push(embedToBlock(embed));
+      usedEmbedIds.add(embed.id);
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  const textAfter = (pc.content || '').slice(lastIndex);
+  if (textAfter.trim()) {
+    blocks.push({
+      id: `page-content-${blocks.length}`,
+      type: 'richtext',
+      content: textAfter.trim(),
+      metadata: { annotations: pc.annotations || [] },
+    });
+  }
+
+  for (const embed of pc.embeds || []) {
+    if (!usedEmbedIds.has(embed.id)) {
+      blocks.push(embedToBlock(embed));
+      usedEmbedIds.add(embed.id);
+    }
+  }
+
+  return blocks;
+}
+
+function embedToBlock(embed: EmbeddedObject): Block {
+  return {
+    id: embed.id,
+    type: embed.type,
+    title: embed.title,
+    graphData: embed.graphData,
+    tableData: embed.tableData,
+    timelineData: embed.timelineData,
+    refId: embed.refId,
+    refType: embed.refType,
+    spacerHeight: embed.spacerHeight,
+    width: embed.width,
+    height: embed.height,
+    metadata: embed.metadata,
+  };
+}
+
 export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   const registry = reactive(new Map<string, BlockWithMeta>());
   /** Track full block lists per pageId for TOC and other use-cases */
@@ -33,22 +101,12 @@ export const useBlockRegistryStore = defineStore('blockRegistry', () => {
   }
 
   function registerPageContent(pc: PageContent, pageId: string, pageTitle: string) {
+    const blocks = pageContentToBlocks(pc);
+    pageBlocks.set(pageId, blocks);
+
     for (const embed of pc.embeds || []) {
       if (embed.type === 'ref' || embed.type === 'spacer') continue;
-      const block: Block = {
-        id: embed.id,
-        type: embed.type,
-        title: embed.title,
-        graphData: embed.graphData,
-        tableData: embed.tableData,
-        timelineData: embed.timelineData,
-        refId: embed.refId,
-        refType: embed.refType,
-        spacerHeight: embed.spacerHeight,
-        width: embed.width,
-        height: embed.height,
-        metadata: embed.metadata,
-      }
+      const block = embedToBlock(embed);
       registry.set(embed.id, { block, pageId, pageTitle });
     }
   }
