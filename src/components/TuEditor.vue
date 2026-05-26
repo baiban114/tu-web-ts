@@ -762,6 +762,7 @@ const editor = useEditor({
   editorProps: {
     attributes: {
       class: 'tu-editor-content',
+      spellcheck: 'false',
     },
     handleKeyDown: (view, event) => {
       if ((event.key === 'Delete' || event.key === 'Backspace') && lassoSelectedBlockIds.value.size > 0) {

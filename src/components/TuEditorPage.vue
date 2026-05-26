@@ -137,6 +137,7 @@ const nodeViewToolbar = reactive({
   visible: false,
   blockId: '',
   sourceType: '',
+  refId: '',
   top: 0,
   left: 0,
 })
@@ -161,6 +162,13 @@ const openNodeViewToolbarSettings = (event: MouseEvent) => {
   nodeViewToolbar.visible = false
 }
 
+const navigateToReferencedPage = async () => {
+  if (nodeViewToolbar.refId) {
+    nodeViewToolbar.visible = false
+    await workspaceStore.selectPage(nodeViewToolbar.refId)
+  }
+}
+
 const handleBlockClick = (blockId: string, event: MouseEvent) => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
@@ -180,6 +188,16 @@ const handleBlockClick = (blockId: string, event: MouseEvent) => {
   if (!rect) return
   nodeViewToolbar.blockId = blockId
   nodeViewToolbar.sourceType = typeName
+  nodeViewToolbar.refId = ''
+  if (typeName === 'refBlock') {
+    editor.state.doc.descendants((node) => {
+      if (node.attrs?.blockId === blockId && node.attrs?.refId) {
+        nodeViewToolbar.refId = node.attrs.refId
+        return false
+      }
+      return true
+    })
+  }
   nodeViewToolbar.top = rect.top - 40
   nodeViewToolbar.left = rect.left + rect.width / 2
   nodeViewToolbar.visible = true
@@ -1562,6 +1580,11 @@ onBeforeUnmount(() => {
         <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
         <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
         <button class="nodeview-toolbar__btn" @click="openNodeViewToolbarSettings">目录设置</button>
+        <button
+          v-if="nodeViewToolbar.sourceType === 'refBlock' && nodeViewToolbar.refId"
+          class="nodeview-toolbar__btn"
+          @click="navigateToReferencedPage"
+        >跳转原页面</button>
       </div>
 
       <!-- TOC settings popover -->
