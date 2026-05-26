@@ -192,8 +192,8 @@ onBeforeUnmount(() => {
 }
 
 .resizable-block-wrapper:hover {
-  border-color: #d1d5db;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  border-color: rgba(22, 119, 255, 0.35);
+  box-shadow: 0 0 0 1px rgba(22, 119, 255, 0.08), 0 1px 6px rgba(22, 119, 255, 0.06);
 }
 
 .resizable-block-wrapper--selected {
@@ -264,8 +264,7 @@ h4.resizable-block-wrapper__heading { font-size: 1.1em; }
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
 
-.resizable-handle:hover,
-.resizable-handle--active {
+.resizable-handle:hover {
   background: rgba(22, 119, 255, 0.2);
   border-color: #1677ff;
   box-shadow: 0 0 4px rgba(22, 119, 255, 0.3);
