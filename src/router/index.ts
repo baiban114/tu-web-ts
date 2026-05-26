@@ -15,6 +15,11 @@ const router = createRouter({
       name: 'resources',
       component: () => import('../views/ResourceManagerView.vue'),
     },
+    {
+      path: '/tasks',
+      name: 'tasks',
+      component: () => import('../views/TaskManagerView.vue'),
+    },
   ],
 })
 

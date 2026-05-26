@@ -19,7 +19,7 @@
 
 ```bash
 VITE_DEFAULT_DATA_SOURCE=backend
-VITE_DEV_PROXY_TARGET=http://localhost:8080
+VITE_DEV_PROXY_TARGET=http://localhost:18080
 ```
 
 - `VITE_DEFAULT_DATA_SOURCE` 可选 `backend` 或 `mock`

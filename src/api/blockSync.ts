@@ -13,6 +13,11 @@ export interface BlockSyncPayload {
   [key: string]: unknown;
 }
 
+/**
+ * @deprecated Block sync API removed from Go backend.
+ * Content is now saved via savePageContent with the PageContent model.
+ * This function is kept for backward compatibility with mock data source.
+ */
 export async function syncBlocks(
   pageId: string,
   blocks: BlockSyncPayload[],
@@ -20,12 +25,14 @@ export async function syncBlocks(
   if (isMockDataSource()) {
     return syncBlocksMock(pageId, blocks as Block[]);
   }
-  await request<void>('/api/blocks/sync', {
-    method: 'POST',
-    body: JSON.stringify({ pageId, blocks }),
-  });
+  // Block sync API removed from Go backend - no-op
+  // Use savePageContent instead
 }
 
+/**
+ * @deprecated Block sync API removed from Go backend.
+ * Content is now saved via savePageContent with the PageContent model.
+ */
 export async function syncBlock(
   pageId: string,
   block: BlockSyncPayload,
