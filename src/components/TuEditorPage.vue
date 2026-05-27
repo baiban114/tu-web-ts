@@ -675,7 +675,7 @@ const normalizeChildHeadingLevel = (childLevel: number, minChildLevel: number, p
  * - ref-group entries with explicit titleLevel (sourceType === 'ref-group', level > 0)
  * - standalone ref-child headings (sourceType === 'ref-child', when hideTitle=true)
  * - any item with explicit titleLevel (level > 0: ref-group, x6, table, timeline, spacer)
- * Remaining items are grouped under the nearest preceding heading-like entry.
+ * Remaining local nodeViews are grouped only under the nearest preceding local heading.
  */
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
@@ -834,16 +834,16 @@ const tocItems = computed<TocItem[]>(() => {
 
   // Group items into heading hierarchy
   const treeItems: TocItem[] = []
-  let currentHeading: TocItem | null = null
+  let currentLocalHeading: TocItem | null = null
 
   for (const item of allItems) {
     if (item.sourceType === 'local' || item.sourceType === 'ref-child' || item.level > 0) {
-      currentHeading = item
+      if (item.sourceType === 'local') currentLocalHeading = item
       treeItems.push(item)
     } else {
-      if (currentHeading) {
-        if (!currentHeading.children) currentHeading.children = []
-        currentHeading.children.push(item)
+      if (currentLocalHeading) {
+        if (!currentLocalHeading.children) currentLocalHeading.children = []
+        currentLocalHeading.children.push(item)
       } else {
         treeItems.push(item)
       }

@@ -24,3 +24,23 @@ VITE_DEV_PROXY_TARGET=http://localhost:18080
 
 - `VITE_DEFAULT_DATA_SOURCE` 可选 `backend` 或 `mock`
 - `VITE_DEV_PROXY_TARGET` 控制开发代理后端地址
+
+## E2E 测试
+
+前端使用 Playwright 做端到端测试，测试脚本保存在 `e2e/`，配置文件为 `playwright.config.ts`。
+
+```bash
+npm run test:e2e
+npm run test:e2e:ui
+```
+
+Playwright 会自动启动 Vite，并设置 `VITE_DEFAULT_DATA_SOURCE=mock`，因此默认不依赖后端服务。
+
+如果 Playwright 浏览器下载在国内网络下不可用，可以直接使用本机已安装的 Chrome/Chrome Canary：
+
+```powershell
+$env:PLAYWRIGHT_BROWSER_CHANNEL='chrome-canary'
+npm run test:e2e
+```
+
+新增或修改用户可见功能时，应同步更新功能描述，并为编辑器、nodeView、目录、悬浮工具栏等交互行为补充或更新 E2E 用例。
