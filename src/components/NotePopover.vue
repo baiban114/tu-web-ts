@@ -13,12 +13,14 @@ interface Props {
   visible: boolean
   top: number
   left: number
+  zIndex?: number
   annotation: TextAnnotation | null
   annotations?: TextAnnotation[]
 }
 
 const props = withDefaults(defineProps<Props>(), {
   annotations: () => [],
+  zIndex: 20,
 })
 
 const emit = defineEmits<{
@@ -46,11 +48,12 @@ const title = computed(() => displayedAnnotations.value.length > 1
     <div
       v-if="visible && displayedAnnotations.length"
       class="note-popover-mask"
+      :style="{ zIndex }"
       @mousedown.self="emit('close')"
     >
       <div
         class="note-popover"
-        :style="{ top: `${top}px`, left: `${left}px` }"
+        :style="{ top: `${top}px`, left: `${left}px`, zIndex }"
         @mousedown.stop
       >
         <div class="note-popover__header">
@@ -103,7 +106,6 @@ const title = computed(() => displayedAnnotations.value.length > 1
 .note-popover-mask {
   position: fixed;
   inset: 0;
-  z-index: 1000002;
 }
 
 .note-popover {

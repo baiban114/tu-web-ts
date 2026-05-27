@@ -10,6 +10,7 @@ import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
+import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
@@ -25,7 +26,7 @@ interface TocItem {
   level: number
   text: string
   pos: number
-  sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'timeline' | 'spacer'
+  sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'multiTable' | 'timeline' | 'spacer'
   children?: TocItem[]
   refId?: string
   targetText?: string
@@ -34,6 +35,7 @@ interface TocItem {
 const NODEVIEW_TYPE_LABELS: Record<string, string> = {
   x6: '画板',
   table: '表格',
+  multiTable: '多维表格',
   timeline: '时间轴',
   spacer: '分割',
 }
@@ -131,15 +133,39 @@ watch(() => tocSettingsPopup.visible, (visible, wasVisible) => {
 })
 
 // --- NodeView floating toolbar ---
-const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'timelineBlock', 'spacerBlock', 'refBlock']
+const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock']
 
 const nodeViewToolbar = reactive({
   visible: false,
   blockId: '',
   sourceType: '',
   refId: '',
-  top: 0,
-  left: 0,
+  canAddNote: false,
+})
+
+const hideNodeViewToolbar = () => {
+  nodeViewToolbar.visible = false
+  nodeViewToolbar.canAddNote = false
+}
+
+const getNodeViewToolbarAnchor = (): FloatingAnchorRect | null => {
+  if (!nodeViewToolbar.blockId) return null
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  const nodeView = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(nodeViewToolbar.blockId)}"]`)
+  return nodeView?.getBoundingClientRect() ?? null
+}
+
+const {
+  position: nodeViewToolbarPosition,
+  updatePosition: updateNodeViewToolbarPosition,
+} = useAnchoredFloating({
+  visible: computed({
+    get: () => nodeViewToolbar.visible,
+    set: (value) => { nodeViewToolbar.visible = value },
+  }),
+  getAnchorRect: getNodeViewToolbarAnchor,
+  placement: 'top',
+  offset: 40,
 })
 
 const deleteSelectedNodeView = () => {
@@ -147,24 +173,24 @@ const deleteSelectedNodeView = () => {
   if (editor && nodeViewToolbar.blockId) {
     editor.commands.deleteBlock(nodeViewToolbar.blockId)
   }
-  nodeViewToolbar.visible = false
+  hideNodeViewToolbar()
 }
 
 const duplicateSelectedNodeView = () => {
   if (nodeViewToolbar.blockId) {
     tuEditorRef.value?.duplicateBlock?.(nodeViewToolbar.blockId)
   }
-  nodeViewToolbar.visible = false
+  hideNodeViewToolbar()
 }
 
 const openNodeViewToolbarSettings = (event: MouseEvent) => {
   openTocSettings(nodeViewToolbar.blockId, event, nodeViewToolbar.sourceType)
-  nodeViewToolbar.visible = false
+  hideNodeViewToolbar()
 }
 
 const navigateToReferencedPage = async () => {
   if (nodeViewToolbar.refId) {
-    nodeViewToolbar.visible = false
+    hideNodeViewToolbar()
     await workspaceStore.selectPage(nodeViewToolbar.refId)
   }
 }
@@ -184,8 +210,9 @@ const handleBlockClick = (blockId: string, event: MouseEvent) => {
   })
   if (!NODEVIEW_TYPES.includes(typeName)) return
 
-  const rect = (event.target as HTMLElement).closest('[data-block-id]')?.getBoundingClientRect()
-  if (!rect) return
+  const nodeViewEl = (event.target as HTMLElement).closest('[data-block-id]')
+  if (!nodeViewEl) return
+  nodeViewToolbar.canAddNote = canAddNoteFromSelection.value
   nodeViewToolbar.blockId = blockId
   nodeViewToolbar.sourceType = typeName
   nodeViewToolbar.refId = ''
@@ -198,9 +225,8 @@ const handleBlockClick = (blockId: string, event: MouseEvent) => {
       return true
     })
   }
-  nodeViewToolbar.top = rect.top - 40
-  nodeViewToolbar.left = rect.left + rect.width / 2
   nodeViewToolbar.visible = true
+  updateNodeViewToolbarPosition()
 }
 
 const handleToolbarDocClick = (e: MouseEvent) => {
@@ -208,11 +234,11 @@ const handleToolbarDocClick = (e: MouseEvent) => {
   if (!toolbar || !toolbar.contains(e.target as Node)) {
     // Don't close if clicking on another nodeView — capture mousedown repositions it
     if ((e.target as HTMLElement).closest('[data-block-id]')) return
-    nodeViewToolbar.visible = false
+    hideNodeViewToolbar()
   }
 }
 const handleToolbarKeydown = (e: KeyboardEvent) => {
-  if (e.key === 'Escape') nodeViewToolbar.visible = false
+  if (e.key === 'Escape') hideNodeViewToolbar()
 }
 
 watch(() => nodeViewToolbar.visible, (visible, wasVisible) => {
@@ -289,7 +315,6 @@ const localBlocks = computed<Block[]>(() => {
 // --- Selection state ---
 const hasSelection = ref(false)
 const selectedText = ref('')
-const selectionPosition = ref({ top: 0, left: 0 })
 const selectionToolbarVisible = ref(false)
 const selectionBlockIndex = ref(-1)
 const selectionBlockId = ref('')
@@ -299,20 +324,78 @@ const selectionSpannedBlockIds = ref<string[]>([])
 const selectionSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let selectionToolbarTimer: ReturnType<typeof setTimeout> | null = null
 
+const canAddNoteFromSelection = computed(() => {
+  return hasSelection.value && (selectedText.value.trim().length > 0 || selectionSpannedBlockIds.value.length > 0)
+})
+
+const clearSelectionToolbarTimer = () => {
+  if (selectionToolbarTimer !== null) {
+    clearTimeout(selectionToolbarTimer)
+    selectionToolbarTimer = null
+  }
+}
+
+const hideSelectionToolbar = () => {
+  clearSelectionToolbarTimer()
+  selectionToolbarVisible.value = false
+}
+
+const getSelectionAnchor = (): FloatingAnchorRect | null => {
+  const pos = tuEditorRef.value?.getSelectionPosition?.()
+  if (!pos) return null
+  return {
+    top: pos.top,
+    left: pos.left,
+    right: pos.left,
+    bottom: pos.top,
+    width: 0,
+    height: 0,
+  }
+}
+
+const {
+  position: selectionToolbarPosition,
+  updatePosition: updateSelectionToolbarPosition,
+} = useAnchoredFloating({
+  visible: selectionToolbarVisible,
+  getAnchorRect: getSelectionAnchor,
+  placement: 'top',
+  offset: 40,
+})
+
 // --- Toast ---
 const toastMessages = ref<Array<{ id: string; message: string }>>([])
 const toastEnabled = ref(true)
 
 // --- Link popover ---
 const linkPopoverVisible = ref(false)
-const linkPopoverTarget = ref({ top: 0, left: 0 })
 const linkPopoverUrl = ref('')
 const linkPopoverLabel = ref('')
 const linkPopoverUrlInput = ref<HTMLInputElement | null>(null)
 
+const {
+  position: linkPopoverPosition,
+  updatePosition: updateLinkPopoverPosition,
+} = useAnchoredFloating({
+  visible: linkPopoverVisible,
+  getAnchorRect: getSelectionAnchor,
+  placement: 'top',
+  offset: 10,
+})
+
 // --- Inserted link toolbar ---
 const insertedLinkToolbarVisible = ref(false)
-const insertedLinkToolbar = ref({ top: 0, left: 0, url: '', label: '', display: 'link' as LinkDisplayMode, canShowAsImage: false })
+const insertedLinkToolbar = ref({ url: '', label: '', display: 'link' as LinkDisplayMode, canShowAsImage: false })
+
+const {
+  position: insertedLinkToolbarPosition,
+  updatePosition: updateInsertedLinkToolbarPosition,
+} = useAnchoredFloating({
+  visible: insertedLinkToolbarVisible,
+  getAnchorRect: getSelectionAnchor,
+  placement: 'top',
+  offset: 44,
+})
 
 // --- Tag editor ---
 const tagEditorState = ref({ visible: false, blockId: '', top: 0, left: 0 })
@@ -334,7 +417,17 @@ let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 const notePopoverVisible = ref(false)
 const notePopoverAnnotation = ref<TextAnnotation | null>(null)
 const notePopoverAnnotations = ref<TextAnnotation[]>([])
-const notePopoverPos = ref({ top: 0, left: 0 })
+const notePopoverAnchor = ref<FloatingAnchorRect | null>(null)
+
+const {
+  position: notePopoverPosition,
+  updatePosition: updateNotePopoverPosition,
+} = useAnchoredFloating({
+  visible: notePopoverVisible,
+  getAnchorRect: () => notePopoverAnchor.value,
+  placement: 'right',
+  offset: 12,
+})
 
 // --- Watchers ---
 const emitLocalContentChange = (content: string, embeds: EmbeddedObject[], annotations: TextAnnotation[]) => {
@@ -423,10 +516,7 @@ const handleSelectionChange = (
   selSpannedBlockIds?: string[],
   selSpannedBlockMetadata?: SpannedBlockInfo[],
 ) => {
-  if (selectionToolbarTimer !== null) {
-    clearTimeout(selectionToolbarTimer)
-    selectionToolbarTimer = null
-  }
+  clearSelectionToolbarTimer()
 
   hasSelection.value = selHasSelection
   selectedText.value = selText
@@ -438,16 +528,14 @@ const handleSelectionChange = (
   selectionSpannedBlockMetadata.value = selSpannedBlockMetadata ?? []
 
   if (selHasSelection && tuEditorRef.value) {
-    const pos = tuEditorRef.value.getSelectionPosition?.()
-    if (pos) {
-      selectionPosition.value = { top: pos.top - 40, left: pos.left }
-    }
+    updateSelectionToolbarPosition()
     selectionToolbarTimer = setTimeout(() => {
       selectionToolbarTimer = null
-      selectionToolbarVisible.value = hasSelection.value && (selectedText.value.trim().length > 0 || selectionSpannedBlockIds.value.length > 0)
+      selectionToolbarVisible.value = canAddNoteFromSelection.value
+      updateSelectionToolbarPosition()
     }, 120)
   } else {
-    selectionToolbarVisible.value = false
+    hideSelectionToolbar()
   }
 }
 
@@ -643,16 +731,17 @@ const tocItems = computed<TocItem[]>(() => {
         pos,
         sourceType: 'x6',
       })
-    } else if (typeName === 'tableBlock') {
+    } else if (typeName === 'tableBlock' || typeName === 'multiTableBlock') {
       const nvSettings = tocSettingsMap.get(blockId)
-      const title = node.attrs?.title || blockTitleMap.get(blockId) || '表格'
+      const isMultiTable = typeName === 'multiTableBlock'
+      const title = node.attrs?.title || blockTitleMap.get(blockId) || (isMultiTable ? '多维表格' : '表格')
       allItems.push({
-        id: `table-${blockId}`,
+        id: `${isMultiTable ? 'multiTable' : 'table'}-${blockId}`,
         blockId,
         level: nvSettings?.titleLevel ?? 0,
         text: nvSettings?.hideTitle ? '' : title,
         pos,
-        sourceType: 'table',
+        sourceType: isMultiTable ? 'multiTable' : 'table',
       })
     } else if (typeName === 'timelineBlock') {
       const nvSettings = tocSettingsMap.get(blockId)
@@ -877,20 +966,10 @@ const handleInsertLinkButtonClick = () => {
 
   const label = editor.state.doc.textBetween(from, to, ' ')
 
-  // Position the popover near the selection
-  try {
-    const start = editor.view.coordsAtPos(from)
-    linkPopoverTarget.value = {
-      top: Math.max(12, Math.min(start.top - 10, window.innerHeight - 180)),
-      left: Math.max(12, Math.min(start.left, window.innerWidth - 332)),
-    }
-  } catch {
-    linkPopoverTarget.value = { top: 100, left: 100 }
-  }
-
   linkPopoverUrl.value = ''
   linkPopoverLabel.value = label
   linkPopoverVisible.value = true
+  updateLinkPopoverPosition()
   nextTick(() => linkPopoverUrlInput.value?.focus())
 }
 
@@ -923,14 +1002,13 @@ const registerExternalLinkResource = (url: string, label: string) => {
 const showInsertedLinkToolbar = (url: string, label: string) => {
   const display: LinkDisplayMode = isImageUrl(url) ? 'image' : 'link'
   insertedLinkToolbar.value = {
-    top: linkPopoverTarget.value.top,
-    left: linkPopoverTarget.value.left,
     url,
     label,
     display,
     canShowAsImage: isImageUrl(url),
   }
   insertedLinkToolbarVisible.value = true
+  updateInsertedLinkToolbarPosition()
 }
 
 const closeInsertedLinkToolbar = () => {
@@ -1066,7 +1144,7 @@ const handleSaveAnnotation = (note: string) => {
   noteEditorVisible.value = false
   editingAnnotation.value = undefined
   hasSelection.value = false
-  selectionToolbarVisible.value = false
+  hideSelectionToolbar()
   selectionBlockIndex.value = -1
   selectionBlockId.value = ''
   pendingNoteBlockId.value = ''
@@ -1081,6 +1159,15 @@ const sortAnnotationsByTimeDesc = (annotations: TextAnnotation[]) => {
   return [...annotations].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
 }
 
+const rectFromPoint = (clientX: number, clientY: number): FloatingAnchorRect => ({
+  top: clientY,
+  left: clientX,
+  right: clientX,
+  bottom: clientY,
+  width: 0,
+  height: 0,
+})
+
 const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }) => {
   const annotations = getBlockAnnotations()
   const ids = payload.annotationIds?.length ? payload.annotationIds : [payload.annotationId]
@@ -1090,8 +1177,12 @@ const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: 
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = matched.length ? matched : [annotation]
-  notePopoverPos.value = { top: payload.event.clientY - 10, left: payload.event.clientX + 12 }
+  notePopoverAnchor.value = (payload.event.target as HTMLElement | null)
+    ?.closest('[data-tu-annotation-id]')
+    ?.getBoundingClientRect()
+    ?? rectFromPoint(payload.event.clientX, payload.event.clientY)
   notePopoverVisible.value = true
+  updateNotePopoverPosition()
 }
 
 const getBlockAnnotations = (): TextAnnotation[] => {
@@ -1105,6 +1196,7 @@ const getBlockDisplayType = (block: Block | undefined, fallback: string): string
   if (block.type === 'ref') return 'refBlock'
   if (block.type === 'spacer') return 'spacerBlock'
   if (block.type === 'table') return 'tableBlock'
+  if (block.type === 'multiTable') return 'multiTableBlock'
   if (block.type === 'richtext' || block.type === 'richText') return 'paragraph'
   return block.type || fallback
 }
@@ -1148,8 +1240,9 @@ const handleCompoundBadgeClick = (_blockId: string, annotationId: string, client
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = related.length ? related : [annotation]
-  notePopoverPos.value = { top: clientY - 10, left: clientX + 12 }
+  notePopoverAnchor.value = rectFromPoint(clientX, clientY)
   notePopoverVisible.value = true
+  updateNotePopoverPosition()
 }
 
 const handleEditAnnotation = (annotation?: TextAnnotation) => {
@@ -1175,6 +1268,7 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
   notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
   notePopoverVisible.value = notePopoverAnnotations.value.length > 0
+  if (!notePopoverVisible.value) notePopoverAnchor.value = null
 }
 
 // --- Document tail insert ---
@@ -1229,10 +1323,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  if (selectionToolbarTimer !== null) {
-    clearTimeout(selectionToolbarTimer)
-    selectionToolbarTimer = null
-  }
+  clearSelectionToolbarTimer()
   if (annotationPersistTimer) {
     clearTimeout(annotationPersistTimer)
     annotationPersistTimer = null
@@ -1266,7 +1357,7 @@ onBeforeUnmount(() => {
     <form
       v-if="linkPopoverVisible"
       class="link-popover"
-      :style="{ top: `${linkPopoverTarget.top}px`, left: `${linkPopoverTarget.left}px` }"
+      :style="{ top: `${linkPopoverPosition.top}px`, left: `${linkPopoverPosition.left}px`, zIndex: linkPopoverPosition.zIndex }"
       @submit.prevent="submitLinkPopover"
       @mousedown.stop
       @click.stop
@@ -1300,7 +1391,7 @@ onBeforeUnmount(() => {
     <div
       v-if="insertedLinkToolbarVisible"
       class="inserted-link-toolbar"
-      :style="{ top: `${insertedLinkToolbar.top}px`, left: `${insertedLinkToolbar.left}px` }"
+      :style="{ top: `${insertedLinkToolbarPosition.top}px`, left: `${insertedLinkToolbarPosition.left}px`, zIndex: insertedLinkToolbarPosition.zIndex }"
       @mousedown.stop
       @click.stop
     >
@@ -1535,7 +1626,7 @@ onBeforeUnmount(() => {
               </div>
               <!-- Top-level nodeView (before any local heading) -->
               <button
-                v-else-if="['x6', 'table', 'timeline', 'spacer'].includes(item.sourceType)"
+                v-else-if="['x6', 'table', 'multiTable', 'timeline', 'spacer'].includes(item.sourceType)"
                 type="button"
                 :class="[
                   'page-toc__item',
@@ -1573,10 +1664,15 @@ onBeforeUnmount(() => {
       <div
         v-if="nodeViewToolbar.visible"
         class="nodeview-toolbar"
-        :style="{ top: nodeViewToolbar.top + 'px', left: nodeViewToolbar.left + 'px' }"
+        :style="{ top: nodeViewToolbarPosition.top + 'px', left: nodeViewToolbarPosition.left + 'px', zIndex: nodeViewToolbarPosition.zIndex }"
         @mousedown.stop
         @click.stop
       >
+        <button
+          v-if="nodeViewToolbar.canAddNote"
+          class="nodeview-toolbar__btn"
+          @click="handleAddNoteFromSelection"
+        >添加笔记</button>
         <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
         <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
         <button class="nodeview-toolbar__btn" @click="openNodeViewToolbarSettings">目录设置</button>
@@ -1634,10 +1730,11 @@ onBeforeUnmount(() => {
 
     <!-- 选中文本工具栏 -->
     <SelectionToolbar
-      v-if="selectionToolbarVisible"
+      v-if="selectionToolbarVisible && !nodeViewToolbar.visible"
       :visible="selectionToolbarVisible"
-      :top="selectionPosition.top"
-      :left="selectionPosition.left"
+      :top="selectionToolbarPosition.top"
+      :left="selectionToolbarPosition.left"
+      :z-index="selectionToolbarPosition.zIndex"
       @add-note="handleAddNoteFromSelection"
     />
 
@@ -1674,11 +1771,12 @@ onBeforeUnmount(() => {
       :visible="notePopoverVisible"
       :annotation="notePopoverAnnotation"
       :annotations="notePopoverAnnotations"
-      :top="notePopoverPos.top"
-      :left="notePopoverPos.left"
+      :top="notePopoverPosition.top"
+      :left="notePopoverPosition.left"
+      :z-index="notePopoverPosition.zIndex"
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
-      @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []"
+      @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []; notePopoverAnchor = null"
     />
 
     <!-- Toast 消息 -->
@@ -2176,7 +2274,6 @@ onBeforeUnmount(() => {
 
 .nodeview-toolbar {
   position: fixed;
-  z-index: 1000003;
   display: flex;
   gap: 4px;
   padding: 4px 6px;

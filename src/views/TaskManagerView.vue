@@ -438,7 +438,7 @@ onMounted(() => {
           <textarea v-model="taskForm.description" placeholder="任务描述" rows="5" />
           <input v-model="taskForm.status" placeholder="状态" />
           <input v-model="taskForm.priority" placeholder="优先级" />
-          <input v-model="taskForm.dueDate" placeholder="截止日期" />
+          <el-date-picker v-model="taskForm.dueDate" type="date" placeholder="截止日期" value-format="YYYY-MM-DD" />
           <button type="submit" :disabled="saving || !selectedProjectId">创建</button>
         </form>
       </aside>
@@ -473,7 +473,7 @@ onMounted(() => {
           <textarea v-model="selectedTask.description" rows="6" />
           <input v-model="selectedTask.status" placeholder="状态" />
           <input v-model="selectedTask.priority" placeholder="优先级" />
-          <input v-model="selectedTask.dueDate" placeholder="截止日期" />
+          <el-date-picker v-model="selectedTask.dueDate" type="date" placeholder="截止日期" value-format="YYYY-MM-DD" />
           <div class="task-detail__actions">
             <button type="button" @click="saveSelectedTask" :disabled="saving">保存</button>
             <button type="button" class="button-secondary" @click="moveSelectedTask('to-do')" :disabled="saving">To-do</button>

@@ -3,9 +3,12 @@ interface Props {
   visible: boolean
   top: number
   left: number
+  zIndex?: number
 }
 
-defineProps<Props>()
+withDefaults(defineProps<Props>(), {
+  zIndex: 20,
+})
 
 const emit = defineEmits<{
   (e: 'add-note'): void
@@ -17,7 +20,7 @@ const emit = defineEmits<{
     <div
       v-if="visible"
       class="selection-toolbar"
-      :style="{ top: `${top}px`, left: `${left}px` }"
+      :style="{ top: `${top}px`, left: `${left}px`, zIndex }"
       @mousedown.prevent.stop
       @click.stop
     >
@@ -36,7 +39,6 @@ const emit = defineEmits<{
 <style scoped>
 .selection-toolbar {
   position: fixed;
-  z-index: 1000002;
   transform: translateX(-50%);
   pointer-events: none;
 }

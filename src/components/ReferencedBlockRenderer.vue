@@ -2,8 +2,9 @@
 import TuEditor from './TuEditor.vue';
 import Line from './line.vue';
 import TableBlock from './TableBlock.vue';
+import MultiTableBlock from './MultiTableBlock.vue';
 import X6Component from './X6Component.vue';
-import type { Block, TableBlockData } from '@/api/types';
+import type { Block, MultiTableData, TableBlockData } from '@/api/types';
 import { ref } from 'vue';
 
 type ResizeEdge = 'right' | 'bottom' | 'corner';
@@ -42,6 +43,7 @@ const isRichTextBlock = (block: Block | undefined): boolean => {
 const renderFallbackText = (block: Block): string => {
   if (block.type === 'x6') return block.title?.trim() || '画板';
   if (block.type === 'table') return block.title?.trim() || '表格';
+  if (block.type === 'multiTable') return block.title?.trim() || '多维表格';
   if (block.type === 'line') return block.title?.trim() || '时间轴';
   if (block.type === 'container') return block.title?.trim() || '组合单元';
   return block.content ?? '';
@@ -185,6 +187,14 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
       :editable="editable"
       class="block-content"
       @change="(tableData: TableBlockData) => updateBlock({ tableData })"
+    />
+    <MultiTableBlock
+      v-else-if="block.type === 'multiTable'"
+      :key="`ref-multi-table-${block.id}`"
+      :data="block.multiTableData"
+      :editable="editable"
+      class="block-content"
+      @change="(multiTableData: MultiTableData) => updateBlock({ multiTableData })"
     />
     <Line
       v-else-if="block.type === 'line'"

@@ -23,6 +23,7 @@ import {
   RefBlockNode,
   SpacerBlockNode,
   TableBlockNode,
+  MultiTableBlockNode,
   ParagraphNode,
   blocksToTipTap,
   tipTapToBlocks,
@@ -58,7 +59,7 @@ const emit = defineEmits<{
   'open-tag-editor': [blockId: string]
 }>()
 
-type InsertBlockType = 'richtext' | 'ref' | 'line' | 'x6' | 'knowledge-roadmap' | 'table' | 'spacer'
+type InsertBlockType = 'richtext' | 'ref' | 'line' | 'x6' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
 type HandleAction = InsertBlockType | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
 
 interface InsertOption {
@@ -108,6 +109,7 @@ const insertOptions: InsertOption[] = [
   { key: 'x6', label: 'X6 画板', icon: '🧩', keywords: ['x6', 'graph', 'draw', 'huaban'] },
   { key: 'knowledge-roadmap', label: '知识库路线图', icon: '🗺️', keywords: ['roadmap', 'knowledge', 'kb', 'zhishiku'] },
   { key: 'table', label: '表格', icon: '▦', keywords: ['table', 'biaoge'] },
+  { key: 'multiTable', label: '多维表格', icon: '▤', keywords: ['multi', 'database', 'kanban', 'duowei'] },
   { key: 'spacer', label: '分割空白', icon: '↕', keywords: ['spacer', 'blank', 'kongbai'] },
 ]
 
@@ -399,6 +401,37 @@ const createExternalBlock = (type: InsertBlockType): Block | null => {
         tableData: {
           headers: ['列 1', '列 2'],
           rows: [['', '']],
+        },
+      }
+    case 'multiTable':
+      return {
+        id,
+        type: 'multiTable',
+        title: '多维表格',
+        multiTableData: {
+          fields: [
+            { id: 'title', name: '标题', type: 'text' },
+            {
+              id: 'status',
+              name: '状态',
+              type: 'singleSelect',
+              options: [
+                { id: 'todo', label: '待处理', color: '#e2e8f0' },
+                { id: 'doing', label: '进行中', color: '#dbeafe' },
+                { id: 'done', label: '已完成', color: '#dcfce7' },
+              ],
+            },
+            { id: 'owner', name: '负责人', type: 'text' },
+            { id: 'dueDate', name: '截止日期', type: 'date' },
+          ],
+          records: [
+            { id: `record-${Date.now()}`, values: { title: '示例任务', status: 'todo', owner: '', dueDate: '' } },
+          ],
+          views: [
+            { id: 'view-table', name: '表格', type: 'table' },
+            { id: 'view-kanban', name: '看板', type: 'kanban', groupByFieldId: 'status' },
+          ],
+          activeViewId: 'view-table',
         },
       }
     case 'spacer':
@@ -757,6 +790,7 @@ const editor = useEditor({
     RefBlockNode,
     SpacerBlockNode,
     TableBlockNode,
+    MultiTableBlockNode,
     ParagraphNode,
   ],
   editorProps: {

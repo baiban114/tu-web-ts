@@ -67,6 +67,7 @@ function embedToBlock(embed: EmbeddedObject): Block {
     title: embed.title,
     graphData: embed.graphData,
     tableData: embed.tableData,
+    multiTableData: embed.multiTableData,
     timelineData: embed.timelineData,
     refId: embed.refId,
     refType: embed.refType,

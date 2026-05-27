@@ -204,6 +204,7 @@ export function parseMarkdownToPageContent(markdown: string): PageContent {
           title: block.title,
           graphData: block.graphData,
           tableData: block.tableData,
+          multiTableData: block.multiTableData,
           timelineData: block.timelineData,
           refId: block.refId,
           refType: block.refType,

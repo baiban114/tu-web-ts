@@ -41,6 +41,7 @@ function blocksToPageContent(blocks: Block[]): PageContent {
       title: block.title,
       graphData: block.graphData,
       tableData: block.tableData,
+      multiTableData: block.multiTableData,
       timelineData: block.timelineData,
       refId: block.refId,
       refType: block.refType,
@@ -463,6 +464,7 @@ export function listAllBlocksMock(): BlockWithMeta[] {
         title: embed.title,
         graphData: embed.graphData,
         tableData: embed.tableData,
+        multiTableData: embed.multiTableData,
         timelineData: embed.timelineData,
         refId: embed.refId,
         refType: embed.refType,
@@ -502,6 +504,7 @@ export function updateBlockMock(pageId: string, blockId: string, nextBlock: Bloc
   const updated = updateEmbedInPage(pageId, blockId, (embed) => {
     if (nextBlock.graphData) embed.graphData = cloneState(nextBlock.graphData) as EmbeddedObject['graphData'];
     if (nextBlock.tableData) embed.tableData = cloneState(nextBlock.tableData);
+    if (nextBlock.multiTableData) embed.multiTableData = cloneState(nextBlock.multiTableData) as EmbeddedObject['multiTableData'];
     if (nextBlock.content) embed.type = 'x6';
   });
 

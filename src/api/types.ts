@@ -106,16 +106,60 @@ export interface TableBlockData {
   rowHeights?: number[];
 }
 
+export type MultiTableFieldType =
+  | 'text'
+  | 'number'
+  | 'date'
+  | 'singleSelect'
+  | 'checkbox'
+  | 'url'
+  | 'lifecycle';
+
+export interface MultiTableFieldOption {
+  id: string;
+  label: string;
+  color?: string;
+}
+
+export interface MultiTableField {
+  id: string;
+  name: string;
+  type: MultiTableFieldType;
+  options?: MultiTableFieldOption[];
+  required?: boolean;
+  lifecyclePreset?: boolean;
+}
+
+export interface MultiTableRecord {
+  id: string;
+  values: Record<string, string | number | boolean | null>;
+}
+
+export interface MultiTableView {
+  id: string;
+  name: string;
+  type: 'table' | 'kanban';
+  groupByFieldId?: string;
+}
+
+export interface MultiTableData {
+  fields: MultiTableField[];
+  records: MultiTableRecord[];
+  views: MultiTableView[];
+  activeViewId?: string;
+}
+
 /**
  * 嵌入对象 — 非文本类型的内容，在 markdown content 中用占位符标记位置。
  * 占位符格式: <!--tu:embed id="..." type="..."-->
  */
 export interface EmbeddedObject {
   id: string
-  type: 'x6' | 'table' | 'timeline' | 'ref' | 'spacer'
+  type: 'x6' | 'table' | 'multiTable' | 'timeline' | 'ref' | 'spacer'
   title?: string
   graphData?: GraphData
   tableData?: TableBlockData
+  multiTableData?: MultiTableData
   timelineData?: Array<{
     id: string
     title: string
@@ -157,6 +201,7 @@ export interface Block {
   refType?: 'block' | 'page';
   graphData?: GraphData;
   tableData?: TableBlockData;
+  multiTableData?: MultiTableData;
   timelineData?: Array<{
     id: string;
     title: string;

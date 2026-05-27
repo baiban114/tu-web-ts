@@ -111,7 +111,7 @@ function createEmptyParagraph(): JSONContent {
 }
 
 function isEmbedNode(node: JSONContent): boolean {
-  return ['x6Block', 'tableBlock', 'timelineBlock', 'refBlock', 'spacerBlock'].includes(node.type || '')
+  return ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'refBlock', 'spacerBlock'].includes(node.type || '')
 }
 
 function getHeadingLevel(embed: EmbeddedObject | undefined): number {
@@ -146,6 +146,19 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
           width: embed?.width ?? null,
           height: embed?.height ?? null,
           tableData: embed?.tableData || { headers: [], rows: [] },
+          metadata: embed?.metadata || {},
+        },
+      }
+    case 'multiTable':
+      return {
+        type: 'multiTableBlock',
+        attrs: {
+          blockId: embedId,
+          title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
+          width: embed?.width ?? null,
+          height: embed?.height ?? null,
+          multiTableData: embed?.multiTableData || { fields: [], records: [], views: [] },
           metadata: embed?.metadata || {},
         },
       }
@@ -240,6 +253,16 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         tableData: node.attrs?.tableData || { headers: [], rows: [] },
         metadata: node.attrs?.metadata,
       }
+    case 'multiTableBlock':
+      return {
+        id: blockId,
+        type: 'multiTable',
+        title: node.attrs?.title || '',
+        width: node.attrs?.width ?? undefined,
+        height: node.attrs?.height ?? undefined,
+        multiTableData: node.attrs?.multiTableData || { fields: [], records: [], views: [] },
+        metadata: node.attrs?.metadata,
+      }
     case 'spacerBlock':
       return {
         id: blockId,
@@ -276,6 +299,7 @@ function legacyBlocksToPageContent(blocks: Block[]): PageContent {
       title: block.title,
       graphData: block.graphData,
       tableData: block.tableData,
+      multiTableData: block.multiTableData,
       timelineData: block.timelineData,
       refId: block.refId,
       refType: block.refType,
@@ -325,6 +349,7 @@ function pageContentToLegacyBlocks(content: string, embeds: EmbeddedObject[]): B
         title: embed.title,
         graphData: embed.graphData,
         tableData: embed.tableData,
+        multiTableData: embed.multiTableData,
         timelineData: embed.timelineData,
         refId: embed.refId,
         refType: embed.refType,

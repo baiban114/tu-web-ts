@@ -148,6 +148,15 @@ export function blockToTipTapNode(block: Block, editor: any) {
         tableData: block.tableData || { headers: [], rows: [] },
       })
 
+    case 'multiTable':
+      return schema.nodes.multiTableBlock.create({
+        ...attrs,
+        width: block.width ?? null,
+        height: block.height ?? null,
+        multiTableData: block.multiTableData || { fields: [], records: [], views: [] },
+        metadata: block.metadata || {},
+      })
+
     default:
       return schema.nodes.paragraph.create(attrs)
   }

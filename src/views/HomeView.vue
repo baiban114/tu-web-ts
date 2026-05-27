@@ -194,6 +194,8 @@ watch(
 }
 
 .workspace-topbar {
+  position: relative;
+  z-index: 30;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
