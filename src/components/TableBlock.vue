@@ -1,15 +1,13 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
+import type { TableBlockData } from '@/api/types';
 import TableCellRichEditor from './TableCellRichEditor.vue';
+import {
+  PlainTableColumnController,
+  closedTableContextMenu,
+  tableContextMenuPosition,
+} from './tableCore';
 import type { Editor } from '@tiptap/core';
-
-export interface TableBlockData {
-  textMode?: 'plain' | 'rich';
-  headers: string[];
-  rows: string[][];
-  columnWidths?: number[];
-  rowHeights?: number[];
-}
 
 type BorderDirection = 'top' | 'bottom' | 'left' | 'right';
 
@@ -65,6 +63,10 @@ const richCellRefs = ref<Record<string, {
   updateInsertedLinkDisplay?: (display: 'link' | 'image') => boolean;
   updateInsertedImageWidth?: (widthPercent: number) => boolean;
 }>>({});
+const columnMenu = ref({
+  ...closedTableContextMenu(),
+  columnIndex: -1,
+});
 
 function looksLikeRichMarkdown(value: string): boolean {
   return /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]+\]\([^)]+\)|!\[[^\]]*\]\([^)]+\)|^#{1,6}\s|^- \[[ x]\]\s|^[-*]\s|^\d+\.\s|^>\s|<u>.+<\/u>|~~.+~~)/m.test(value);
@@ -258,7 +260,7 @@ function setTextMode(textMode: 'plain' | 'rich') {
 
 function updateHeader(index: number, value: string) {
   const next = normalizedData.value;
-  next.headers[index] = value;
+  new PlainTableColumnController(next, DEFAULT_COLUMN_WIDTH).renameColumn(String(index), value);
   commit(next);
 }
 
@@ -295,24 +297,17 @@ function removeRow(rowIndex: number) {
 
 function insertColumn(index: number, focusRow = activeCell.value?.row ?? 0) {
   const next = normalizedData.value;
-  const targetIndex = Math.max(0, Math.min(index, next.headers.length));
-  next.headers.splice(targetIndex, 0, `列 ${targetIndex + 1}`);
-  next.rows.forEach((row) => row.splice(targetIndex, 0, ''));
-  next.columnWidths = [...(next.columnWidths ?? [])];
-  next.columnWidths.splice(targetIndex, 0, DEFAULT_COLUMN_WIDTH);
+  const inserted = new PlainTableColumnController(next, DEFAULT_COLUMN_WIDTH).insertColumnAt(index);
   commit(next);
-  selectedColumn.value = targetIndex;
-  hoveredColumn.value = targetIndex;
-  focusCell(Math.min(focusRow, next.rows.length - 1), targetIndex);
+  selectedColumn.value = inserted.index;
+  hoveredColumn.value = inserted.index;
+  focusCell(Math.min(focusRow, next.rows.length - 1), inserted.index);
 }
 
 function removeColumn(columnIndex: number) {
   const next = normalizedData.value;
   if (next.headers.length <= 1) return;
-  next.headers.splice(columnIndex, 1);
-  next.rows.forEach((row) => row.splice(columnIndex, 1));
-  next.columnWidths = [...(next.columnWidths ?? [])];
-  next.columnWidths.splice(columnIndex, 1);
+  new PlainTableColumnController(next, DEFAULT_COLUMN_WIDTH).deleteColumnAt(columnIndex);
   commit(next);
   const focusColumn = Math.min(columnIndex, next.headers.length - 1);
   selectedColumn.value = focusColumn;
@@ -344,6 +339,40 @@ function selectColumn(columnIndex: number) {
   activeCell.value = null;
 }
 
+function closeColumnMenu() {
+  columnMenu.value.visible = false;
+}
+
+function closeColumnMenuOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeColumnMenu();
+}
+
+function openColumnMenu(event: MouseEvent, columnIndex: number) {
+  if (!props.editable) return;
+  event.preventDefault();
+  event.stopPropagation();
+  selectColumn(columnIndex);
+  columnMenu.value = {
+    visible: true,
+    columnIndex,
+    ...tableContextMenuPosition(event, 180, 140),
+  };
+}
+
+function insertColumnFromMenu(position: 'before' | 'after') {
+  const columnIndex = columnMenu.value.columnIndex;
+  if (columnIndex < 0) return;
+  closeColumnMenu();
+  insertColumn(position === 'before' ? columnIndex : columnIndex + 1);
+}
+
+function removeColumnFromMenu() {
+  const columnIndex = columnMenu.value.columnIndex;
+  if (columnIndex < 0) return;
+  closeColumnMenu();
+  removeColumn(columnIndex);
+}
+
 function handleTableKeydown(event: KeyboardEvent) {
   if (!props.editable) return;
   if (event.key !== 'Delete') return;
@@ -355,6 +384,21 @@ function handleTableKeydown(event: KeyboardEvent) {
     removeRow(selectedRow.value);
   }
 }
+
+watch(() => columnMenu.value.visible, (visible) => {
+  if (visible) {
+    window.addEventListener('click', closeColumnMenu);
+    window.addEventListener('keydown', closeColumnMenuOnEscape);
+  } else {
+    window.removeEventListener('click', closeColumnMenu);
+    window.removeEventListener('keydown', closeColumnMenuOnEscape);
+  }
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('click', closeColumnMenu);
+  window.removeEventListener('keydown', closeColumnMenuOnEscape);
+});
 
 function handleRowHeaderFocusout(event: FocusEvent, rowIndex: number) {
   const current = event.currentTarget as HTMLElement;
@@ -665,6 +709,7 @@ defineExpose({
               @mouseenter="hoveredColumn = columnIndex"
               @mousemove="handleHeaderMouseMove($event, columnIndex)"
               @click="selectColumn(columnIndex)"
+              @contextmenu.prevent.stop="openColumnMenu($event, columnIndex)"
               @focusout="handleColumnHeaderFocusout($event, columnIndex)"
             >
               <div class="table-block__header-wrap" :class="headerBorderClass(columnIndex)">
@@ -680,7 +725,7 @@ defineExpose({
                   v-if="editable && activeColumnForToolbar === columnIndex"
                   type="button"
                   class="table-block__column-menu-button"
-                  @click.stop="selectColumn(columnIndex)"
+                  @click.stop="openColumnMenu($event, columnIndex)"
                 >
                   列
                 </button>
@@ -795,6 +840,28 @@ defineExpose({
       <button type="button" @click="addRow">添加行</button>
       <button type="button" @click="addColumn">添加列</button>
     </div>
+
+    <Teleport to="body">
+      <div
+        v-if="columnMenu.visible"
+        class="table-block__column-context-menu"
+        :style="{ left: `${columnMenu.x}px`, top: `${columnMenu.y}px` }"
+        @mousedown.stop
+        @click.stop
+        @contextmenu.prevent.stop
+      >
+        <button type="button" @click="insertColumnFromMenu('before')">在左侧新增列</button>
+        <button type="button" @click="insertColumnFromMenu('after')">在右侧新增列</button>
+        <button
+          type="button"
+          class="table-block__column-context-menu-danger"
+          :disabled="normalizedData.headers.length <= 1"
+          @click="removeColumnFromMenu"
+        >
+          删除列
+        </button>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -1072,5 +1139,33 @@ button:disabled {
   border-radius: 6px;
   background: #fff;
   padding: 5px 8px;
+}
+
+.table-block__column-context-menu {
+  position: fixed;
+  z-index: 1000;
+  display: grid;
+  min-width: 168px;
+  gap: 4px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 6px;
+  background: #fff;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+.table-block__column-context-menu button {
+  width: 100%;
+  border-color: transparent;
+  text-align: left;
+  background: transparent;
+}
+
+.table-block__column-context-menu button:hover:not(:disabled) {
+  background: #f1f5f9;
+}
+
+.table-block__column-context-menu .table-block__column-context-menu-danger {
+  color: #b91c1c;
 }
 </style>

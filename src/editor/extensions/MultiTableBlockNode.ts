@@ -31,6 +31,38 @@ export const MultiTableBlockNode = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(MultiTableBlockView)
+    return VueNodeViewRenderer(MultiTableBlockView, {
+      stopEvent: ({ event }) => {
+        const target = event.target
+        if (!(target instanceof Element)) return false
+        if (!target.closest('.multi-table')) return false
+        return [
+          'contextmenu',
+          'mousedown',
+          'mousemove',
+          'mouseup',
+          'click',
+          'dblclick',
+          'input',
+          'change',
+          'keydown',
+          'keyup',
+          'pointerdown',
+          'pointermove',
+          'pointerup',
+          'pointercancel',
+          'touchstart',
+          'touchmove',
+          'touchend',
+          'dragstart',
+          'drag',
+          'dragenter',
+          'dragover',
+          'dragleave',
+          'drop',
+          'dragend',
+        ].includes(event.type)
+      },
+    })
   },
 })
