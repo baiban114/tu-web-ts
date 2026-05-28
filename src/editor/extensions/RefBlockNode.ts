@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import RefBlockView from '../views/RefBlockView.vue'
+import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const RefBlockNode = Node.create({
   name: 'refBlock',
@@ -8,7 +9,7 @@ export const RefBlockNode = Node.create({
   atom: true,
   isolating: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addAttributes() {
     return {
@@ -32,7 +33,9 @@ export const RefBlockNode = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(RefBlockView)
+    return VueNodeViewRenderer(RefBlockView, {
+      stopEvent: stopNonHandleNodeViewDragEvent,
+    })
   },
 
   addKeyboardShortcuts() {

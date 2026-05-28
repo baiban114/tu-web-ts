@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import SpacerBlockView from '../views/SpacerBlockView.vue'
+import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const SpacerBlockNode = Node.create({
   name: 'spacerBlock',
@@ -8,7 +9,7 @@ export const SpacerBlockNode = Node.create({
   atom: true,
   isolating: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addAttributes() {
     return {
@@ -31,6 +32,8 @@ export const SpacerBlockNode = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(SpacerBlockView)
+    return VueNodeViewRenderer(SpacerBlockView, {
+      stopEvent: stopNonHandleNodeViewDragEvent,
+    })
   },
 })

@@ -141,12 +141,19 @@ onBeforeUnmount(() => {
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
-    <div v-if="blockTypeLabel" class="resizable-block-wrapper__header">
+    <div
+      v-if="blockTypeLabel"
+      class="resizable-block-wrapper__header"
+      data-drag-handle
+      data-node-view-drag-handle
+      draggable="true"
+    >
       <span class="resizable-block-wrapper__type-badge">{{ blockTypeLabel }}</span>
       <span
         v-for="badge in compoundBadges"
         :key="badge.annotationId"
         class="resizable-block-wrapper__note-badge"
+        data-node-view-no-drag
         :style="{ background: badge.color }"
         :title="'笔记'"
         @mousedown.stop

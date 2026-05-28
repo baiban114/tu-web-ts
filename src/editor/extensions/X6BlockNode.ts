@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import X6BlockView from '../views/X6BlockView.vue'
+import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const X6BlockNode = Node.create({
   name: 'x6Block',
@@ -8,7 +9,7 @@ export const X6BlockNode = Node.create({
   atom: true,
   isolating: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addAttributes() {
     return {
@@ -31,7 +32,9 @@ export const X6BlockNode = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(X6BlockView)
+    return VueNodeViewRenderer(X6BlockView, {
+      stopEvent: stopNonHandleNodeViewDragEvent,
+    })
   },
 
   addKeyboardShortcuts() {

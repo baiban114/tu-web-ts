@@ -73,20 +73,6 @@ test.beforeEach(async ({ page }) => {
   await page.goto('/')
 })
 
-test('opens kanban column actions from the multi-table board header', async ({ page }) => {
-  const block = page.locator('.multi-table').last()
-  await expect(block).toBeVisible()
-
-  await block.getByRole('button', { name: '看板' }).click()
-  const columnHeader = block.locator('.kanban-column__header').first()
-  await expect(columnHeader).toBeVisible()
-
-  await columnHeader.click({ button: 'right' })
-  await expect(page.getByRole('button', { name: '重命名分组' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '在右侧新增分组' })).toBeVisible()
-  await expect(page.getByRole('button', { name: '删除分组' })).toBeVisible()
-})
-
 test('opens field actions from the multi-table grid header', async ({ page }) => {
   const block = page.locator('.multi-table').last()
   await expect(block).toBeVisible()

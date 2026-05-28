@@ -1,6 +1,7 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import TableBlockView from '../views/TableBlockView.vue'
+import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const TableBlockNode = Node.create({
   name: 'tableBlock',
@@ -8,7 +9,7 @@ export const TableBlockNode = Node.create({
   atom: true,
   isolating: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addAttributes() {
     return {
@@ -31,6 +32,8 @@ export const TableBlockNode = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(TableBlockView)
+    return VueNodeViewRenderer(TableBlockView, {
+      stopEvent: stopNonHandleNodeViewDragEvent,
+    })
   },
 })

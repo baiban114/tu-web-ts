@@ -409,27 +409,10 @@ const createExternalBlock = (type: InsertBlockType): Block | null => {
         type: 'multiTable',
         title: '多维表格',
         multiTableData: {
-          fields: [
-            { id: 'title', name: '标题', type: 'text' },
-            {
-              id: 'status',
-              name: '状态',
-              type: 'singleSelect',
-              options: [
-                { id: 'todo', label: '待处理', color: '#e2e8f0' },
-                { id: 'doing', label: '进行中', color: '#dbeafe' },
-                { id: 'done', label: '已完成', color: '#dcfce7' },
-              ],
-            },
-            { id: 'owner', name: '负责人', type: 'text' },
-            { id: 'dueDate', name: '截止日期', type: 'date' },
-          ],
-          records: [
-            { id: `record-${Date.now()}`, values: { title: '示例任务', status: 'todo', owner: '', dueDate: '' } },
-          ],
+          fields: [],
+          records: [],
           views: [
             { id: 'view-table', name: '表格', type: 'table' },
-            { id: 'view-kanban', name: '看板', type: 'kanban', groupByFieldId: 'status' },
           ],
           activeViewId: 'view-table',
         },

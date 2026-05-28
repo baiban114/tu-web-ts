@@ -1,6 +1,7 @@
 ﻿import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import TimelineBlockView from '../views/TimelineBlockView.vue'
+import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const TimelineBlockNode = Node.create({
   name: 'timelineBlock',
@@ -8,7 +9,7 @@ export const TimelineBlockNode = Node.create({
   atom: true,
   isolating: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addAttributes() {
     return {
@@ -31,7 +32,9 @@ export const TimelineBlockNode = Node.create({
   },
 
   addNodeView() {
-    return VueNodeViewRenderer(TimelineBlockView)
+    return VueNodeViewRenderer(TimelineBlockView, {
+      stopEvent: stopNonHandleNodeViewDragEvent,
+    })
   },
 
   addKeyboardShortcuts() {

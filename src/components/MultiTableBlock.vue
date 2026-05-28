@@ -1,17 +1,20 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { VueDraggable } from 'vue-draggable-plus'
 import type {
   MultiTableData,
   MultiTableField,
   MultiTableFieldOption,
   MultiTableFieldType,
   MultiTableRecord,
+  MultiTableSubtask,
   MultiTableView,
 } from '@/api/types'
 import {
   MultiTableColumnController,
   tableContextMenuPosition,
 } from './tableCore'
+import MultiTableKanbanCard from './MultiTableKanbanCard.vue'
 
 const props = withDefaults(defineProps<{
   data?: MultiTableData
@@ -33,6 +36,7 @@ const fieldTypes: Array<{ value: MultiTableFieldType; label: string }> = [
   { value: 'singleSelect', label: '枚举' },
   { value: 'checkbox', label: '勾选' },
   { value: 'url', label: 'URL' },
+  { value: 'estimatedHours', label: '预估工时' },
   { value: 'lifecycle', label: '生命周期' },
 ]
 
@@ -44,9 +48,18 @@ const lifecycleOptions = (): MultiTableFieldOption[] => [
   { id: 'archived', label: '归档', color: '#f1f5f9' },
 ]
 
-const defaultData = (): MultiTableData => ({
+const emptyData = (): MultiTableData => ({
+  fields: [],
+  records: [],
+  views: [
+    { id: 'view-table', name: '表格', type: 'table' },
+  ],
+  activeViewId: 'view-table',
+})
+
+const taskBoardPreset = (): MultiTableData => ({
   fields: [
-    { id: 'title', name: '标题', type: 'text', required: true },
+    { id: 'title', name: '任务', type: 'text', required: true },
     {
       id: 'status',
       name: '状态',
@@ -59,21 +72,18 @@ const defaultData = (): MultiTableData => ({
     },
     { id: 'owner', name: '负责人', type: 'text' },
     { id: 'dueDate', name: '截止日期', type: 'date' },
+    { id: 'estimatedHours', name: '预估工时', type: 'estimatedHours' },
   ],
-  records: [
-    { id: `record-${uid()}`, values: { title: '示例任务', status: 'todo', owner: '', dueDate: '' } },
-  ],
+  records: [],
   views: [
     { id: 'view-table', name: '表格', type: 'table' },
     { id: 'view-kanban', name: '看板', type: 'kanban', groupByFieldId: 'status' },
   ],
-  activeViewId: 'view-table',
+  activeViewId: 'view-kanban',
 })
 
-const fallbackData = ref<MultiTableData>(defaultData())
+const fallbackData = ref<MultiTableData>(emptyData())
 const settingsFieldId = ref('')
-const draggingRecordId = ref('')
-const hoveredKanbanGroupId = ref('')
 const kanbanMenu = ref({
   visible: false,
   fieldId: '',
@@ -81,6 +91,16 @@ const kanbanMenu = ref({
   x: 0,
   y: 0,
 })
+
+type KanbanColumn = {
+  id: string
+  label: string
+  color?: string
+  records: MultiTableRecord[]
+}
+
+const kanbanColumns = ref<KanbanColumn[]>([])
+const kanbanDragActive = ref(false)
 const fieldMenu = ref({
   visible: false,
   fieldId: '',
@@ -89,12 +109,13 @@ const fieldMenu = ref({
 })
 
 const normalized = computed<MultiTableData>(() => {
-  const base = props.data && props.data.fields?.length ? props.data : fallbackData.value
+  const base = props.data ?? fallbackData.value
+  const fallbackViews = emptyData().views
   return {
     fields: base.fields || [],
     records: base.records || [],
-    views: base.views?.length ? base.views : defaultData().views,
-    activeViewId: base.activeViewId || base.views?.[0]?.id || 'view-table',
+    views: base.views?.length ? base.views : fallbackViews,
+    activeViewId: base.activeViewId || base.views?.[0]?.id || fallbackViews[0].id,
   }
 })
 
@@ -118,7 +139,7 @@ const settingsField = computed(() => {
 const clone = (): MultiTableData => JSON.parse(JSON.stringify(normalized.value))
 
 const commit = (next: MultiTableData) => {
-  if (!props.data || !props.data.fields?.length) {
+  if (!props.data) {
     fallbackData.value = next
   }
   emit('change', next)
@@ -143,13 +164,25 @@ const closeContextMenusOnEscape = (event: KeyboardEvent) => {
 
 const defaultValueForField = (field: Pick<MultiTableField, 'type' | 'options'>) => {
   if (field.type === 'checkbox') return false
+  if (field.type === 'estimatedHours') return 0
   if (field.type === 'singleSelect' || field.type === 'lifecycle') return field.options?.[0]?.id || ''
   return ''
 }
 
+const toFiniteNumber = (value: unknown) => {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+const formatHours = (value: number) => {
+  const rounded = Math.round(value * 100) / 100
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)} 小时`
+}
+
 const normalizeValueForType = (value: unknown, field: MultiTableField) => {
   if (field.type === 'checkbox') return Boolean(value)
-  if (field.type === 'number') return value === '' || value === null || value === undefined ? '' : Number(value)
+  if (field.type === 'number') return value === '' || value === null || value === undefined ? '' : toFiniteNumber(value)
+  if (field.type === 'estimatedHours') return value === '' || value === null || value === undefined ? 0 : toFiniteNumber(value)
   if (field.type === 'singleSelect' || field.type === 'lifecycle') {
     const options = field.options || []
     const current = String(value ?? '')
@@ -158,14 +191,36 @@ const normalizeValueForType = (value: unknown, field: MultiTableField) => {
   return String(value ?? '')
 }
 
+const inputTypeForField = (field: MultiTableField) => {
+  if (field.type === 'date') return 'date'
+  if (field.type === 'number' || field.type === 'estimatedHours') return 'number'
+  if (field.type === 'url') return 'url'
+  return 'text'
+}
+
 const setActiveView = (viewId: string) => {
   const next = clone()
   next.activeViewId = viewId
   commit(next)
 }
 
+const applyTaskBoardPreset = () => {
+  const hasExistingContent = normalized.value.fields.length > 0 || normalized.value.records.length > 0
+  if (hasExistingContent && !window.confirm('应用任务看板预设会替换当前多维表格内容，继续？')) return
+  closeContextMenus()
+  settingsFieldId.value = ''
+  commit(taskBoardPreset())
+}
+
 const addRecord = () => {
   const next = clone()
+  if (!next.fields.length) {
+    next.fields.push({
+      id: `field-${uid()}`,
+      name: '字段 1',
+      type: 'text',
+    })
+  }
   const values: MultiTableRecord['values'] = {}
   next.fields.forEach((field) => {
     values[field.id] = defaultValueForField(field)
@@ -257,6 +312,71 @@ const updateCell = (recordId: string, fieldId: string, value: string | number | 
   const next = clone()
   const record = next.records.find((item) => item.id === recordId)
   if (record) record.values[fieldId] = value
+  commit(next)
+}
+
+const estimatedHoursField = computed(() => {
+  return normalized.value.fields.find((field) => field.type === 'estimatedHours')
+})
+
+const taskTitleField = computed(() => {
+  return normalized.value.fields.find((field) => field.id === 'title') || normalized.value.fields[0]
+})
+
+const isTaskTable = computed(() => Boolean(taskTitleField.value && estimatedHoursField.value))
+
+const recordSubtasks = (record: MultiTableRecord): MultiTableSubtask[] => record.subtasks || []
+
+const subtaskHours = (record: MultiTableRecord) => {
+  return recordSubtasks(record).reduce((sum, subtask) => sum + toFiniteNumber(subtask.estimatedHours), 0)
+}
+
+const recordEstimatedHours = (record: MultiTableRecord) => {
+  const field = estimatedHoursField.value
+  return field ? toFiniteNumber(record.values[field.id]) : 0
+}
+
+const recordTotalHours = (record: MultiTableRecord) => recordEstimatedHours(record) + subtaskHours(record)
+
+const totalEstimatedHours = computed(() => {
+  return normalized.value.records.reduce((sum, record) => sum + recordTotalHours(record), 0)
+})
+
+const recordTitle = (record: MultiTableRecord) => {
+  const field = taskTitleField.value
+  return String((field ? record.values[field.id] : '') || '未命名')
+}
+
+const addSubtask = (recordId: string) => {
+  const next = clone()
+  const record = next.records.find((item) => item.id === recordId)
+  if (!record) return
+  const subtasks = record.subtasks || []
+  subtasks.push({
+    id: `subtask-${uid()}`,
+    title: `子任务 ${subtasks.length + 1}`,
+    estimatedHours: 0,
+    done: false,
+  })
+  record.subtasks = subtasks
+  commit(next)
+}
+
+const updateSubtask = (recordId: string, subtaskId: string, patch: Partial<MultiTableSubtask>) => {
+  const next = clone()
+  const record = next.records.find((item) => item.id === recordId)
+  const subtask = record?.subtasks?.find((item) => item.id === subtaskId)
+  if (!subtask) return
+  Object.assign(subtask, patch)
+  if ('estimatedHours' in patch) subtask.estimatedHours = Math.max(0, toFiniteNumber(patch.estimatedHours))
+  commit(next)
+}
+
+const deleteSubtask = (recordId: string, subtaskId: string) => {
+  const next = clone()
+  const record = next.records.find((item) => item.id === recordId)
+  if (!record?.subtasks) return
+  record.subtasks = record.subtasks.filter((subtask) => subtask.id !== subtaskId)
   commit(next)
 }
 
@@ -444,10 +564,11 @@ const optionColor = (field: MultiTableField | undefined, value: unknown) => {
 const displayValue = (field: MultiTableField, value: unknown) => {
   if (field.type === 'checkbox') return value ? '是' : '否'
   if (field.type === 'singleSelect' || field.type === 'lifecycle') return optionLabel(field, value)
+  if (field.type === 'estimatedHours') return formatHours(toFiniteNumber(value))
   return String(value ?? '')
 }
 
-const kanbanGroups = computed(() => {
+const buildKanbanColumns = (): KanbanColumn[] => {
   const field = kanbanField.value
   const options = field?.options?.length ? field.options : [{ id: '', label: '未分组' }]
   return options.map((option) => ({
@@ -456,136 +577,47 @@ const kanbanGroups = computed(() => {
     color: option.color,
     records: normalized.value.records.filter((record) => String(record.values[field?.id || ''] || '') === option.id),
   }))
-})
+}
 
-const moveRecordToGroup = (recordId: string, groupId: string) => {
+const syncKanbanColumns = () => {
+  if (kanbanDragActive.value) return
+  kanbanColumns.value = buildKanbanColumns()
+}
+
+const startKanbanDrag = () => {
+  kanbanDragActive.value = true
+  closeContextMenus()
+}
+
+const commitKanbanDrag = () => {
   const field = kanbanField.value
-  if (!field) return
   const next = clone()
-  const record = next.records.find((item) => item.id === recordId)
-  if (!record) return
-  record.values[field.id] = groupId
+  const recordsById = new Map(next.records.map((record) => [record.id, record]))
+  const orderedRecords: MultiTableRecord[] = []
+  const orderedRecordIds = new Set<string>()
+
+  kanbanColumns.value.forEach((column) => {
+    column.records.forEach((draftRecord) => {
+      const record = recordsById.get(draftRecord.id)
+      if (!record || orderedRecordIds.has(record.id)) return
+      if (field) record.values[field.id] = column.id
+      orderedRecordIds.add(record.id)
+      orderedRecords.push(record)
+    })
+  })
+
+  next.records.forEach((record) => {
+    if (!orderedRecordIds.has(record.id)) orderedRecords.push(record)
+  })
+
+  next.records = orderedRecords
   commit(next)
 }
 
-const startKanbanMouseDrag = (event: MouseEvent | PointerEvent, recordId: string) => {
-  if (event.button !== 0) return
-  draggingRecordId.value = recordId
-  window.addEventListener('mousemove', trackKanbanMouseDrag, true)
-  window.addEventListener('mouseup', finishKanbanMouseDrag, true)
-  window.addEventListener('pointermove', trackKanbanMouseDrag, true)
-  window.addEventListener('pointerup', finishKanbanMouseDrag, true)
-}
-
-const startKanbanBoardMouseDrag = (event: MouseEvent | PointerEvent) => {
-  if (event.button !== 0) return
-  const target = event.target
-  if (!(target instanceof Element)) return
-  const card = target.closest<HTMLElement>('.kanban-card[data-record-id]')
-  const recordId = card?.dataset.recordId
-  if (!recordId) return
-  startKanbanMouseDrag(event, recordId)
-}
-
-const startKanbanNativeDrag = (event: DragEvent, recordId: string) => {
-  event.stopPropagation()
-  draggingRecordId.value = recordId
-  event.dataTransfer?.setData('text/plain', recordId)
-  if (!event.dataTransfer) return
-  event.dataTransfer.effectAllowed = 'move'
-  if (event.currentTarget instanceof HTMLElement) {
-    const rect = event.currentTarget.getBoundingClientRect()
-    const offsetX = Math.max(0, event.clientX - rect.left)
-    const offsetY = Math.max(0, event.clientY - rect.top)
-    event.dataTransfer.setDragImage(event.currentTarget, offsetX, offsetY)
-  }
-}
-
-const finishKanbanNativeDrag = (event: DragEvent) => {
-  event.stopPropagation()
-  const recordId = draggingRecordId.value
-  const target = document.elementFromPoint(event.clientX, event.clientY)
-  const groupId = target instanceof Element
-    ? target.closest<HTMLElement>('[data-kanban-group-id]')?.dataset.kanbanGroupId ?? hoveredKanbanGroupId.value
-    : hoveredKanbanGroupId.value
-  draggingRecordId.value = ''
-  hoveredKanbanGroupId.value = ''
-  if (!recordId || !groupId) return
-  moveRecordToGroup(recordId, groupId)
-}
-
-const preventKanbanNativeDrag = (event: DragEvent) => {
-  if (event.target instanceof Element && event.target.closest('.kanban-card[data-record-id]')) return
-  event.preventDefault()
-  event.stopPropagation()
-}
-
-const trackKanbanDragTarget = (groupId: string) => {
-  if (!draggingRecordId.value) return
-  hoveredKanbanGroupId.value = groupId
-}
-
-const trackKanbanMouseDrag = (event: MouseEvent | PointerEvent) => {
-  if (!draggingRecordId.value) return
-  const columns = Array.from(document.querySelectorAll<HTMLElement>('.kanban-column[data-kanban-group-id]'))
-  const hoveredColumn = columns.find((column) => {
-    const rect = column.getBoundingClientRect()
-    return event.clientX >= rect.left
-      && event.clientX <= rect.right
-      && event.clientY >= rect.top
-      && event.clientY <= rect.bottom
-  })
-  const nearestColumn = hoveredColumn ?? columns
-    .map((column) => {
-      const rect = column.getBoundingClientRect()
-      return {
-        column,
-        distance: Math.abs(event.clientX - (rect.left + rect.width / 2)),
-      }
-    })
-    .sort((a, b) => a.distance - b.distance)[0]?.column
-  const groupId = nearestColumn?.dataset.kanbanGroupId
-  if (groupId == null) return
-  hoveredKanbanGroupId.value = groupId
-  const field = kanbanField.value
-  const record = normalized.value.records.find((item) => item.id === draggingRecordId.value)
-  if (field && record && String(record.values[field.id] || '') !== groupId) {
-    moveRecordToGroup(record.id, groupId)
-  }
-}
-
-const allowKanbanNativeDragOver = (event: DragEvent, groupId: string) => {
-  event.preventDefault()
-  trackKanbanDragTarget(groupId)
-}
-
-const dropKanbanNativeCard = (event: DragEvent, groupId: string) => {
-  event.preventDefault()
-  event.stopPropagation()
-  const recordId = event.dataTransfer?.getData('text/plain') || draggingRecordId.value
-  draggingRecordId.value = ''
-  hoveredKanbanGroupId.value = ''
-  if (!recordId) return
-  moveRecordToGroup(recordId, groupId)
-}
-
-const finishKanbanMouseDrag = (event: MouseEvent | PointerEvent) => {
-  trackKanbanMouseDrag(event)
-  const recordId = draggingRecordId.value
-  draggingRecordId.value = ''
-  window.removeEventListener('mousemove', trackKanbanMouseDrag, true)
-  window.removeEventListener('mouseup', finishKanbanMouseDrag, true)
-  window.removeEventListener('pointermove', trackKanbanMouseDrag, true)
-  window.removeEventListener('pointerup', finishKanbanMouseDrag, true)
-  if (!recordId) return
-  const target = document.elementFromPoint(event.clientX, event.clientY)
-  const groupId = target instanceof Element
-    ? target.closest<HTMLElement>('[data-kanban-group-id]')?.dataset.kanbanGroupId
-    : undefined
-  const targetGroupId = groupId ?? hoveredKanbanGroupId.value
-  hoveredKanbanGroupId.value = ''
-  if (targetGroupId == null) return
-  moveRecordToGroup(recordId, targetGroupId)
+const finishKanbanDrag = () => {
+  commitKanbanDrag()
+  kanbanDragActive.value = false
+  syncKanbanColumns()
 }
 
 const hasContextMenu = computed(() => kanbanMenu.value.visible || fieldMenu.value.visible)
@@ -600,28 +632,21 @@ watch(() => hasContextMenu.value, (visible) => {
   }
 })
 
-watch(() => draggingRecordId.value, (recordId) => {
-  if (recordId) {
-    window.addEventListener('mousemove', trackKanbanMouseDrag, true)
-    window.addEventListener('mouseup', finishKanbanMouseDrag, true)
-    window.addEventListener('pointermove', trackKanbanMouseDrag, true)
-    window.addEventListener('pointerup', finishKanbanMouseDrag, true)
-  } else {
-    window.removeEventListener('mousemove', trackKanbanMouseDrag, true)
-    window.removeEventListener('mouseup', finishKanbanMouseDrag, true)
-    window.removeEventListener('pointermove', trackKanbanMouseDrag, true)
-    window.removeEventListener('pointerup', finishKanbanMouseDrag, true)
-    hoveredKanbanGroupId.value = ''
-  }
-})
+watch(
+  () => [
+    activeView.value?.id,
+    activeView.value?.type,
+    kanbanField.value?.id,
+    kanbanField.value?.options,
+    normalized.value.records,
+  ],
+  syncKanbanColumns,
+  { deep: true, immediate: true },
+)
 
 onBeforeUnmount(() => {
   window.removeEventListener('click', closeContextMenus)
   window.removeEventListener('keydown', closeContextMenusOnEscape)
-  window.removeEventListener('mousemove', trackKanbanMouseDrag, true)
-  window.removeEventListener('mouseup', finishKanbanMouseDrag, true)
-  window.removeEventListener('pointermove', trackKanbanMouseDrag, true)
-  window.removeEventListener('pointerup', finishKanbanMouseDrag, true)
 })
 </script>
 
@@ -640,10 +665,14 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <div class="multi-table__actions" v-if="editable">
+        <button type="button" @click="applyTaskBoardPreset">任务看板</button>
         <button type="button" @click="addField">字段</button>
         <button type="button" @click="addFieldByType('url', '链接')">URL字段</button>
         <button type="button" @click="addFieldByType('lifecycle', '生命周期')">生命周期</button>
         <button type="button" @click="addRecord">记录</button>
+      </div>
+      <div v-if="estimatedHoursField" class="multi-table__summary">
+        总工时 {{ formatHours(totalEstimatedHours) }}
       </div>
     </header>
 
@@ -696,67 +725,66 @@ onBeforeUnmount(() => {
       </div>
     </section>
 
-    <div
-      v-if="activeView.type === 'kanban'"
-      class="multi-table__kanban"
-      @pointerdown.capture="startKanbanBoardMouseDrag"
-      @mousedown.capture="startKanbanBoardMouseDrag"
-      @dragstart.capture="preventKanbanNativeDrag"
-    >
+    <div v-if="activeView.type === 'kanban'" class="multi-table__kanban">
       <section
-        v-for="group in kanbanGroups"
-        :key="group.id"
+        v-for="column in kanbanColumns"
+        :key="column.id"
         class="kanban-column"
-        :data-kanban-group-id="group.id"
-        @dragenter="allowKanbanNativeDragOver($event, group.id)"
-        @dragover="allowKanbanNativeDragOver($event, group.id)"
-        @drop.capture="dropKanbanNativeCard($event, group.id)"
-        @mouseenter="trackKanbanDragTarget(group.id)"
-        @mousemove="trackKanbanDragTarget(group.id)"
+        :data-kanban-group-id="column.id"
       >
         <header
           class="kanban-column__header"
-          :data-kanban-group-id="group.id"
-          @contextmenu.prevent.stop="openKanbanColumnMenu($event, group.id)"
+          :data-kanban-group-id="column.id"
+          @contextmenu.prevent.stop="openKanbanColumnMenu($event, column.id)"
         >
-          <span class="kanban-column__swatch" :style="{ background: group.color || '#e2e8f0' }"></span>
-          <strong>{{ group.label }}</strong>
-          <small>{{ group.records.length }}</small>
+          <span class="kanban-column__swatch" :style="{ background: column.color || '#e2e8f0' }"></span>
+          <strong>{{ column.label }}</strong>
+          <small class="kanban-column__count">{{ column.records.length }}</small>
+          <small v-if="estimatedHoursField">{{ formatHours(column.records.reduce((sum, record) => sum + recordTotalHours(record), 0)) }}</small>
           <button
             v-if="editable"
             type="button"
             class="kanban-column__menu-button"
             title="列操作"
-            @click.prevent.stop="openKanbanColumnMenu($event, group.id)"
+            @click.prevent.stop="openKanbanColumnMenu($event, column.id)"
           >
             ⋯
           </button>
         </header>
-        <div
+        <VueDraggable
+          v-model="column.records"
           class="kanban-column__body"
-          :data-kanban-group-id="group.id"
-          @dragenter="allowKanbanNativeDragOver($event, group.id)"
-          @dragover="allowKanbanNativeDragOver($event, group.id)"
-          @drop.capture="dropKanbanNativeCard($event, group.id)"
-          @mouseenter="trackKanbanDragTarget(group.id)"
-          @mousemove="trackKanbanDragTarget(group.id)"
+          :data-kanban-group-id="column.id"
+          group="multi-table-kanban"
+          draggable=".kanban-card"
+          filter="input, textarea, select, button, a, [contenteditable='true'], .record-subtasks"
+          ghost-class="kanban-card--ghost"
+          chosen-class="kanban-card--chosen"
+          drag-class="kanban-card--drag"
+          :animation="150"
+          :disabled="!editable"
+          :empty-insert-threshold="24"
+          :fallback-on-body="true"
+          :force-fallback="true"
+          :prevent-on-filter="false"
+          @start="startKanbanDrag"
+          @end="finishKanbanDrag"
         >
-          <article
-            v-for="record in group.records"
+          <MultiTableKanbanCard
+            v-for="record in column.records"
             :key="record.id"
-            class="kanban-card"
-            :class="{ 'kanban-card--dragging': draggingRecordId === record.id }"
-            :data-record-id="record.id"
-            draggable="true"
-            @dragstart.capture="startKanbanNativeDrag($event, record.id)"
-            @dragend.capture="finishKanbanNativeDrag($event)"
-            @pointerdown.capture="startKanbanMouseDrag($event, record.id)"
-            @mousedown.capture="startKanbanMouseDrag($event, record.id)"
-          >
-            <strong>{{ record.values.title || '未命名' }}</strong>
-            <p>{{ optionLabel(kanbanField, record.values[kanbanField?.id || '']) }}</p>
-          </article>
-        </div>
+            :record="record"
+            :title="recordTitle(record)"
+            :status-label="optionLabel(kanbanField, record.values[kanbanField?.id || ''])"
+            :show-hours="Boolean(estimatedHoursField)"
+            :hours-label="formatHours(recordTotalHours(record))"
+            :is-task-table="isTaskTable"
+            :editable="editable"
+            @add-subtask="addSubtask(record.id)"
+            @update-subtask="(subtaskId, patch) => updateSubtask(record.id, subtaskId, patch)"
+            @delete-subtask="(subtaskId) => deleteSubtask(record.id, subtaskId)"
+          />
+        </VueDraggable>
       </section>
     </div>
 
@@ -800,9 +828,11 @@ onBeforeUnmount(() => {
               />
               <input
                 v-else-if="editable"
-                :type="field.type === 'date' ? 'date' : field.type === 'number' ? 'number' : field.type === 'url' ? 'url' : 'text'"
+                :type="inputTypeForField(field)"
+                :min="field.type === 'estimatedHours' ? 0 : undefined"
+                :step="field.type === 'estimatedHours' ? 0.5 : undefined"
                 :value="String(record.values[field.id] ?? '')"
-                @input="updateCell(record.id, field.id, field.type === 'number' ? Number(($event.target as HTMLInputElement).value) : ($event.target as HTMLInputElement).value)"
+                @input="updateCell(record.id, field.id, field.type === 'number' || field.type === 'estimatedHours' ? Number(($event.target as HTMLInputElement).value) : ($event.target as HTMLInputElement).value)"
               />
               <a
                 v-else-if="field.type === 'url' && record.values[field.id]"
@@ -820,6 +850,52 @@ onBeforeUnmount(() => {
                 {{ optionLabel(field, record.values[field.id]) }}
               </span>
               <span v-else>{{ displayValue(field, record.values[field.id]) }}</span>
+              <div
+                v-if="isTaskTable && field.id === taskTitleField?.id"
+                class="record-subtasks record-subtasks--grid"
+                @pointerdown.stop
+                @mousedown.stop
+                @dragstart.stop
+              >
+                <label v-for="subtask in recordSubtasks(record)" :key="subtask.id" class="record-subtask">
+                  <input
+                    v-if="editable"
+                    type="checkbox"
+                    :checked="Boolean(subtask.done)"
+                    @change.stop="updateSubtask(record.id, subtask.id, { done: ($event.target as HTMLInputElement).checked })"
+                  />
+                  <span v-else-if="subtask.done" class="record-subtask__done">✓</span>
+                  <input
+                    v-if="editable"
+                    class="record-subtask__title"
+                    :value="subtask.title"
+                    @input.stop="updateSubtask(record.id, subtask.id, { title: ($event.target as HTMLInputElement).value })"
+                  />
+                  <span v-else class="record-subtask__title">{{ subtask.title }}</span>
+                  <input
+                    v-if="editable"
+                    class="record-subtask__hours"
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    :value="String(subtask.estimatedHours ?? 0)"
+                    @input.stop="updateSubtask(record.id, subtask.id, { estimatedHours: Number(($event.target as HTMLInputElement).value) })"
+                  />
+                  <span v-else class="record-subtask__hours">{{ formatHours(toFiniteNumber(subtask.estimatedHours)) }}</span>
+                  <button
+                    v-if="editable"
+                    type="button"
+                    class="record-subtask__delete"
+                    title="删除子任务"
+                    @click.stop="deleteSubtask(record.id, subtask.id)"
+                  >
+                    删除
+                  </button>
+                </label>
+                <button v-if="editable" type="button" class="record-subtasks__add" @click.stop="addSubtask(record.id)">
+                  + 子任务
+                </button>
+              </div>
             </td>
           </tr>
           <tr v-if="editable" class="multi-table__add-row">
@@ -897,6 +973,17 @@ onBeforeUnmount(() => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.multi-table__summary {
+  flex: none;
+  align-self: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 5px 9px;
+  color: #334155;
+  font-size: 13px;
+  background: #fff;
 }
 
 button {
@@ -1104,8 +1191,11 @@ td input[type='checkbox'] {
   border-radius: 999px;
 }
 
-.kanban-column__header small {
+.kanban-column__count {
   margin-left: auto;
+}
+
+.kanban-column__header small {
   color: #64748b;
 }
 
@@ -1134,25 +1224,56 @@ td input[type='checkbox'] {
   padding: 0 10px 10px;
 }
 
-.kanban-card {
-  border: 1px solid #d8dee8;
-  border-radius: 8px;
-  padding: 10px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
-  cursor: grab;
-  user-select: none;
+.record-subtasks {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
 }
 
-.kanban-card--dragging {
-  cursor: grabbing;
-  opacity: 0.65;
+.record-subtasks--grid {
+  min-width: 260px;
 }
 
-.kanban-card p {
-  margin: 6px 0 0;
-  color: #64748b;
+.record-subtask {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 74px auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.record-subtask input[type='checkbox'] {
+  width: auto;
+}
+
+.record-subtask__title {
+  min-width: 0;
+}
+
+.record-subtask__hours {
+  width: 74px;
+}
+
+.record-subtask__done {
+  color: #16a34a;
+  font-weight: 700;
+}
+
+.record-subtask__delete,
+.record-subtasks__add {
+  padding: 3px 6px;
   font-size: 12px;
+}
+
+.record-subtask__delete {
+  border-color: transparent;
+  color: #b91c1c;
+  background: transparent;
+}
+
+.record-subtasks__add {
+  width: fit-content;
+  color: #1677ff;
 }
 
 .multi-table-menu {

@@ -113,6 +113,7 @@ export type MultiTableFieldType =
   | 'singleSelect'
   | 'checkbox'
   | 'url'
+  | 'estimatedHours'
   | 'lifecycle';
 
 export interface MultiTableFieldOption {
@@ -133,6 +134,14 @@ export interface MultiTableField {
 export interface MultiTableRecord {
   id: string;
   values: Record<string, string | number | boolean | null>;
+  subtasks?: MultiTableSubtask[];
+}
+
+export interface MultiTableSubtask {
+  id: string;
+  title: string;
+  estimatedHours: number;
+  done?: boolean;
 }
 
 export interface MultiTableView {

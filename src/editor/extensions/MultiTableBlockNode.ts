@@ -1,6 +1,7 @@
 import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import MultiTableBlockView from '../views/MultiTableBlockView.vue'
+import { isFromNodeViewDragHandle, stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
 
 export const MultiTableBlockNode = Node.create({
   name: 'multiTableBlock',
@@ -8,7 +9,7 @@ export const MultiTableBlockNode = Node.create({
   atom: true,
   isolating: true,
   selectable: true,
-  draggable: true,
+  draggable: false,
 
   addAttributes() {
     return {
@@ -33,9 +34,10 @@ export const MultiTableBlockNode = Node.create({
   addNodeView() {
     return VueNodeViewRenderer(MultiTableBlockView, {
       stopEvent: ({ event }) => {
+        if (isFromNodeViewDragHandle(event)) return false
         const target = event.target
-        if (!(target instanceof Element)) return false
-        if (!target.closest('.multi-table')) return false
+        if (!(target instanceof Element)) return stopNonHandleNodeViewDragEvent({ event })
+        if (!target.closest('.multi-table')) return stopNonHandleNodeViewDragEvent({ event })
         return [
           'contextmenu',
           'mousedown',
