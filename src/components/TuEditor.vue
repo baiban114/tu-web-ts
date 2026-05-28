@@ -352,6 +352,22 @@ const getDocSignature = (): string => {
   return JSON.stringify(editor.value.getJSON())
 }
 
+const flushContentChange = () => {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer)
+    debounceTimer = null
+  }
+  if (!isMounted || !editor.value) return
+  lastDocSignature = getDocSignature()
+  const json = editor.value.getJSON()
+  const blocks = tipTapToBlocks(json, props.blocks)
+  skipNextContentSync = true
+  emit('update:blocks', blocks)
+  emit('content-change', blocks)
+}
+
+provide('flushEditorContentChange', flushContentChange)
+
 const getBlockRange = (resolved: any) => {
   const from = resolved.before(1)
   const to = resolved.after(1)
@@ -1022,6 +1038,7 @@ defineExpose({
   completePendingRefInsert,
   focus: () => editor.value?.commands.focus(),
   duplicateBlock,
+  flushContentChange,
 })
 </script>
 

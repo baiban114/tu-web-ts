@@ -14,6 +14,7 @@ interface CompoundBadge {
 
 const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]> | Ref<Record<string, CompoundBadge[]>>>('compoundAnnotationBadges', {})
 const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
+const flushEditorContentChange = inject<() => void>('flushEditorContentChange', () => {})
 
 const blockId = computed(() => props.node.attrs.blockId || '')
 const compoundBadges = computed(() => unref(compoundAnnotationBadges)[blockId.value] || [])
@@ -24,6 +25,11 @@ const multiTableData = computed<MultiTableData>({
   get: () => props.node.attrs.multiTableData,
   set: (val) => props.updateAttributes({ multiTableData: val }),
 })
+
+const updateMultiTableData = (data: MultiTableData) => {
+  props.updateAttributes({ multiTableData: data })
+  flushEditorContentChange()
+}
 
 const onResize = (width: number | null, _height: number | null) => {
   props.updateAttributes({ width })
@@ -48,7 +54,7 @@ const onResize = (width: number | null, _height: number | null) => {
       <MultiTableBlock
         :data="multiTableData"
         :editable="editor.isEditable"
-        @change="multiTableData = $event"
+        @change="updateMultiTableData"
       />
     </ResizableBlockWrapper>
   </node-view-wrapper>
