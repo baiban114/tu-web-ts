@@ -2,6 +2,15 @@
 import { computed } from 'vue'
 import type { MultiTableRecord, MultiTableSubtask } from '@/api/types'
 
+interface LearningPlanKanbanNode {
+  id: string
+  title: string
+  description: string
+  resource: string
+  hoursLabel: string
+  children: LearningPlanKanbanNode[]
+}
+
 const props = withDefaults(defineProps<{
   record: MultiTableRecord
   title: string
@@ -9,11 +18,15 @@ const props = withDefaults(defineProps<{
   showHours?: boolean
   hoursLabel?: string
   isTaskTable?: boolean
+  isLearningPlan?: boolean
+  learningChildren?: LearningPlanKanbanNode[]
   editable?: boolean
 }>(), {
   showHours: false,
   hoursLabel: '',
   isTaskTable: false,
+  isLearningPlan: false,
+  learningChildren: () => [],
   editable: true,
 })
 
@@ -21,6 +34,7 @@ const emit = defineEmits<{
   (e: 'add-subtask'): void
   (e: 'update-subtask', subtaskId: string, patch: Partial<MultiTableSubtask>): void
   (e: 'delete-subtask', subtaskId: string): void
+  (e: 'native-dragstart', event: DragEvent): void
 }>()
 
 const subtasks = computed(() => props.record.subtasks || [])
@@ -40,6 +54,8 @@ const formatHours = (value: number) => {
   <article
     class="kanban-card"
     :data-record-id="record.id"
+    :draggable="editable"
+    @dragstart="emit('native-dragstart', $event)"
   >
     <strong>{{ title }}</strong>
     <p>{{ statusLabel }}</p>
@@ -86,6 +102,26 @@ const formatHours = (value: number) => {
         + 子任务
       </button>
     </div>
+    <ul v-if="isLearningPlan && learningChildren.length" class="learning-plan-card-tree">
+      <li v-for="child in learningChildren" :key="child.id">
+        <div class="learning-plan-card-tree__row">
+          <span>{{ child.title }}</span>
+          <small>{{ child.hoursLabel }}</small>
+        </div>
+        <p v-if="child.description">{{ child.description }}</p>
+        <a v-if="child.resource" :href="child.resource" target="_blank" rel="noreferrer" @pointerdown.stop @mousedown.stop>
+          {{ child.resource }}
+        </a>
+        <ul v-if="child.children.length">
+          <li v-for="grandchild in child.children" :key="grandchild.id">
+            <div class="learning-plan-card-tree__row">
+              <span>{{ grandchild.title }}</span>
+              <small>{{ grandchild.hoursLabel }}</small>
+            </div>
+          </li>
+        </ul>
+      </li>
+    </ul>
   </article>
 </template>
 
@@ -168,5 +204,44 @@ const formatHours = (value: number) => {
 .record-subtasks__add {
   width: fit-content;
   color: #1677ff;
+}
+
+.learning-plan-card-tree {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.learning-plan-card-tree ul {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.learning-plan-card-tree__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #334155;
+  font-size: 12px;
+}
+
+.learning-plan-card-tree small {
+  flex: none;
+  color: #64748b;
+}
+
+.learning-plan-card-tree a {
+  display: block;
+  overflow: hidden;
+  margin-top: 2px;
+  color: #1677ff;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

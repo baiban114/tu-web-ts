@@ -135,6 +135,9 @@ export interface MultiTableRecord {
   id: string;
   values: Record<string, string | number | boolean | null>;
   subtasks?: MultiTableSubtask[];
+  parentId?: string | null;
+  order?: number;
+  nodeType?: 'section' | 'step';
 }
 
 export interface MultiTableSubtask {

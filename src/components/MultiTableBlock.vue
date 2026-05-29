@@ -10,6 +10,7 @@ import type {
   MultiTableSubtask,
   MultiTableView,
 } from '@/api/types'
+import { generateLearningPlan, type LearningPlanNode, type LearningPlanResponse } from '@/api/aiAgent'
 import {
   MultiTableColumnController,
   tableContextMenuPosition,
@@ -82,6 +83,31 @@ const taskBoardPreset = (): MultiTableData => ({
   activeViewId: 'view-kanban',
 })
 
+const learningPlanPreset = (): MultiTableData => ({
+  fields: [
+    { id: 'title', name: '学习任务', type: 'text', required: true },
+    {
+      id: 'status',
+      name: '状态',
+      type: 'singleSelect',
+      options: [
+        { id: 'todo', label: '待学习', color: '#e2e8f0' },
+        { id: 'doing', label: '学习中', color: '#dbeafe' },
+        { id: 'done', label: '已完成', color: '#dcfce7' },
+      ],
+    },
+    { id: 'estimatedHours', name: '预估工时', type: 'estimatedHours' },
+    { id: 'description', name: '说明', type: 'text' },
+    { id: 'resource', name: '资源', type: 'url' },
+  ],
+  records: [],
+  views: [
+    { id: 'view-table', name: '表格', type: 'table' },
+    { id: 'view-kanban', name: '看板', type: 'kanban', groupByFieldId: 'status' },
+  ],
+  activeViewId: 'view-table',
+})
+
 const fallbackData = ref<MultiTableData>(emptyData())
 const settingsFieldId = ref('')
 const kanbanMenu = ref({
@@ -99,8 +125,28 @@ type KanbanColumn = {
   records: MultiTableRecord[]
 }
 
+interface LearningPlanKanbanNode {
+  id: string
+  title: string
+  description: string
+  resource: string
+  hoursLabel: string
+  children: LearningPlanKanbanNode[]
+}
+
 const kanbanColumns = ref<KanbanColumn[]>([])
 const kanbanDragActive = ref(false)
+const nativeDraggedRecordId = ref('')
+const showAiPanel = ref(false)
+const generatingPlan = ref(false)
+const aiPlanError = ref('')
+const generatedPlan = ref<LearningPlanResponse | null>(null)
+const learningPlanForm = ref({
+  topic: '',
+  totalHours: '',
+  dailyHours: '',
+  deadline: '',
+})
 const fieldMenu = ref({
   visible: false,
   fieldId: '',
@@ -212,6 +258,15 @@ const applyTaskBoardPreset = () => {
   commit(taskBoardPreset())
 }
 
+const applyLearningPlanPreset = () => {
+  const hasExistingContent = normalized.value.fields.length > 0 || normalized.value.records.length > 0
+  if (hasExistingContent && !window.confirm('应用学习计划预设会替换当前多维表格内容，继续？')) return
+  closeContextMenus()
+  settingsFieldId.value = ''
+  generatedPlan.value = null
+  commit(learningPlanPreset())
+}
+
 const addRecord = () => {
   const next = clone()
   if (!next.fields.length) {
@@ -311,7 +366,14 @@ const deleteField = (fieldId: string) => {
 const updateCell = (recordId: string, fieldId: string, value: string | number | boolean | null) => {
   const next = clone()
   const record = next.records.find((item) => item.id === recordId)
-  if (record) record.values[fieldId] = value
+  if (record) {
+    record.values[fieldId] = value
+    if (isLearningPlan.value && fieldId === 'status') {
+      descendantRecords(record, next.records).forEach((child) => {
+        child.values[fieldId] = value
+      })
+    }
+  }
   commit(next)
 }
 
@@ -324,6 +386,14 @@ const taskTitleField = computed(() => {
 })
 
 const isTaskTable = computed(() => Boolean(taskTitleField.value && estimatedHoursField.value))
+const isLearningPlan = computed(() => {
+  const fieldIds = new Set(normalized.value.fields.map((field) => field.id))
+  return fieldIds.has('title')
+    && fieldIds.has('status')
+    && fieldIds.has('estimatedHours')
+    && fieldIds.has('description')
+    && fieldIds.has('resource')
+})
 
 const recordSubtasks = (record: MultiTableRecord): MultiTableSubtask[] => record.subtasks || []
 
@@ -336,15 +406,145 @@ const recordEstimatedHours = (record: MultiTableRecord) => {
   return field ? toFiniteNumber(record.values[field.id]) : 0
 }
 
-const recordTotalHours = (record: MultiTableRecord) => recordEstimatedHours(record) + subtaskHours(record)
+const childrenOf = (recordId: string, records = normalized.value.records) => {
+  return records
+    .filter((record) => record.parentId === recordId)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+}
+
+const rootRecords = (records = normalized.value.records) => {
+  return records
+    .filter((record) => !record.parentId)
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+}
+
+const recordHasChildren = (record: MultiTableRecord) => childrenOf(record.id).length > 0
+
+const descendantRecords = (record: MultiTableRecord, records = normalized.value.records): MultiTableRecord[] => {
+  const children = childrenOf(record.id, records)
+  return children.flatMap((child) => [child, ...descendantRecords(child, records)])
+}
+
+const recordTotalHours = (record: MultiTableRecord, records = normalized.value.records): number => {
+  const childTotal = childrenOf(record.id, records).reduce((sum, child) => sum + recordTotalHours(child, records), 0)
+  return recordEstimatedHours(record) + subtaskHours(record) + childTotal
+}
 
 const totalEstimatedHours = computed(() => {
-  return normalized.value.records.reduce((sum, record) => sum + recordTotalHours(record), 0)
+  const records = isLearningPlan.value ? rootRecords() : normalized.value.records
+  return records.reduce((sum, record) => sum + recordTotalHours(record), 0)
 })
 
 const recordTitle = (record: MultiTableRecord) => {
   const field = taskTitleField.value
   return String((field ? record.values[field.id] : '') || '未命名')
+}
+
+const recordDescription = (record: MultiTableRecord) => String(record.values.description || '')
+
+const recordResource = (record: MultiTableRecord) => String(record.values.resource || '')
+
+const recordDepth = (record: MultiTableRecord) => {
+  let depth = 0
+  let currentParentId = record.parentId
+  const recordsById = new Map(normalized.value.records.map((item) => [item.id, item]))
+  while (currentParentId && recordsById.has(currentParentId) && depth < 8) {
+    depth += 1
+    currentParentId = recordsById.get(currentParentId)?.parentId ?? null
+  }
+  return depth
+}
+
+const flattenLearningPlanRecords = () => {
+  const flatten = (records: MultiTableRecord[]): MultiTableRecord[] => {
+    return records.flatMap((record) => [record, ...flatten(childrenOf(record.id))])
+  }
+  return flatten(rootRecords())
+}
+
+const displayRecords = computed(() => {
+  return isLearningPlan.value ? flattenLearningPlanRecords() : normalized.value.records
+})
+
+const kanbanRecords = (records = normalized.value.records) => {
+  return isLearningPlan.value ? rootRecords(records) : records
+}
+
+const learningPlanKanbanTree = (record: MultiTableRecord): LearningPlanKanbanNode[] => {
+  return childrenOf(record.id).map((child) => ({
+    id: child.id,
+    title: recordTitle(child),
+    description: recordDescription(child),
+    resource: recordResource(child),
+    hoursLabel: formatHours(recordTotalHours(child)),
+    children: learningPlanKanbanTree(child),
+  }))
+}
+
+const learningPlanPreviewTotalHours = computed(() => generatedPlan.value?.totalEstimatedHours || 0)
+
+const planNodeHours = (node: LearningPlanNode): number => {
+  const own = toFiniteNumber(node.estimatedHours)
+  const children = (node.children || []).reduce((sum, child) => sum + planNodeHours(child), 0)
+  return own + children
+}
+
+const generatePlan = async () => {
+  const topic = learningPlanForm.value.topic.trim()
+  aiPlanError.value = ''
+  generatedPlan.value = null
+  if (!topic) {
+    aiPlanError.value = '请先填写学习目标。'
+    return
+  }
+  generatingPlan.value = true
+  try {
+    generatedPlan.value = await generateLearningPlan({
+      topic,
+      totalHours: learningPlanForm.value.totalHours ? Number(learningPlanForm.value.totalHours) : undefined,
+      dailyHours: learningPlanForm.value.dailyHours ? Number(learningPlanForm.value.dailyHours) : undefined,
+      deadline: learningPlanForm.value.deadline || undefined,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '生成学习计划失败。'
+    aiPlanError.value = message.includes('configuration incomplete')
+      ? 'AI Agent 配置不完整，请先到系统配置中设置 Base URL、Model 和 API Key。'
+      : message
+  } finally {
+    generatingPlan.value = false
+  }
+}
+
+const nodesToRecords = (
+  nodes: LearningPlanNode[],
+  parentId: string | null = null,
+): MultiTableRecord[] => {
+  return nodes.flatMap((node, index) => {
+    const id = `learn-${uid()}`
+    const children = node.children || []
+    const record: MultiTableRecord = {
+      id,
+      parentId,
+      order: index,
+      nodeType: children.length ? 'section' : 'step',
+      values: {
+        title: node.title,
+        status: 'todo',
+        estimatedHours: children.length ? 0 : Math.max(0, toFiniteNumber(node.estimatedHours)),
+        description: node.description || '',
+        resource: node.resource || '',
+      },
+    }
+    return [record, ...nodesToRecords(children, id)]
+  })
+}
+
+const confirmGeneratedPlan = () => {
+  if (!generatedPlan.value) return
+  const next = learningPlanPreset()
+  next.records = nodesToRecords(generatedPlan.value.items)
+  next.activeViewId = 'view-table'
+  commit(next)
 }
 
 const addSubtask = (recordId: string) => {
@@ -575,7 +775,7 @@ const buildKanbanColumns = (): KanbanColumn[] => {
     id: option.id,
     label: option.label,
     color: option.color,
-    records: normalized.value.records.filter((record) => String(record.values[field?.id || ''] || '') === option.id),
+    records: kanbanRecords().filter((record) => String(record.values[field?.id || ''] || '') === option.id),
   }))
 }
 
@@ -597,12 +797,28 @@ const commitKanbanDrag = () => {
   const orderedRecordIds = new Set<string>()
 
   kanbanColumns.value.forEach((column) => {
-    column.records.forEach((draftRecord) => {
+    column.records.forEach((draftRecord, index) => {
       const record = recordsById.get(draftRecord.id)
       if (!record || orderedRecordIds.has(record.id)) return
-      if (field) record.values[field.id] = column.id
+      if (field) {
+        record.values[field.id] = column.id
+        if (isLearningPlan.value) {
+          record.order = index
+          descendantRecords(record, next.records).forEach((child) => {
+            child.values[field.id] = column.id
+          })
+        }
+      }
       orderedRecordIds.add(record.id)
       orderedRecords.push(record)
+      if (isLearningPlan.value) {
+        descendantRecords(record, next.records).forEach((child) => {
+          if (!orderedRecordIds.has(child.id)) {
+            orderedRecordIds.add(child.id)
+            orderedRecords.push(child)
+          }
+        })
+      }
     })
   })
 
@@ -618,6 +834,30 @@ const finishKanbanDrag = () => {
   commitKanbanDrag()
   kanbanDragActive.value = false
   syncKanbanColumns()
+}
+
+const startNativeKanbanDrag = (event: DragEvent, recordId: string) => {
+  nativeDraggedRecordId.value = recordId
+  event.dataTransfer?.setData('text/plain', recordId)
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+const dropNativeKanbanCard = (event: DragEvent, columnId: string) => {
+  event.preventDefault()
+  const recordId = event.dataTransfer?.getData('text/plain') || nativeDraggedRecordId.value
+  nativeDraggedRecordId.value = ''
+  const field = kanbanField.value
+  if (!recordId || !field) return
+  const next = clone()
+  const record = next.records.find((item) => item.id === recordId)
+  if (!record) return
+  record.values[field.id] = columnId
+  if (isLearningPlan.value) {
+    descendantRecords(record, next.records).forEach((child) => {
+      child.values[field.id] = columnId
+    })
+  }
+  commit(next)
 }
 
 const hasContextMenu = computed(() => kanbanMenu.value.visible || fieldMenu.value.visible)
@@ -666,6 +906,8 @@ onBeforeUnmount(() => {
       </div>
       <div class="multi-table__actions" v-if="editable">
         <button type="button" @click="applyTaskBoardPreset">任务看板</button>
+        <button type="button" @click="applyLearningPlanPreset">学习计划</button>
+        <button type="button" @click="showAiPanel = !showAiPanel">AI 生成计划</button>
         <button type="button" @click="addField">字段</button>
         <button type="button" @click="addFieldByType('url', '链接')">URL字段</button>
         <button type="button" @click="addFieldByType('lifecycle', '生命周期')">生命周期</button>
@@ -675,6 +917,51 @@ onBeforeUnmount(() => {
         总工时 {{ formatHours(totalEstimatedHours) }}
       </div>
     </header>
+
+    <section v-if="editable && showAiPanel" class="learning-plan-ai">
+      <div class="learning-plan-ai__form">
+        <label class="learning-plan-ai__topic">
+          学习目标
+          <textarea v-model="learningPlanForm.topic" rows="3" placeholder="例如：两周内入门机器学习基础"></textarea>
+        </label>
+        <label>
+          总可用小时
+          <input v-model="learningPlanForm.totalHours" type="number" min="0" step="0.5" />
+        </label>
+        <label>
+          每日小时
+          <input v-model="learningPlanForm.dailyHours" type="number" min="0" step="0.5" />
+        </label>
+        <label>
+          截止日期
+          <input v-model="learningPlanForm.deadline" type="date" />
+        </label>
+        <button type="button" :disabled="generatingPlan" @click="generatePlan">
+          {{ generatingPlan ? '生成中...' : '生成' }}
+        </button>
+      </div>
+      <p v-if="aiPlanError" class="learning-plan-ai__error">{{ aiPlanError }}</p>
+      <div v-if="generatedPlan" class="learning-plan-ai__preview">
+        <div class="learning-plan-ai__preview-head">
+          <strong>{{ generatedPlan.title }}</strong>
+          <span>总工时 {{ formatHours(learningPlanPreviewTotalHours) }}</span>
+          <button type="button" @click="confirmGeneratedPlan">确认替换当前学习计划</button>
+        </div>
+        <ul class="learning-plan-preview">
+          <li v-for="item in generatedPlan.items" :key="item.title">
+            <strong>{{ item.title }}</strong>
+            <span>{{ formatHours(planNodeHours(item)) }}</span>
+            <p v-if="item.description">{{ item.description }}</p>
+            <ul v-if="item.children?.length">
+              <li v-for="child in item.children" :key="child.title">
+                <span>{{ child.title }}</span>
+                <small>{{ formatHours(planNodeHours(child)) }}</small>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </section>
 
     <section v-if="editable && settingsField" class="field-settings">
       <div class="field-settings__main">
@@ -755,6 +1042,8 @@ onBeforeUnmount(() => {
           v-model="column.records"
           class="kanban-column__body"
           :data-kanban-group-id="column.id"
+          @dragover.prevent
+          @drop="dropNativeKanbanCard($event, column.id)"
           group="multi-table-kanban"
           draggable=".kanban-card"
           filter="input, textarea, select, button, a, [contenteditable='true'], .record-subtasks"
@@ -778,11 +1067,14 @@ onBeforeUnmount(() => {
             :status-label="optionLabel(kanbanField, record.values[kanbanField?.id || ''])"
             :show-hours="Boolean(estimatedHoursField)"
             :hours-label="formatHours(recordTotalHours(record))"
-            :is-task-table="isTaskTable"
+            :is-task-table="isTaskTable && !isLearningPlan"
+            :is-learning-plan="isLearningPlan"
+            :learning-children="learningPlanKanbanTree(record)"
             :editable="editable"
             @add-subtask="addSubtask(record.id)"
             @update-subtask="(subtaskId, patch) => updateSubtask(record.id, subtaskId, patch)"
             @delete-subtask="(subtaskId) => deleteSubtask(record.id, subtaskId)"
+            @native-dragstart="(event) => startNativeKanbanDrag(event, record.id)"
           />
         </VueDraggable>
       </section>
@@ -811,7 +1103,11 @@ onBeforeUnmount(() => {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="record in normalized.records" :key="record.id">
+          <tr
+            v-for="record in displayRecords"
+            :key="record.id"
+            :class="{ 'multi-table__tree-row': isLearningPlan, 'multi-table__tree-section': isLearningPlan && recordHasChildren(record) }"
+          >
             <td v-for="field in normalized.fields" :key="field.id">
               <select
                 v-if="editable && (field.type === 'singleSelect' || field.type === 'lifecycle')"
@@ -826,12 +1122,19 @@ onBeforeUnmount(() => {
                 :checked="Boolean(record.values[field.id])"
                 @change="updateCell(record.id, field.id, ($event.target as HTMLInputElement).checked)"
               />
+              <span
+                v-else-if="isLearningPlan && field.type === 'estimatedHours' && recordHasChildren(record)"
+                class="learning-plan-hours"
+              >
+                {{ formatHours(recordTotalHours(record)) }}
+              </span>
               <input
                 v-else-if="editable"
                 :type="inputTypeForField(field)"
                 :min="field.type === 'estimatedHours' ? 0 : undefined"
                 :step="field.type === 'estimatedHours' ? 0.5 : undefined"
                 :value="String(record.values[field.id] ?? '')"
+                :style="isLearningPlan && field.id === taskTitleField?.id ? { paddingLeft: `${recordDepth(record) * 20 + 8}px` } : undefined"
                 @input="updateCell(record.id, field.id, field.type === 'number' || field.type === 'estimatedHours' ? Number(($event.target as HTMLInputElement).value) : ($event.target as HTMLInputElement).value)"
               />
               <a
@@ -851,7 +1154,7 @@ onBeforeUnmount(() => {
               </span>
               <span v-else>{{ displayValue(field, record.values[field.id]) }}</span>
               <div
-                v-if="isTaskTable && field.id === taskTitleField?.id"
+                v-if="isTaskTable && !isLearningPlan && field.id === taskTitleField?.id"
                 class="record-subtasks record-subtasks--grid"
                 @pointerdown.stop
                 @mousedown.stop
@@ -984,6 +1287,85 @@ onBeforeUnmount(() => {
   color: #334155;
   font-size: 13px;
   background: #fff;
+}
+
+.learning-plan-ai {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f9fbfd;
+}
+
+.learning-plan-ai__form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(110px, 150px)) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.learning-plan-ai label {
+  display: grid;
+  gap: 4px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.learning-plan-ai textarea {
+  min-height: 70px;
+  resize: vertical;
+}
+
+.learning-plan-ai input,
+.learning-plan-ai textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 6px 8px;
+  color: #334155;
+  background: #fff;
+}
+
+.learning-plan-ai__error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.learning-plan-ai__preview {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
+.learning-plan-ai__preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.learning-plan-preview {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.learning-plan-preview p {
+  margin: 4px 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.learning-plan-preview small,
+.learning-plan-preview span {
+  margin-left: 6px;
+  color: #64748b;
 }
 
 button {
@@ -1124,6 +1506,17 @@ select:focus {
 
 td input[type='checkbox'] {
   width: auto;
+}
+
+.learning-plan-hours {
+  display: inline-block;
+  color: #334155;
+  font-weight: 700;
+}
+
+.multi-table__tree-section td {
+  background: #f8fafc;
+  font-weight: 700;
 }
 
 .multi-table__add-row td {

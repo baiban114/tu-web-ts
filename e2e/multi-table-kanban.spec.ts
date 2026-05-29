@@ -78,7 +78,7 @@ test('opens field actions from the multi-table grid header', async ({ page }) =>
   await expect(block).toBeVisible()
 
   await block.getByRole('button', { name: '表格' }).click()
-  const fieldHeader = block.locator('th[data-field-id="title"]').first()
+  const fieldHeader = block.locator('th[data-field-id="e2eTitle"]').first()
   await expect(fieldHeader).toBeVisible()
 
   await fieldHeader.click({ button: 'right' })
@@ -118,12 +118,12 @@ test('inserts a multi-table field from the field menu', async ({ page }) => {
   await expect(block).toBeVisible()
 
   await block.getByRole('button', { name: '表格' }).click()
-  await block.locator('th[data-field-id="status"]').first().click({ button: 'right' })
+  await block.locator('th[data-field-id="e2eStatus"]').first().click({ button: 'right' })
   const menu = page.locator('.multi-table-menu').filter({ has: page.getByRole('button', { name: '字段设置' }) })
   await menu.getByRole('button', { name: '在左侧新增列' }).click()
 
-  await expect(block.locator('.field-settings input').first()).toHaveValue('字段 5')
-  await expect(block.locator('thead th')).toHaveCount(5)
+  await expect(block.locator('.field-settings input').first()).toHaveValue('字段 3')
+  await expect(block.locator('thead th')).toHaveCount(3)
 
   const insertedFieldId = await block.locator('thead th').nth(1).getAttribute('data-field-id')
   expect(insertedFieldId).toBeTruthy()
@@ -140,4 +140,49 @@ test('adds a multi-table record from the grid add row control', async ({ page })
   await block.getByRole('button', { name: '+ 新增一行' }).click()
   await expect(block.locator('tbody tr')).toHaveCount(3)
   await expect(block.locator('tbody tr').nth(1).locator('td').first().locator('input')).toHaveValue('')
+})
+
+async function generateMockLearningPlan(page: Page) {
+  page.once('dialog', (dialog) => dialog.accept())
+  const block = page.locator('.multi-table').last()
+  await block.getByRole('button', { name: '学习计划' }).click()
+  await block.getByRole('button', { name: 'AI 生成计划' }).click()
+  await block.getByPlaceholder('例如：两周内入门机器学习基础').fill('学习 TypeScript')
+  await block.getByLabel('总可用小时').fill('12')
+  await block.getByRole('button', { name: '生成', exact: true }).click()
+  await expect(block.locator('.learning-plan-ai__preview')).toContainText('学习 TypeScript 学习计划')
+  await block.getByRole('button', { name: '确认替换当前学习计划' }).click()
+  return block
+}
+
+test('generates a mock learning plan and replaces the table with a task tree', async ({ page }) => {
+  const block = await generateMockLearningPlan(page)
+
+  await expect(block.locator('tbody tr.multi-table__tree-row')).toHaveCount(9)
+  await expect(block).toContainText('建立基础框架')
+  await expect(block).toContainText('梳理概念地图')
+  await expect(block.locator('.multi-table__summary')).toContainText('总工时')
+
+  await block.getByRole('button', { name: '看板', exact: true }).click()
+  await expect(block.locator('.kanban-card')).toHaveCount(3)
+  await expect(block.locator('.kanban-card').first()).toContainText('梳理概念地图')
+})
+
+test('dragging a learning-plan chapter updates descendant statuses', async ({ page }) => {
+  const block = await generateMockLearningPlan(page)
+
+  await block.getByRole('button', { name: '看板', exact: true }).click()
+  const source = block.locator('.kanban-column__body[data-kanban-group-id="todo"] .kanban-card').first()
+  const target = block.locator('.kanban-column__body[data-kanban-group-id="done"]')
+  const dataTransfer = await page.evaluateHandle(() => new DataTransfer())
+  await source.dispatchEvent('dragstart', { dataTransfer })
+  await target.dispatchEvent('dragover', { dataTransfer })
+  await target.dispatchEvent('drop', { dataTransfer })
+  await expect(block.locator('[data-kanban-group-id="done"] .kanban-card')).toContainText('建立基础框架')
+
+  await block.getByRole('button', { name: '表格' }).click()
+  const firstThreeStatuses = await block.locator('tbody tr.multi-table__tree-row select').evaluateAll((selects) => {
+    return selects.slice(0, 3).map((select) => (select as HTMLSelectElement).value)
+  })
+  expect(firstThreeStatuses).toEqual(['done', 'done', 'done'])
 })
