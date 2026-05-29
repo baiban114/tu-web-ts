@@ -141,6 +141,9 @@ const showAiPanel = ref(false)
 const generatingPlan = ref(false)
 const aiPlanError = ref('')
 const generatedPlan = ref<LearningPlanResponse | null>(null)
+const learningPlanPreviewRef = ref<HTMLElement | null>(null)
+const learningPlanPreviewHeight = ref<number | null>(null)
+const learningPlanPreviewResizeCleanup = ref<(() => void) | null>(null)
 const learningPlanForm = ref({
   topic: '',
   totalHours: '',
@@ -483,6 +486,12 @@ const learningPlanKanbanTree = (record: MultiTableRecord): LearningPlanKanbanNod
 
 const learningPlanPreviewTotalHours = computed(() => generatedPlan.value?.totalEstimatedHours || 0)
 
+const learningPlanPreviewStyle = computed(() => {
+  return learningPlanPreviewHeight.value == null
+    ? undefined
+    : { height: `${learningPlanPreviewHeight.value}px` }
+})
+
 const planNodeHours = (node: LearningPlanNode): number => {
   const own = toFiniteNumber(node.estimatedHours)
   const children = (node.children || []).reduce((sum, child) => sum + planNodeHours(child), 0)
@@ -493,6 +502,7 @@ const generatePlan = async () => {
   const topic = learningPlanForm.value.topic.trim()
   aiPlanError.value = ''
   generatedPlan.value = null
+  learningPlanPreviewHeight.value = null
   if (!topic) {
     aiPlanError.value = '请先填写学习目标。'
     return
@@ -545,6 +555,44 @@ const confirmGeneratedPlan = () => {
   next.records = nodesToRecords(generatedPlan.value.items)
   next.activeViewId = 'view-table'
   commit(next)
+}
+
+const startLearningPlanPreviewResize = (event: MouseEvent | PointerEvent) => {
+  const preview = learningPlanPreviewRef.value
+  if (!preview) return
+  learningPlanPreviewResizeCleanup.value?.()
+  if ('pointerId' in event && event.currentTarget instanceof HTMLElement) {
+    event.currentTarget.setPointerCapture?.(event.pointerId)
+  }
+  const startY = event.clientY
+  const startHeight = preview.getBoundingClientRect().height
+  const minHeight = 160
+  learningPlanPreviewHeight.value = Math.max(minHeight, Math.round(startHeight))
+
+  const onMove = (moveEvent: MouseEvent | PointerEvent) => {
+    const nextHeight = Math.round(startHeight + moveEvent.clientY - startY)
+    learningPlanPreviewHeight.value = Math.max(minHeight, nextHeight)
+  }
+
+  const cleanup = () => {
+    document.removeEventListener('mousemove', onMove)
+    document.removeEventListener('pointermove', onMove)
+    document.removeEventListener('mouseup', cleanup)
+    document.removeEventListener('pointerup', cleanup)
+    document.removeEventListener('pointercancel', cleanup)
+    document.body.style.userSelect = ''
+    document.body.style.cursor = ''
+    learningPlanPreviewResizeCleanup.value = null
+  }
+
+  learningPlanPreviewResizeCleanup.value = cleanup
+  document.body.style.userSelect = 'none'
+  document.body.style.cursor = 'ns-resize'
+  document.addEventListener('mousemove', onMove)
+  document.addEventListener('pointermove', onMove)
+  document.addEventListener('mouseup', cleanup)
+  document.addEventListener('pointerup', cleanup)
+  document.addEventListener('pointercancel', cleanup)
 }
 
 const addSubtask = (recordId: string) => {
@@ -885,6 +933,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  learningPlanPreviewResizeCleanup.value?.()
   window.removeEventListener('click', closeContextMenus)
   window.removeEventListener('keydown', closeContextMenusOnEscape)
 })
@@ -941,25 +990,38 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <p v-if="aiPlanError" class="learning-plan-ai__error">{{ aiPlanError }}</p>
-      <div v-if="generatedPlan" class="learning-plan-ai__preview">
+      <div
+        v-if="generatedPlan"
+        ref="learningPlanPreviewRef"
+        class="learning-plan-ai__preview"
+        :style="learningPlanPreviewStyle"
+      >
         <div class="learning-plan-ai__preview-head">
           <strong>{{ generatedPlan.title }}</strong>
           <span>总工时 {{ formatHours(learningPlanPreviewTotalHours) }}</span>
           <button type="button" @click="confirmGeneratedPlan">确认替换当前学习计划</button>
         </div>
-        <ul class="learning-plan-preview">
-          <li v-for="item in generatedPlan.items" :key="item.title">
-            <strong>{{ item.title }}</strong>
-            <span>{{ formatHours(planNodeHours(item)) }}</span>
-            <p v-if="item.description">{{ item.description }}</p>
-            <ul v-if="item.children?.length">
-              <li v-for="child in item.children" :key="child.title">
-                <span>{{ child.title }}</span>
-                <small>{{ formatHours(planNodeHours(child)) }}</small>
-              </li>
-            </ul>
-          </li>
-        </ul>
+        <div class="learning-plan-ai__preview-body">
+          <ul class="learning-plan-preview">
+            <li v-for="item in generatedPlan.items" :key="item.title">
+              <strong>{{ item.title }}</strong>
+              <span>{{ formatHours(planNodeHours(item)) }}</span>
+              <p v-if="item.description">{{ item.description }}</p>
+              <ul v-if="item.children?.length">
+                <li v-for="child in item.children" :key="child.title">
+                  <span>{{ child.title }}</span>
+                  <small>{{ formatHours(planNodeHours(child)) }}</small>
+                </li>
+              </ul>
+            </li>
+          </ul>
+        </div>
+        <div
+          class="learning-plan-ai__preview-resize"
+          title="拖拽调整预览高度"
+          @pointerdown.prevent.stop="startLearningPlanPreviewResize"
+          @mousedown.prevent.stop="startLearningPlanPreviewResize"
+        />
       </div>
     </section>
 
@@ -1334,11 +1396,14 @@ onBeforeUnmount(() => {
 }
 
 .learning-plan-ai__preview {
+  position: relative;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 8px;
   border: 1px solid #d8dee8;
   border-radius: 8px;
-  padding: 10px;
+  min-height: 160px;
+  padding: 10px 10px 14px;
   background: #fff;
 }
 
@@ -1347,6 +1412,28 @@ onBeforeUnmount(() => {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.learning-plan-ai__preview-body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.learning-plan-ai__preview-resize {
+  justify-self: center;
+  width: 54px;
+  height: 12px;
+  border: 1px solid rgba(22, 119, 255, 0.3);
+  border-radius: 4px;
+  background: rgba(22, 119, 255, 0.08);
+  cursor: ns-resize;
+  pointer-events: auto;
+}
+
+.learning-plan-ai__preview-resize:hover {
+  border-color: #1677ff;
+  background: rgba(22, 119, 255, 0.2);
+  box-shadow: 0 0 4px rgba(22, 119, 255, 0.3);
 }
 
 .learning-plan-preview {

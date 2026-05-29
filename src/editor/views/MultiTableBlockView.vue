@@ -31,8 +31,18 @@ const updateMultiTableData = (data: MultiTableData) => {
   flushEditorContentChange()
 }
 
-const onResize = (width: number | null, _height: number | null) => {
-  props.updateAttributes({ width })
+const blockHeight = computed(() => {
+  const value = Number(props.node.attrs.height)
+  return Number.isFinite(value) && value > 0 ? value : undefined
+})
+
+const blockWidth = computed(() => {
+  const value = Number(props.node.attrs.width)
+  return Number.isFinite(value) && value > 0 ? value : undefined
+})
+
+const onResize = (width: number | null, height: number | null) => {
+  props.updateAttributes({ width, height })
 }
 </script>
 
@@ -40,8 +50,11 @@ const onResize = (width: number | null, _height: number | null) => {
   <node-view-wrapper class="multi-table-block-view">
     <ResizableBlockWrapper
       :selected="selected"
-      :resizable-axes="{ width: true, height: false }"
+      :resizable-axes="{ width: true, height: true }"
+      :width="blockWidth"
+      :height="blockHeight"
       :min-width="320"
+      :min-height="220"
       block-type-label="多维表格"
       :block-id="blockId"
       block-type="multiTable"
@@ -51,11 +64,41 @@ const onResize = (width: number | null, _height: number | null) => {
       @resize="onResize"
       @compound-badge-click="(bid, annotationId, event) => onCompoundBadgeClick(bid, annotationId, event)"
     >
-      <MultiTableBlock
-        :data="multiTableData"
-        :editable="editor.isEditable"
-        @change="updateMultiTableData"
-      />
+      <div class="multi-table-block-view__body" :class="{ 'multi-table-block-view__body--fixed-height': blockHeight != null }">
+        <MultiTableBlock
+          :data="multiTableData"
+          :editable="editor.isEditable"
+          @change="updateMultiTableData"
+        />
+      </div>
     </ResizableBlockWrapper>
   </node-view-wrapper>
 </template>
+
+<style scoped>
+.multi-table-block-view__body {
+  min-height: 0;
+}
+
+.multi-table-block-view__body--fixed-height {
+  flex: 1;
+  overflow: hidden;
+}
+
+.multi-table-block-view__body--fixed-height :deep(.multi-table) {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.multi-table-block-view__body--fixed-height :deep(.multi-table__grid),
+.multi-table-block-view__body--fixed-height :deep(.multi-table__kanban) {
+  flex: 1;
+  min-height: 0;
+}
+
+.multi-table-block-view__body--fixed-height :deep(.multi-table__grid) {
+  max-height: none;
+}
+</style>

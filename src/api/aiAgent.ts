@@ -1,4 +1,5 @@
 import { isMockDataSource } from '@/dev/dataSource'
+import { appendMockAiAgentRunLog } from './aiRuns'
 import { request } from './http'
 
 export interface GenerateLearningPlanPayload {
@@ -31,6 +32,14 @@ const mockStep = (title: string, estimatedHours: number, resource: string): Lear
   estimatedHours,
   resource,
 })
+
+const readMockAgentSettings = () => {
+  try {
+    return JSON.parse(window.localStorage.getItem('tu:mock-ai-settings') || '{}')
+  } catch {
+    return {}
+  }
+}
 
 function generateLearningPlanMock(payload: GenerateLearningPlanPayload): Promise<LearningPlanResponse> {
   const topic = payload.topic.trim()
@@ -66,11 +75,63 @@ function generateLearningPlanMock(payload: GenerateLearningPlanPayload): Promise
     return sum + (section.children || []).reduce((childSum, child) => childSum + Number(child.estimatedHours || 0), 0)
   }, 0)
 
-  return Promise.resolve({
+  const response = {
     title: `${topic} 学习计划`,
     totalEstimatedHours: Math.round(totalEstimatedHours * 100) / 100,
     items,
+  }
+  const settings = readMockAgentSettings()
+  const now = new Date()
+  const finishedAt = new Date(now.getTime() + 42)
+  const systemPrompt = [
+    'You generate structured learning plans. Return only valid JSON.',
+    'Default to Simplified Chinese for all user-facing output values.',
+  ].join('\n')
+  const userPrompt = [
+    `Learning goal: ${topic}`,
+    `Total available hours: ${payload.totalHours ?? 'not specified'}`,
+    `Daily study hours: ${payload.dailyHours ?? 'not specified'}`,
+    `Deadline: ${payload.deadline || 'not specified'}`,
+    'Generate a chapter-based multi-level learning plan.',
+  ].join('\n')
+  const requestBody = {
+    model: settings.model || 'mock-model',
+    temperature: 0.2,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
+    ],
+  }
+  const rawResponse = {
+    choices: [
+      { message: { content: JSON.stringify(response) } },
+    ],
+    usage: {
+      prompt_tokens: 120,
+      completion_tokens: 260,
+      total_tokens: 380,
+    },
+  }
+  appendMockAiAgentRunLog({
+    taskType: 'learning-plan',
+    status: 'success',
+    baseUrl: settings.baseUrl || 'mock://ai-agent',
+    model: settings.model || 'mock-model',
+    startedAt: now.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    durationMs: 42,
+    systemPrompt,
+    userPrompt,
+    requestBodyJson: JSON.stringify(requestBody, null, 2),
+    rawResponseBody: JSON.stringify(rawResponse, null, 2),
+    outputText: JSON.stringify(response, null, 2),
+    promptTokens: 120,
+    completionTokens: 260,
+    totalTokens: 380,
   })
+
+  return Promise.resolve(response)
 }
 
 export function generateLearningPlan(payload: GenerateLearningPlanPayload): Promise<LearningPlanResponse> {

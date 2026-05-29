@@ -10,6 +10,10 @@ const readEmbed = async (page: Page, embedId: string) => {
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(() => {
     window.localStorage.setItem('tu:data-source', 'mock')
+    if (!window.sessionStorage.getItem('tu:multi-table-e2e-init')) {
+      window.localStorage.removeItem('tu:mock-ai-run-logs')
+      window.sessionStorage.setItem('tu:multi-table-e2e-init', '1')
+    }
     window.localStorage.setItem('tu:mock-state', JSON.stringify({
       knowledgeBases: [
         { id: 'kb-e2e', name: 'E2E', icon: 'T', description: 'E2E mock' },
@@ -142,7 +146,37 @@ test('adds a multi-table record from the grid add row control', async ({ page })
   await expect(block.locator('tbody tr').nth(1).locator('td').first().locator('input')).toHaveValue('')
 })
 
-async function generateMockLearningPlan(page: Page) {
+test('resizes multi-table height from the bottom border handle', async ({ page }) => {
+  const wrapper = page.locator('.multi-table-block-view .resizable-block-wrapper').last()
+  const block = wrapper.locator('.multi-table')
+  await expect(block).toBeVisible()
+
+  const before = await wrapper.boundingBox()
+  expect(before).toBeTruthy()
+  await wrapper.hover()
+
+  const handle = wrapper.locator('.resizable-handle--bottom')
+  await expect(handle).toBeVisible()
+  const handleBox = await handle.boundingBox()
+  expect(handleBox).toBeTruthy()
+
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2)
+  await page.mouse.down()
+  await page.mouse.move(handleBox!.x + handleBox!.width / 2, handleBox!.y + handleBox!.height / 2 + 120)
+  await page.mouse.up()
+
+  await expect.poll(async () => {
+    const box = await wrapper.boundingBox()
+    return Math.round(box?.height || 0)
+  }).toBeGreaterThan(Math.round(before!.height + 80))
+
+  await expect.poll(async () => {
+    const embed = await readEmbed(page, 'mt-e2e')
+    return Math.round(Number(embed?.height || 0))
+  }).toBeGreaterThan(Math.round(before!.height + 80))
+})
+
+async function openMockLearningPlanPreview(page: Page) {
   page.once('dialog', (dialog) => dialog.accept())
   const block = page.locator('.multi-table').last()
   await block.getByRole('button', { name: '学习计划' }).click()
@@ -151,9 +185,37 @@ async function generateMockLearningPlan(page: Page) {
   await block.getByLabel('总可用小时').fill('12')
   await block.getByRole('button', { name: '生成', exact: true }).click()
   await expect(block.locator('.learning-plan-ai__preview')).toContainText('学习 TypeScript 学习计划')
+  return block
+}
+
+async function generateMockLearningPlan(page: Page) {
+  const block = await openMockLearningPlanPreview(page)
   await block.getByRole('button', { name: '确认替换当前学习计划' }).click()
   return block
 }
+
+test('resizes generated learning-plan preview height', async ({ page }) => {
+  const block = await openMockLearningPlanPreview(page)
+  const preview = block.locator('.learning-plan-ai__preview')
+  const before = await preview.boundingBox()
+  expect(before).toBeTruthy()
+
+  const handle = preview.locator('.learning-plan-ai__preview-resize')
+  await expect(handle).toBeVisible()
+  const handleBox = await handle.boundingBox()
+  expect(handleBox).toBeTruthy()
+  const centerX = handleBox!.x + handleBox!.width / 2
+  const centerY = handleBox!.y + handleBox!.height / 2
+
+  await handle.dispatchEvent('mousedown', { button: 0, clientX: centerX, clientY: centerY })
+  await page.dispatchEvent('body', 'mousemove', { button: 0, clientX: centerX, clientY: centerY + 90 })
+  await page.dispatchEvent('body', 'mouseup', { button: 0, clientX: centerX, clientY: centerY + 90 })
+
+  await expect.poll(async () => {
+    const box = await preview.boundingBox()
+    return Math.round(box?.height || 0)
+  }).toBeGreaterThan(Math.round(before!.height + 60))
+})
 
 test('generates a mock learning plan and replaces the table with a task tree', async ({ page }) => {
   const block = await generateMockLearningPlan(page)
@@ -166,6 +228,23 @@ test('generates a mock learning plan and replaces the table with a task tree', a
   await block.getByRole('button', { name: '看板', exact: true }).click()
   await expect(block.locator('.kanban-card')).toHaveCount(3)
   await expect(block.locator('.kanban-card').first()).toContainText('梳理概念地图')
+})
+
+test('writes an agent run log for mock learning-plan generation', async ({ page }) => {
+  await openMockLearningPlanPreview(page)
+
+  await page.goto('/settings')
+  await expect(page.getByRole('heading', { name: 'Agent 记录' })).toBeVisible()
+  await expect(page.locator('.agent-run-log__row')).toContainText('学习计划生成')
+  await expect(page.locator('.agent-run-log__row')).toContainText('成功')
+  await expect(page.locator('.agent-run-log__row')).toContainText('380')
+
+  await page.getByRole('button', { name: '查看记录' }).first().click()
+  const detail = page.locator('.agent-run-log__detail')
+  await expect(detail).toContainText('Learning goal: 学习 TypeScript')
+  await expect(detail).toContainText('System Prompt')
+  await expect(detail).toContainText('Raw Response')
+  await expect(detail).toContainText('Prompt Tokens')
 })
 
 test('dragging a learning-plan chapter updates descendant statuses', async ({ page }) => {

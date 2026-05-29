@@ -14,6 +14,8 @@ interface CompoundBadge {
 const props = defineProps({
   selected: { type: Boolean, default: false },
   resizableAxes: { type: Object as () => ResizableAxes, default: () => ({ width: true, height: true }) },
+  width: { type: Number, default: null },
+  height: { type: Number, default: null },
   minWidth: { type: Number, default: 100 },
   minHeight: { type: Number, default: 40 },
   maxWidth: { type: Number, default: undefined },
@@ -45,8 +47,10 @@ const isLassoSelected = computed(() => lassoSelectedBlockIds?.value.has(props.bl
 
 const wrapperStyle = computed(() => {
   const style: Record<string, string> = {}
-  if (dragWidth.value != null) style.width = `${dragWidth.value}px`
-  if (dragHeight.value != null) style.height = `${dragHeight.value}px`
+  const width = dragWidth.value ?? props.width
+  const height = dragHeight.value ?? props.height
+  if (width != null) style.width = `${width}px`
+  if (height != null) style.height = `${height}px`
   return style
 })
 
@@ -192,6 +196,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .resizable-block-wrapper {
   position: relative;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   border: 1px solid transparent;
   border-radius: 6px;
