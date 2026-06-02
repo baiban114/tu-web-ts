@@ -71,6 +71,7 @@ function embedToBlock(embed: EmbeddedObject): Block {
     timelineData: embed.timelineData,
     refId: embed.refId,
     refType: embed.refType,
+    externalResource: embed.externalResource,
     spacerHeight: embed.spacerHeight,
     width: embed.width,
     height: embed.height,

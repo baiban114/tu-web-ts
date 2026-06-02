@@ -11,11 +11,29 @@ import type {
   TextAnnotation,
 } from '@/api/types';
 import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
+import type {
+  CreateResourceExcerptPayload,
+  CreateResourceItemPayload,
+  CreateResourceTypePayload,
+  CreateResourceWorkPayload,
+  ResourceExcerpt,
+  ResourceItem,
+  ResourceType,
+  ResourceWork,
+  UpdateResourceExcerptPayload,
+  UpdateResourceItemPayload,
+  UpdateResourceTypePayload,
+  UpdateResourceWorkPayload,
+} from '@/api/externalResource';
 
 interface MockState {
   knowledgeBases: KnowledgeBase[];
   pages: Array<Omit<PageItem, 'children'>>;
   contents: Record<string, PageContent>;
+  resourceTypes: ResourceType[];
+  resourceWorks: ResourceWork[];
+  resourceItems: ResourceItem[];
+  resourceExcerpts: ResourceExcerpt[];
 }
 
 const STORAGE_KEY = 'tu:mock-state';
@@ -45,6 +63,7 @@ function blocksToPageContent(blocks: Block[]): PageContent {
       timelineData: block.timelineData,
       refId: block.refId,
       refType: block.refType,
+      externalResource: block.externalResource,
       spacerHeight: block.spacerHeight,
       width: block.width,
       height: block.height,
@@ -156,6 +175,55 @@ const initialState: MockState = {
       },
     ]),
   },
+  resourceTypes: [
+    {
+      id: 'rt-book',
+      code: 'book',
+      name: '图书',
+      icon: 'book',
+      description: '图书资源，支持节选片段管理',
+      identityFieldKey: 'isbn',
+      identityFieldLabel: 'ISBN',
+    },
+  ],
+  resourceWorks: [
+    {
+      id: 'rw-book-demo',
+      typeId: 'rt-book',
+      typeName: '图书',
+      title: '示例之书',
+      subtitle: 'Mock 外部资源',
+      description: '用于验证外部资源插入和图书节选。',
+    },
+  ],
+  resourceItems: [
+    {
+      id: 'ri-book-demo',
+      typeId: 'rt-book',
+      typeName: '图书',
+      identityFieldKey: 'isbn',
+      identityFieldLabel: 'ISBN',
+      workId: 'rw-book-demo',
+      workTitle: '示例之书',
+      title: '示例之书',
+      identityValue: '978-7-0000-0000-1',
+      sourceUrl: 'https://example.com/books/demo',
+      edition: '第一版',
+      note: 'Mock 图书资源',
+    },
+  ],
+  resourceExcerpts: [
+    {
+      id: 're-book-demo-1',
+      resourceItemId: 'ri-book-demo',
+      resourceItemTitle: '示例之书',
+      title: '关于结构化笔记',
+      locator: '第 1 章',
+      excerptText: '好的笔记系统应当让来源、节选和自己的思考保持清晰关系。',
+      note: 'Mock 默认节选',
+      sortOrder: 0,
+    },
+  ],
 };
 
 function cloneState<T>(value: T): T {
@@ -177,7 +245,13 @@ function loadState(): MockState {
     if (!parsed || !Array.isArray(parsed.knowledgeBases) || !Array.isArray(parsed.pages) || !parsed.contents) {
       return cloneState(initialState);
     }
-    return parsed;
+    return {
+      ...parsed,
+      resourceTypes: Array.isArray(parsed.resourceTypes) ? parsed.resourceTypes : cloneState(initialState.resourceTypes),
+      resourceWorks: Array.isArray(parsed.resourceWorks) ? parsed.resourceWorks : cloneState(initialState.resourceWorks),
+      resourceItems: Array.isArray(parsed.resourceItems) ? parsed.resourceItems : cloneState(initialState.resourceItems),
+      resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
+    };
   } catch {
     return cloneState(initialState);
   }
@@ -193,6 +267,275 @@ function persistState(): void {
 
 function nextId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getResourceTypeOrThrow(typeId: string): ResourceType {
+  const type = state.resourceTypes.find((item) => item.id === typeId);
+  if (!type) throw new Error(`Resource type not found: ${typeId}`);
+  return type;
+}
+
+function getResourceWorkOrThrow(workId: string): ResourceWork {
+  const work = state.resourceWorks.find((item) => item.id === workId);
+  if (!work) throw new Error(`Resource work not found: ${workId}`);
+  return work;
+}
+
+function getResourceItemOrThrow(itemId: string): ResourceItem {
+  const item = state.resourceItems.find((entry) => entry.id === itemId);
+  if (!item) throw new Error(`Resource item not found: ${itemId}`);
+  return item;
+}
+
+function getResourceExcerptOrThrow(excerptId: string): ResourceExcerpt {
+  const excerpt = state.resourceExcerpts.find((entry) => entry.id === excerptId);
+  if (!excerpt) throw new Error(`Resource excerpt not found: ${excerptId}`);
+  return excerpt;
+}
+
+function ensureBookResourceItem(item: ResourceItem): void {
+  const type = getResourceTypeOrThrow(item.typeId);
+  if (type.code !== 'book') throw new Error('resource excerpts are only supported for book resources');
+}
+
+function hydrateResourceWork(work: ResourceWork): ResourceWork {
+  const type = state.resourceTypes.find((item) => item.id === work.typeId);
+  return {
+    ...work,
+    typeName: type?.name || work.typeName || '',
+  };
+}
+
+function hydrateResourceItem(item: ResourceItem): ResourceItem {
+  const type = state.resourceTypes.find((entry) => entry.id === item.typeId);
+  const work = state.resourceWorks.find((entry) => entry.id === item.workId);
+  return {
+    ...item,
+    typeName: type?.name || item.typeName || '',
+    identityFieldKey: type?.identityFieldKey || item.identityFieldKey || '',
+    identityFieldLabel: type?.identityFieldLabel || item.identityFieldLabel || '',
+    workId: work?.id || item.workId || '',
+    workTitle: work?.title || item.workTitle || '',
+  };
+}
+
+function hydrateResourceExcerpt(excerpt: ResourceExcerpt): ResourceExcerpt {
+  const item = state.resourceItems.find((entry) => entry.id === excerpt.resourceItemId);
+  return {
+    ...excerpt,
+    resourceItemTitle: item?.title || excerpt.resourceItemTitle || '',
+  };
+}
+
+export function listResourceTypesMock(): ResourceType[] {
+  return cloneState(state.resourceTypes);
+}
+
+export function createResourceTypeMock(payload: CreateResourceTypePayload): ResourceType {
+  const code = payload.code.trim().toLowerCase();
+  if (state.resourceTypes.some((item) => item.code === code)) throw new Error('resource type code already exists');
+  if (state.resourceTypes.some((item) => item.name === payload.name.trim())) throw new Error('resource type name already exists');
+  const type: ResourceType = {
+    id: nextId('rt'),
+    code,
+    name: payload.name.trim(),
+    icon: payload.icon || '',
+    description: payload.description || '',
+    identityFieldKey: payload.identityFieldKey.trim(),
+    identityFieldLabel: payload.identityFieldLabel.trim(),
+  };
+  state.resourceTypes.push(type);
+  persistState();
+  return cloneState(type);
+}
+
+export function updateResourceTypeMock(id: string, payload: UpdateResourceTypePayload): ResourceType {
+  const type = getResourceTypeOrThrow(id);
+  Object.assign(type, {
+    name: payload.name.trim(),
+    icon: payload.icon || '',
+    description: payload.description || '',
+    identityFieldKey: payload.identityFieldKey.trim(),
+    identityFieldLabel: payload.identityFieldLabel.trim(),
+  });
+  persistState();
+  return cloneState(type);
+}
+
+export function deleteResourceTypeMock(id: string): void {
+  if (state.resourceWorks.some((work) => work.typeId === id) || state.resourceItems.some((item) => item.typeId === id)) {
+    throw new Error('resource type is in use');
+  }
+  state.resourceTypes = state.resourceTypes.filter((item) => item.id !== id);
+  persistState();
+}
+
+export function listResourceWorksMock(typeId?: string): ResourceWork[] {
+  return cloneState(state.resourceWorks
+    .filter((work) => !typeId || work.typeId === typeId)
+    .map(hydrateResourceWork));
+}
+
+export function createResourceWorkMock(payload: CreateResourceWorkPayload): ResourceWork {
+  const type = getResourceTypeOrThrow(payload.typeId);
+  const work: ResourceWork = {
+    id: nextId('rw'),
+    typeId: type.id,
+    typeName: type.name,
+    title: payload.title.trim(),
+    subtitle: payload.subtitle || '',
+    description: payload.description || '',
+  };
+  state.resourceWorks.push(work);
+  persistState();
+  return cloneState(work);
+}
+
+export function updateResourceWorkMock(id: string, payload: UpdateResourceWorkPayload): ResourceWork {
+  const type = getResourceTypeOrThrow(payload.typeId);
+  const work = getResourceWorkOrThrow(id);
+  Object.assign(work, {
+    typeId: type.id,
+    typeName: type.name,
+    title: payload.title.trim(),
+    subtitle: payload.subtitle || '',
+    description: payload.description || '',
+  });
+  persistState();
+  return cloneState(hydrateResourceWork(work));
+}
+
+export function deleteResourceWorkMock(id: string): void {
+  if (state.resourceItems.some((item) => item.workId === id)) throw new Error('resource work is in use');
+  state.resourceWorks = state.resourceWorks.filter((item) => item.id !== id);
+  persistState();
+}
+
+export function listResourceItemsMock(params: { typeId?: string; workId?: string; identityValue?: string } = {}): ResourceItem[] {
+  const items = state.resourceItems.filter((item) => {
+    if (params.typeId && item.typeId !== params.typeId) return false;
+    if (params.workId && item.workId !== params.workId) return false;
+    if (params.identityValue && item.identityValue !== params.identityValue) return false;
+    return true;
+  });
+  return cloneState(items.map(hydrateResourceItem));
+}
+
+export function getResourceItemMock(id: string): ResourceItem {
+  return cloneState(hydrateResourceItem(getResourceItemOrThrow(id)));
+}
+
+export function createResourceItemMock(payload: CreateResourceItemPayload): ResourceItem {
+  const type = getResourceTypeOrThrow(payload.typeId);
+  const work = payload.workId ? getResourceWorkOrThrow(payload.workId) : null;
+  if (work && work.typeId !== type.id) throw new Error('resource work does not belong to resource type');
+  const identityValue = payload.identityValue?.trim() || '';
+  if (identityValue && state.resourceItems.some((item) => item.typeId === type.id && item.identityValue === identityValue)) {
+    throw new Error('resource item identity already exists');
+  }
+  const item: ResourceItem = {
+    id: nextId('ri'),
+    typeId: type.id,
+    typeName: type.name,
+    identityFieldKey: type.identityFieldKey,
+    identityFieldLabel: type.identityFieldLabel,
+    workId: work?.id || '',
+    workTitle: work?.title || '',
+    title: payload.title.trim(),
+    identityValue,
+    sourceUrl: payload.sourceUrl || '',
+    edition: payload.edition || '',
+    note: payload.note || '',
+  };
+  state.resourceItems.push(item);
+  persistState();
+  return cloneState(item);
+}
+
+export function updateResourceItemMock(id: string, payload: UpdateResourceItemPayload): ResourceItem {
+  const type = getResourceTypeOrThrow(payload.typeId);
+  const work = payload.workId ? getResourceWorkOrThrow(payload.workId) : null;
+  if (work && work.typeId !== type.id) throw new Error('resource work does not belong to resource type');
+  const identityValue = payload.identityValue?.trim() || '';
+  const item = getResourceItemOrThrow(id);
+  Object.assign(item, {
+    typeId: type.id,
+    typeName: type.name,
+    identityFieldKey: type.identityFieldKey,
+    identityFieldLabel: type.identityFieldLabel,
+    workId: work?.id || '',
+    workTitle: work?.title || '',
+    title: payload.title.trim(),
+    identityValue,
+    sourceUrl: payload.sourceUrl || '',
+    edition: payload.edition || '',
+    note: payload.note || '',
+  });
+  state.resourceExcerpts
+    .filter((excerpt) => excerpt.resourceItemId === id)
+    .forEach((excerpt) => { excerpt.resourceItemTitle = item.title; });
+  persistState();
+  return cloneState(hydrateResourceItem(item));
+}
+
+export function deleteResourceItemMock(id: string): void {
+  state.resourceItems = state.resourceItems.filter((item) => item.id !== id);
+  state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.resourceItemId !== id);
+  persistState();
+}
+
+export function listResourceExcerptsMock(resourceItemId: string): ResourceExcerpt[] {
+  const item = getResourceItemOrThrow(resourceItemId);
+  ensureBookResourceItem(item);
+  return cloneState(state.resourceExcerpts
+    .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+    .map(hydrateResourceExcerpt));
+}
+
+export function createResourceExcerptMock(resourceItemId: string, payload: CreateResourceExcerptPayload): ResourceExcerpt {
+  const item = getResourceItemOrThrow(resourceItemId);
+  ensureBookResourceItem(item);
+  const maxOrder = Math.max(-1, ...state.resourceExcerpts
+    .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
+    .map((excerpt) => excerpt.sortOrder));
+  const excerpt: ResourceExcerpt = {
+    id: nextId('re'),
+    resourceItemId,
+    resourceItemTitle: item.title,
+    title: payload.title.trim(),
+    locator: payload.locator || '',
+    excerptText: payload.excerptText.trim(),
+    note: payload.note || '',
+    sortOrder: payload.sortOrder ?? maxOrder + 1,
+  };
+  state.resourceExcerpts.push(excerpt);
+  persistState();
+  return cloneState(excerpt);
+}
+
+export function getResourceExcerptMock(id: string): ResourceExcerpt {
+  return cloneState(hydrateResourceExcerpt(getResourceExcerptOrThrow(id)));
+}
+
+export function updateResourceExcerptMock(id: string, payload: UpdateResourceExcerptPayload): ResourceExcerpt {
+  const excerpt = getResourceExcerptOrThrow(id);
+  const item = getResourceItemOrThrow(excerpt.resourceItemId);
+  ensureBookResourceItem(item);
+  Object.assign(excerpt, {
+    title: payload.title.trim(),
+    locator: payload.locator || '',
+    excerptText: payload.excerptText.trim(),
+    note: payload.note || '',
+    sortOrder: payload.sortOrder ?? excerpt.sortOrder,
+  });
+  persistState();
+  return cloneState(hydrateResourceExcerpt(excerpt));
+}
+
+export function deleteResourceExcerptMock(id: string): void {
+  state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.id !== id);
+  persistState();
 }
 
 function firstText(...values: Array<string | undefined>): string | null {
@@ -468,6 +811,7 @@ export function listAllBlocksMock(): BlockWithMeta[] {
         timelineData: embed.timelineData,
         refId: embed.refId,
         refType: embed.refType,
+        externalResource: embed.externalResource,
         spacerHeight: embed.spacerHeight,
         width: embed.width,
         height: embed.height,
@@ -545,6 +889,57 @@ export function listReferencesMock(params: ListReferencesParams = {}): ListRefer
     const pc = state.contents[pageId];
     if (!pc) continue;
     const pageTitle = findPageTitle(pageId);
+
+    for (const embed of (pc.embeds || [])) {
+      if (embed.type !== 'externalResource' || !embed.externalResource?.resourceItemId) continue;
+      const data = embed.externalResource;
+      const item = state.resourceItems.find((entry) => entry.id === data.resourceItemId);
+      const excerpt = data.resourceExcerptId
+        ? state.resourceExcerpts.find((entry) => entry.id === data.resourceExcerptId)
+        : undefined;
+      const snapshot = data.snapshot || { resourceTitle: '' };
+      const status = item && (!data.resourceExcerptId || excerpt) ? 'bound' : 'broken';
+      const haystack = [
+        item?.title,
+        excerpt?.title,
+        excerpt?.excerptText,
+        snapshot.resourceTitle,
+        snapshot.excerptTitle,
+        snapshot.excerptText,
+      ].filter(Boolean).join(' ').toLowerCase();
+      if (params.q && !haystack.includes(params.q.toLowerCase())) continue;
+      if (params.resourceItemId && params.resourceItemId !== data.resourceItemId) continue;
+
+      results.push({
+        id: `mock-extres-${pageId}-${embed.id}`,
+        category: 'external',
+        editable: false,
+        source: {
+          pageId,
+          pageTitle,
+          blockId: embed.id,
+          blockType: 'externalResource',
+          sourceKind: 'externalResource',
+          sourceLocator: `embeds.${embed.id}.externalResource`,
+        },
+        target: {
+          kind: data.mode === 'excerpt' ? 'resource_excerpt' : 'resource',
+          resourceItemId: data.resourceItemId,
+          resourceItemTitle: item?.title || snapshot.resourceTitle,
+          resourceTypeName: item?.typeName || snapshot.resourceTypeName,
+          resourceExcerptId: data.resourceExcerptId || null,
+          resourceExcerptTitle: excerpt?.title || snapshot.excerptTitle,
+          resourceExcerptLocator: excerpt?.locator || snapshot.excerptLocator,
+          url: item?.sourceUrl || snapshot.sourceUrl,
+        },
+        status,
+        citation: {
+          displayText: excerpt?.title || snapshot.excerptTitle || item?.title || snapshot.resourceTitle,
+          locator: excerpt?.locator || snapshot.excerptLocator,
+          note: excerpt?.note || snapshot.excerptNote,
+        },
+      });
+    }
 
     for (const ann of (pc.annotations || [])) {
       if (params.q) {

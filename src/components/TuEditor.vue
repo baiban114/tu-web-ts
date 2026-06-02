@@ -21,6 +21,7 @@ import {
   X6BlockNode,
   TimelineBlockNode,
   RefBlockNode,
+  ExternalResourceBlockNode,
   SpacerBlockNode,
   TableBlockNode,
   MultiTableBlockNode,
@@ -56,10 +57,11 @@ const emit = defineEmits<{
   'block-click': [blockId: string, event: MouseEvent]
   'compound-badge-click': [blockId: string, annotationId: string, clientY: number, clientX: number]
   'open-block-picker': []
+  'open-resource-picker': []
   'open-tag-editor': [blockId: string]
 }>()
 
-type InsertBlockType = 'richtext' | 'ref' | 'line' | 'x6' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
+type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
 type HandleAction = InsertBlockType | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
 
 interface InsertOption {
@@ -77,6 +79,7 @@ let isInternalUpdate = false
 let skipNextContentSync = false
 let isMounted = false
 let pendingRefInsertPos: number | null = null
+let pendingExternalResourceInsertPos: number | null = null
 let selectionPointerDown = false
 let lastDocSignature = ''
 
@@ -105,6 +108,7 @@ const handlePositionStyle = computed<CSSProperties>(() => ({
 const insertOptions: InsertOption[] = [
   { key: 'richtext', label: '文本', icon: '📝', keywords: ['text', 'richtext', 'wenben'] },
   { key: 'ref', label: '引用', icon: '🔖', keywords: ['ref', 'reference', 'yinyong'] },
+  { key: 'externalResource', label: '外部资源', icon: '▣', keywords: ['resource', 'external', 'book', 'ziyuan', 'tushu'] },
   { key: 'line', label: '时间轴', icon: '🕒', keywords: ['timeline', 'line', 'shijianzhou'] },
   { key: 'x6', label: 'X6 画板', icon: '🧩', keywords: ['x6', 'graph', 'draw', 'huaban'] },
   { key: 'knowledge-roadmap', label: '知识库路线图', icon: '🗺️', keywords: ['roadmap', 'knowledge', 'kb', 'zhishiku'] },
@@ -437,6 +441,18 @@ const createExternalBlock = (type: InsertBlockType): Block | null => {
       return { id, type: 'spacer', spacerHeight: 40 }
     case 'ref':
       return { id, type: 'ref', refId: '', refType: 'block' }
+    case 'externalResource':
+      return {
+        id,
+        type: 'externalResource',
+        title: '外部资源',
+        externalResource: {
+          resourceItemId: '',
+          resourceExcerptId: null,
+          mode: 'resource',
+          snapshot: { resourceTitle: '' },
+        },
+      }
     default:
       return null
   }
@@ -457,9 +473,18 @@ const requestRefInsertAfterPos = (pos: number) => {
   emit('open-block-picker')
 }
 
+const requestExternalResourceInsertAfterPos = (pos: number) => {
+  pendingExternalResourceInsertPos = pos
+  emit('open-resource-picker')
+}
+
 const insertExternalBlockAfterPos = (type: InsertBlockType, pos: number) => {
   if (type === 'ref') {
     requestRefInsertAfterPos(pos)
+    return
+  }
+  if (type === 'externalResource') {
+    requestExternalResourceInsertAfterPos(pos)
     return
   }
 
@@ -473,6 +498,11 @@ const insertExternalBlockAtSelection = (type: InsertBlockType) => {
   if (type === 'ref') {
     pendingRefInsertPos = editor.value.state.selection.from
     emit('open-block-picker')
+    return
+  }
+  if (type === 'externalResource') {
+    pendingExternalResourceInsertPos = editor.value.state.selection.from
+    emit('open-resource-picker')
     return
   }
 
@@ -495,6 +525,15 @@ const completePendingRefInsert = (refId: string, refType: 'block' | 'page') => {
     insertBlockAtSelection(block)
   }
   pendingRefInsertPos = null
+}
+
+const completePendingExternalResourceInsert = (block: Block) => {
+  if (pendingExternalResourceInsertPos != null) {
+    insertBlockAfterPos(block, pendingExternalResourceInsertPos)
+  } else {
+    insertBlockAtSelection(block)
+  }
+  pendingExternalResourceInsertPos = null
 }
 
 const handleScrollInEditor = () => {
@@ -787,6 +826,7 @@ const editor = useEditor({
     X6BlockNode,
     TimelineBlockNode,
     RefBlockNode,
+    ExternalResourceBlockNode,
     SpacerBlockNode,
     TableBlockNode,
     MultiTableBlockNode,
@@ -1036,6 +1076,7 @@ defineExpose({
     return editor.value.state.doc.slice(from, to).toJSON()
   },
   completePendingRefInsert,
+  completePendingExternalResourceInsert,
   focus: () => editor.value?.commands.focus(),
   duplicateBlock,
   flushContentChange,

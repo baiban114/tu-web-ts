@@ -29,6 +29,9 @@ export interface ReferenceTarget {
   resourceItemId?: string | null;
   resourceItemTitle?: string | null;
   resourceTypeName?: string | null;
+  resourceExcerptId?: string | null;
+  resourceExcerptTitle?: string | null;
+  resourceExcerptLocator?: string | null;
   url?: string | null;
 }
 

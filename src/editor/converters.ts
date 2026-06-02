@@ -111,7 +111,7 @@ function createEmptyParagraph(): JSONContent {
 }
 
 function isEmbedNode(node: JSONContent): boolean {
-  return ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'refBlock', 'spacerBlock'].includes(node.type || '')
+  return ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'refBlock', 'spacerBlock', 'externalResourceBlock'].includes(node.type || '')
 }
 
 function getHeadingLevel(embed: EmbeddedObject | undefined): number {
@@ -202,6 +202,24 @@ function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, e
           metadata: embed?.metadata || {},
         },
       }
+    case 'externalResource':
+      return {
+        type: 'externalResourceBlock',
+        attrs: {
+          blockId: embedId,
+          title: embed?.title || '',
+          headingLevel: getHeadingLevel(embed),
+          width: embed?.width ?? null,
+          height: embed?.height ?? null,
+          externalResource: embed?.externalResource || {
+            resourceItemId: '',
+            resourceExcerptId: null,
+            mode: 'resource',
+            snapshot: { resourceTitle: '' },
+          },
+          metadata: embed?.metadata || {},
+        },
+      }
     default:
       return null
   }
@@ -272,6 +290,21 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         height: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
         metadata: node.attrs?.metadata,
       }
+    case 'externalResourceBlock':
+      return {
+        id: blockId,
+        type: 'externalResource',
+        title: node.attrs?.title || '',
+        width: node.attrs?.width ?? undefined,
+        height: node.attrs?.height ?? undefined,
+        externalResource: node.attrs?.externalResource || {
+          resourceItemId: '',
+          resourceExcerptId: null,
+          mode: 'resource',
+          snapshot: { resourceTitle: '' },
+        },
+        metadata: node.attrs?.metadata,
+      }
     default:
       return null
   }
@@ -303,6 +336,7 @@ function legacyBlocksToPageContent(blocks: Block[]): PageContent {
       timelineData: block.timelineData,
       refId: block.refId,
       refType: block.refType,
+      externalResource: block.externalResource,
       spacerHeight: block.spacerHeight,
       width: block.width,
       height: block.height,
@@ -353,6 +387,7 @@ function pageContentToLegacyBlocks(content: string, embeds: EmbeddedObject[]): B
         timelineData: embed.timelineData,
         refId: embed.refId,
         refType: embed.refType,
+        externalResource: embed.externalResource,
         spacerHeight: embed.spacerHeight,
         width: embed.width,
         height: embed.height,

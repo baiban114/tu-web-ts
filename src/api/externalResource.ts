@@ -1,4 +1,25 @@
 import { request } from './http';
+import { isMockDataSource } from '@/dev/dataSource';
+import {
+  createResourceExcerptMock,
+  createResourceItemMock,
+  createResourceTypeMock,
+  createResourceWorkMock,
+  deleteResourceExcerptMock,
+  deleteResourceItemMock,
+  deleteResourceTypeMock,
+  deleteResourceWorkMock,
+  getResourceExcerptMock,
+  getResourceItemMock,
+  listResourceExcerptsMock,
+  listResourceItemsMock,
+  listResourceTypesMock,
+  listResourceWorksMock,
+  updateResourceExcerptMock,
+  updateResourceItemMock,
+  updateResourceTypeMock,
+  updateResourceWorkMock,
+} from '@/mock/store';
 
 export interface ResourceType {
   id: string;
@@ -25,13 +46,24 @@ export interface ResourceItem {
   typeName: string;
   identityFieldKey: string;
   identityFieldLabel: string;
-  workId: string;
-  workTitle: string;
+  workId?: string | null;
+  workTitle?: string | null;
   title: string;
-  identityValue: string;
+  identityValue?: string | null;
   sourceUrl?: string;
   edition?: string;
   note?: string;
+}
+
+export interface ResourceExcerpt {
+  id: string;
+  resourceItemId: string;
+  resourceItemTitle: string;
+  title: string;
+  locator?: string;
+  excerptText: string;
+  note?: string;
+  sortOrder: number;
 }
 
 export type CreateResourceTypePayload = Omit<ResourceType, 'id'>;
@@ -40,6 +72,8 @@ export type CreateResourceWorkPayload = Omit<ResourceWork, 'id' | 'typeName'>;
 export type UpdateResourceWorkPayload = CreateResourceWorkPayload;
 export type CreateResourceItemPayload = Omit<ResourceItem, 'id' | 'typeName' | 'identityFieldKey' | 'identityFieldLabel' | 'workTitle'>;
 export type UpdateResourceItemPayload = CreateResourceItemPayload;
+export type CreateResourceExcerptPayload = Omit<ResourceExcerpt, 'id' | 'resourceItemId' | 'resourceItemTitle'>;
+export type UpdateResourceExcerptPayload = Omit<ResourceExcerpt, 'id' | 'resourceItemId' | 'resourceItemTitle'>;
 
 function query(params: Record<string, string | undefined>): string {
   const search = new URLSearchParams();
@@ -51,10 +85,12 @@ function query(params: Record<string, string | undefined>): string {
 }
 
 export function listResourceTypes(): Promise<ResourceType[]> {
+  if (isMockDataSource()) return Promise.resolve(listResourceTypesMock());
   return request<ResourceType[]>('/api/resource-types');
 }
 
 export function createResourceType(payload: CreateResourceTypePayload): Promise<ResourceType> {
+  if (isMockDataSource()) return Promise.resolve(createResourceTypeMock(payload));
   return request<ResourceType>('/api/resource-types', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -62,6 +98,7 @@ export function createResourceType(payload: CreateResourceTypePayload): Promise<
 }
 
 export function updateResourceType(id: string, payload: UpdateResourceTypePayload): Promise<ResourceType> {
+  if (isMockDataSource()) return Promise.resolve(updateResourceTypeMock(id, payload));
   return request<ResourceType>(`/api/resource-types/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
@@ -69,14 +106,20 @@ export function updateResourceType(id: string, payload: UpdateResourceTypePayloa
 }
 
 export function deleteResourceType(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceTypeMock(id);
+    return Promise.resolve();
+  }
   return request<void>(`/api/resource-types/${id}`, { method: 'DELETE' });
 }
 
 export function listResourceWorks(typeId?: string): Promise<ResourceWork[]> {
+  if (isMockDataSource()) return Promise.resolve(listResourceWorksMock(typeId));
   return request<ResourceWork[]>(`/api/resource-works${query({ typeId })}`);
 }
 
 export function createResourceWork(payload: CreateResourceWorkPayload): Promise<ResourceWork> {
+  if (isMockDataSource()) return Promise.resolve(createResourceWorkMock(payload));
   return request<ResourceWork>('/api/resource-works', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -84,6 +127,7 @@ export function createResourceWork(payload: CreateResourceWorkPayload): Promise<
 }
 
 export function updateResourceWork(id: string, payload: UpdateResourceWorkPayload): Promise<ResourceWork> {
+  if (isMockDataSource()) return Promise.resolve(updateResourceWorkMock(id, payload));
   return request<ResourceWork>(`/api/resource-works/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
@@ -91,6 +135,10 @@ export function updateResourceWork(id: string, payload: UpdateResourceWorkPayloa
 }
 
 export function deleteResourceWork(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceWorkMock(id);
+    return Promise.resolve();
+  }
   return request<void>(`/api/resource-works/${id}`, { method: 'DELETE' });
 }
 
@@ -99,10 +147,17 @@ export function listResourceItems(params: {
   workId?: string;
   identityValue?: string;
 } = {}): Promise<ResourceItem[]> {
+  if (isMockDataSource()) return Promise.resolve(listResourceItemsMock(params));
   return request<ResourceItem[]>(`/api/resource-items${query(params)}`);
 }
 
+export function getResourceItem(id: string): Promise<ResourceItem> {
+  if (isMockDataSource()) return Promise.resolve(getResourceItemMock(id));
+  return request<ResourceItem>(`/api/resource-items/${encodeURIComponent(id)}`);
+}
+
 export function createResourceItem(payload: CreateResourceItemPayload): Promise<ResourceItem> {
+  if (isMockDataSource()) return Promise.resolve(createResourceItemMock(payload));
   return request<ResourceItem>('/api/resource-items', {
     method: 'POST',
     body: JSON.stringify(payload),
@@ -110,6 +165,7 @@ export function createResourceItem(payload: CreateResourceItemPayload): Promise<
 }
 
 export function updateResourceItem(id: string, payload: UpdateResourceItemPayload): Promise<ResourceItem> {
+  if (isMockDataSource()) return Promise.resolve(updateResourceItemMock(id, payload));
   return request<ResourceItem>(`/api/resource-items/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
@@ -117,7 +173,45 @@ export function updateResourceItem(id: string, payload: UpdateResourceItemPayloa
 }
 
 export function deleteResourceItem(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceItemMock(id);
+    return Promise.resolve();
+  }
   return request<void>(`/api/resource-items/${id}`, { method: 'DELETE' });
+}
+
+export function listResourceExcerpts(resourceItemId: string): Promise<ResourceExcerpt[]> {
+  if (isMockDataSource()) return Promise.resolve(listResourceExcerptsMock(resourceItemId));
+  return request<ResourceExcerpt[]>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/excerpts`);
+}
+
+export function createResourceExcerpt(resourceItemId: string, payload: CreateResourceExcerptPayload): Promise<ResourceExcerpt> {
+  if (isMockDataSource()) return Promise.resolve(createResourceExcerptMock(resourceItemId, payload));
+  return request<ResourceExcerpt>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/excerpts`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function getResourceExcerpt(id: string): Promise<ResourceExcerpt> {
+  if (isMockDataSource()) return Promise.resolve(getResourceExcerptMock(id));
+  return request<ResourceExcerpt>(`/api/resource-excerpts/${encodeURIComponent(id)}`);
+}
+
+export function updateResourceExcerpt(id: string, payload: UpdateResourceExcerptPayload): Promise<ResourceExcerpt> {
+  if (isMockDataSource()) return Promise.resolve(updateResourceExcerptMock(id, payload));
+  return request<ResourceExcerpt>(`/api/resource-excerpts/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteResourceExcerpt(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceExcerptMock(id);
+    return Promise.resolve();
+  }
+  return request<void>(`/api/resource-excerpts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 const LINK_RESOURCE_TYPE_CODE = 'web-link';

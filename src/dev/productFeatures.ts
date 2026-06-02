@@ -98,6 +98,14 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Resource',
   },
   {
+    id: 'external-resource-excerpt-from-selection',
+    module: '外部资源',
+    name: '选中文本标记节选',
+    description: '在富文本编辑器中划选引用内容，可从选择浮条创建图书外部资源节选。',
+    status: 'testing',
+    owner: 'Resource',
+  },
+  {
     id: 'local-file-sync',
     module: '存储',
     name: '本地文件绑定保存',

@@ -134,6 +134,20 @@ export function blockToTipTapNode(block: Block, editor: any) {
         refType: block.refType || 'block',
       })
 
+    case 'externalResource':
+      return schema.nodes.externalResourceBlock.create({
+        ...attrs,
+        width: block.width ?? null,
+        height: block.height ?? null,
+        externalResource: block.externalResource || {
+          resourceItemId: '',
+          resourceExcerptId: null,
+          mode: 'resource',
+          snapshot: { resourceTitle: '' },
+        },
+        metadata: block.metadata || {},
+      })
+
     case 'spacer':
       return schema.nodes.spacerBlock.create({
         ...attrs,

@@ -161,13 +161,35 @@ export interface MultiTableData {
   activeViewId?: string;
 }
 
+export interface ExternalResourceSnapshot {
+  resourceTitle: string;
+  resourceTypeName?: string;
+  workTitle?: string;
+  identityFieldLabel?: string;
+  identityValue?: string;
+  sourceUrl?: string;
+  edition?: string;
+  note?: string;
+  excerptTitle?: string;
+  excerptLocator?: string;
+  excerptText?: string;
+  excerptNote?: string;
+}
+
+export interface ExternalResourceEmbedData {
+  resourceItemId: string;
+  resourceExcerptId?: string | null;
+  mode: 'resource' | 'excerpt';
+  snapshot: ExternalResourceSnapshot;
+}
+
 /**
  * 嵌入对象 — 非文本类型的内容，在 markdown content 中用占位符标记位置。
  * 占位符格式: <!--tu:embed id="..." type="..."-->
  */
 export interface EmbeddedObject {
   id: string
-  type: 'x6' | 'table' | 'multiTable' | 'timeline' | 'ref' | 'spacer'
+  type: 'x6' | 'table' | 'multiTable' | 'timeline' | 'ref' | 'spacer' | 'externalResource'
   title?: string
   graphData?: GraphData
   tableData?: TableBlockData
@@ -183,6 +205,7 @@ export interface EmbeddedObject {
   }>
   refId?: string
   refType?: 'block' | 'page'
+  externalResource?: ExternalResourceEmbedData
   spacerHeight?: number
   width?: number | string
   height?: number
@@ -211,6 +234,7 @@ export interface Block {
   metadata?: BlockMetadata;
   refId?: string;
   refType?: 'block' | 'page';
+  externalResource?: ExternalResourceEmbedData;
   graphData?: GraphData;
   tableData?: TableBlockData;
   multiTableData?: MultiTableData;

@@ -208,6 +208,7 @@ export function parseMarkdownToPageContent(markdown: string): PageContent {
           timelineData: block.timelineData,
           refId: block.refId,
           refType: block.refType,
+          externalResource: block.externalResource,
           spacerHeight: block.spacerHeight,
           width: block.width,
           height: block.height,

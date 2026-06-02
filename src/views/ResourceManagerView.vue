@@ -3,17 +3,22 @@ import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   createResourceItem,
+  createResourceExcerpt,
   createResourceType,
   createResourceWork,
   deleteResourceItem,
+  deleteResourceExcerpt,
   deleteResourceType,
   deleteResourceWork,
+  listResourceExcerpts,
   listResourceItems,
   listResourceTypes,
   listResourceWorks,
+  updateResourceExcerpt,
   updateResourceItem,
   updateResourceType,
   updateResourceWork,
+  type ResourceExcerpt,
   type ResourceItem,
   type ResourceType,
   type ResourceWork,
@@ -43,10 +48,12 @@ function getRouteTab(): ResourceTab {
 const activeTab = ref<ResourceTab>(getRouteTab());
 const loading = ref(false);
 const referencesLoading = ref(false);
+const excerptsLoading = ref(false);
 const errorMessage = ref('');
 const successMessage = ref('');
 const selectedTypeId = ref('');
 const selectedWorkId = ref('');
+const selectedExcerptItemId = ref('');
 const selectedReferenceCategory = ref<ReferenceCategoryFilter>('all');
 const selectedReferenceStatus = ref<ReferenceStatusFilter>('all');
 const referenceKeyword = ref('');
@@ -58,6 +65,7 @@ const totalReferences = ref(0);
 const types = ref<ResourceType[]>([]);
 const works = ref<ResourceWork[]>([]);
 const items = ref<ResourceItem[]>([]);
+const excerpts = ref<ResourceExcerpt[]>([]);
 const references = ref<ReferenceItem[]>([]);
 const objectModelStore = useObjectModelStore();
 const selectedClassId = ref('');
@@ -92,6 +100,15 @@ const itemForm = reactive({
   note: '',
 });
 
+const excerptForm = reactive({
+  id: '',
+  title: '',
+  locator: '',
+  excerptText: '',
+  note: '',
+  sortOrder: 0,
+});
+
 const classForm = reactive({
   id: '',
   name: '',
@@ -121,6 +138,8 @@ const filteredWorks = computed(() => {
 });
 
 const itemFormType = computed(() => types.value.find((type) => type.id === itemForm.typeId));
+const typeById = computed(() => new Map(types.value.map((type) => [type.id, type])));
+const selectedExcerptItem = computed(() => items.value.find((item) => item.id === selectedExcerptItemId.value) || null);
 const classNameById = computed(() => new Map(objectModelStore.classes.map((item) => [item.id, item.name])));
 const editableExternalReferences = computed(() => references.value.filter((item) => item.category === 'external'));
 
@@ -168,7 +187,7 @@ function resetWorkForm() {
 
 function resetItemForm() {
   const typeId = selectedTypeId.value || types.value[0]?.id || '';
-  const workId = selectedWorkId.value || works.value.find((work) => work.typeId === typeId)?.id || '';
+  const workId = selectedWorkId.value || '';
   Object.assign(itemForm, {
     id: '',
     typeId,
@@ -179,6 +198,23 @@ function resetItemForm() {
     edition: '',
     note: '',
   });
+}
+
+function resetExcerptForm() {
+  Object.assign(excerptForm, {
+    id: '',
+    title: '',
+    locator: '',
+    excerptText: '',
+    note: '',
+    sortOrder: excerpts.value.length,
+  });
+}
+
+function clearExcerptPanel() {
+  selectedExcerptItemId.value = '';
+  excerpts.value = [];
+  resetExcerptForm();
 }
 
 function resetClassForm() {
@@ -234,6 +270,9 @@ async function refreshAll() {
     });
     if (!workForm.typeId) resetWorkForm();
     if (!itemForm.typeId) resetItemForm();
+    if (selectedExcerptItemId.value && !items.value.some((item) => item.id === selectedExcerptItemId.value)) {
+      clearExcerptPanel();
+    }
   } catch (error) {
     showError(error);
   } finally {
@@ -248,11 +287,41 @@ async function refreshItems() {
       typeId: selectedTypeId.value,
       workId: selectedWorkId.value,
     });
+    if (selectedExcerptItemId.value && !items.value.some((item) => item.id === selectedExcerptItemId.value)) {
+      clearExcerptPanel();
+    }
   } catch (error) {
     showError(error);
   } finally {
     loading.value = false;
   }
+}
+
+function isBookItem(item: ResourceItem): boolean {
+  return typeById.value.get(item.typeId)?.code === 'book';
+}
+
+async function loadExcerpts(resourceItemId: string) {
+  if (!resourceItemId) {
+    excerpts.value = [];
+    resetExcerptForm();
+    return;
+  }
+  excerptsLoading.value = true;
+  try {
+    excerpts.value = await listResourceExcerpts(resourceItemId);
+    resetExcerptForm();
+  } catch (error) {
+    showError(error);
+  } finally {
+    excerptsLoading.value = false;
+  }
+}
+
+async function selectExcerptItem(item: ResourceItem) {
+  if (!isBookItem(item)) return;
+  selectedExcerptItemId.value = item.id;
+  await loadExcerpts(item.id);
 }
 
 async function refreshReferences() {
@@ -371,6 +440,30 @@ async function saveItem() {
   }
 }
 
+async function saveExcerpt() {
+  if (!selectedExcerptItem.value) return;
+  try {
+    const payload = {
+      title: excerptForm.title,
+      locator: excerptForm.locator,
+      excerptText: excerptForm.excerptText,
+      note: excerptForm.note,
+      sortOrder: Number.isFinite(excerptForm.sortOrder) ? excerptForm.sortOrder : excerpts.value.length,
+    };
+    if (excerptForm.id) {
+      await updateResourceExcerpt(excerptForm.id, payload);
+      showSuccess('图书节选已更新');
+    } else {
+      await createResourceExcerpt(selectedExcerptItem.value.id, payload);
+      showSuccess('图书节选已创建');
+    }
+    await loadExcerpts(selectedExcerptItem.value.id);
+    await refreshReferences();
+  } catch (error) {
+    showError(error);
+  }
+}
+
 async function saveReference() {
   try {
     if (!referenceForm.id) return;
@@ -409,14 +502,25 @@ function editItem(item: ResourceItem) {
   Object.assign(itemForm, {
     id: item.id,
     typeId: item.typeId,
-    workId: item.workId,
+    workId: item.workId || '',
     title: item.title,
-    identityValue: item.identityValue,
+    identityValue: item.identityValue || '',
     sourceUrl: item.sourceUrl || '',
     edition: item.edition || '',
     note: item.note || '',
   });
   activeTab.value = 'items';
+}
+
+function editExcerpt(excerpt: ResourceExcerpt) {
+  Object.assign(excerptForm, {
+    id: excerpt.id,
+    title: excerpt.title,
+    locator: excerpt.locator || '',
+    excerptText: excerpt.excerptText,
+    note: excerpt.note || '',
+    sortOrder: excerpt.sortOrder ?? 0,
+  });
 }
 
 function editReference(item: ReferenceItem) {
@@ -550,7 +654,24 @@ async function removeItem(id: string) {
   try {
     await deleteResourceItem(id);
     showSuccess('资源实体已删除');
+    if (selectedExcerptItemId.value === id) {
+      clearExcerptPanel();
+    }
     await refreshAll();
+    await refreshReferences();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function removeExcerpt(excerpt: ResourceExcerpt) {
+  if (!confirm(`确定删除节选「${excerpt.title}」？`)) return;
+  try {
+    await deleteResourceExcerpt(excerpt.id);
+    showSuccess('图书节选已删除');
+    if (selectedExcerptItem.value) {
+      await loadExcerpts(selectedExcerptItem.value.id);
+    }
     await refreshReferences();
   } catch (error) {
     showError(error);
@@ -559,6 +680,7 @@ async function removeItem(id: string) {
 
 function onTypeFilterChange() {
   selectedWorkId.value = '';
+  clearExcerptPanel();
   resetWorkForm();
   resetItemForm();
   void refreshItems();
@@ -767,6 +889,8 @@ watch(
                 <template v-else>
                   {{ item.target.resourceItemTitle || '未绑定资源' }}
                   <span v-if="item.target.resourceTypeName"> · {{ item.target.resourceTypeName }}</span>
+                  <span v-if="item.target.resourceExcerptTitle"> · 节选：{{ item.target.resourceExcerptTitle }}</span>
+                  <span v-if="item.target.resourceExcerptLocator"> · {{ item.target.resourceExcerptLocator }}</span>
                 </template>
               </div>
               <p v-if="item.target.url" class="reference-url">{{ item.target.url }}</p>
@@ -819,8 +943,8 @@ watch(
         </label>
         <label>
           归类 Work
-          <select v-model="itemForm.workId" required>
-            <option value="" disabled>选择归类</option>
+          <select v-model="itemForm.workId">
+            <option value="">不选择归类</option>
             <option
               v-for="work in works.filter((work) => work.typeId === itemForm.typeId)"
               :key="work.id"
@@ -836,7 +960,7 @@ watch(
         </label>
         <label>
           {{ itemFormType?.identityFieldLabel || '唯一标识' }}
-          <input v-model.trim="itemForm.identityValue" required maxlength="512" />
+          <input v-model.trim="itemForm.identityValue" maxlength="512" />
         </label>
         <label>
           源 URL
@@ -856,20 +980,81 @@ watch(
         </div>
       </form>
 
-      <div class="resource-list" :aria-busy="loading">
-        <article v-for="item in items" :key="item.id" class="resource-row">
-          <div>
-            <div class="row-title">{{ item.title }}</div>
-            <div class="row-meta">{{ item.typeName }} · {{ item.identityFieldLabel }}: {{ item.identityValue }}</div>
-            <div class="row-meta">归类：{{ item.workTitle }}</div>
-            <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer">{{ item.sourceUrl }}</a>
+      <div class="resource-items-panel">
+        <div class="resource-list" :aria-busy="loading">
+          <article v-for="item in items" :key="item.id" class="resource-row" :class="{ 'resource-row--active': selectedExcerptItemId === item.id }">
+            <div>
+              <div class="row-title">{{ item.title }}</div>
+              <div class="row-meta">{{ item.typeName }} · {{ item.identityFieldLabel }}: {{ item.identityValue || '未填写' }}</div>
+              <div class="row-meta">归类：{{ item.workTitle || '未归类' }}</div>
+              <a v-if="item.sourceUrl" :href="item.sourceUrl" target="_blank" rel="noreferrer">{{ item.sourceUrl }}</a>
+            </div>
+            <div class="row-actions">
+              <button v-if="isBookItem(item)" class="secondary" @click="selectExcerptItem(item)">节选</button>
+              <button @click="editItem(item)">编辑</button>
+              <button class="danger" @click="removeItem(item.id)">删除</button>
+            </div>
+          </article>
+          <p v-if="!items.length && !loading" class="empty">暂无资源实体</p>
+        </div>
+
+        <section v-if="selectedExcerptItem" class="resource-excerpts-panel" :aria-busy="excerptsLoading">
+          <header class="excerpt-panel__header">
+            <div>
+              <h2>图书节选</h2>
+              <p>{{ selectedExcerptItem.title }} · {{ excerpts.length }} 个片段</p>
+            </div>
+            <button type="button" class="secondary" @click="clearExcerptPanel">关闭</button>
+          </header>
+
+          <div class="excerpt-panel__body">
+            <div class="excerpt-list">
+              <article v-for="excerpt in excerpts" :key="excerpt.id" class="excerpt-row" :class="{ 'excerpt-row--active': excerptForm.id === excerpt.id }">
+                <div>
+                  <div class="row-title">{{ excerpt.title }}</div>
+                  <div v-if="excerpt.locator" class="row-meta">{{ excerpt.locator }}</div>
+                  <p>{{ excerpt.excerptText }}</p>
+                  <p v-if="excerpt.note" class="excerpt-note">{{ excerpt.note }}</p>
+                </div>
+                <div class="row-actions">
+                  <button type="button" @click="editExcerpt(excerpt)">编辑</button>
+                  <button type="button" class="danger" @click="removeExcerpt(excerpt)">删除</button>
+                </div>
+              </article>
+              <p v-if="!excerpts.length && !excerptsLoading" class="empty">暂无图书节选</p>
+            </div>
+
+            <form class="excerpt-form" @submit.prevent="saveExcerpt">
+              <h3>{{ excerptForm.id ? '编辑节选' : '新增节选' }}</h3>
+              <label>
+                标题
+                <input v-model.trim="excerptForm.title" required maxlength="255" />
+              </label>
+              <label>
+                页码/定位
+                <input v-model.trim="excerptForm.locator" maxlength="255" placeholder="第 1 章 / p. 18" />
+              </label>
+              <label>
+                节选正文
+                <textarea v-model.trim="excerptForm.excerptText" required rows="6" maxlength="20000" />
+              </label>
+              <label>
+                备注
+                <textarea v-model.trim="excerptForm.note" rows="3" maxlength="1024" />
+              </label>
+              <label>
+                排序
+                <input v-model.number="excerptForm.sortOrder" type="number" min="0" step="1" />
+              </label>
+              <div class="form-actions">
+                <button type="submit" :disabled="!excerptForm.title.trim() || !excerptForm.excerptText.trim()">
+                  {{ excerptForm.id ? '保存节选' : '创建节选' }}
+                </button>
+                <button type="button" class="secondary" @click="resetExcerptForm">清空</button>
+              </div>
+            </form>
           </div>
-          <div class="row-actions">
-            <button @click="editItem(item)">编辑</button>
-            <button class="danger" @click="removeItem(item.id)">删除</button>
-          </div>
-        </article>
-        <p v-if="!items.length && !loading" class="empty">暂无资源实体</p>
+        </section>
       </div>
     </section>
 
@@ -1057,7 +1242,10 @@ watch(
 
 <style scoped>
 .resource-page {
+  box-sizing: border-box;
+  height: 100vh;
   min-height: 100vh;
+  overflow-y: auto;
   padding: 24px 32px 40px;
   background: linear-gradient(180deg, #f5f8fb 0%, #eef3f8 100%);
   color: #1f2933;
@@ -1186,7 +1374,8 @@ textarea {
 }
 
 .resource-form,
-.resource-list {
+.resource-list,
+.resource-excerpts-panel {
   border: 1px solid #e4e7ec;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.95);
@@ -1312,6 +1501,84 @@ textarea {
   flex-direction: column;
 }
 
+.resource-items-panel {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+
+.resource-row--active,
+.excerpt-row--active {
+  background: #eff6ff;
+}
+
+.resource-excerpts-panel {
+  overflow: hidden;
+}
+
+.excerpt-panel__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.excerpt-panel__header h2,
+.excerpt-panel__header p,
+.excerpt-form h3 {
+  margin: 0;
+}
+
+.excerpt-panel__header p,
+.excerpt-note {
+  color: #667085;
+}
+
+.excerpt-panel__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(260px, 340px);
+  gap: 16px;
+  padding: 16px;
+}
+
+.excerpt-list {
+  min-width: 0;
+  max-height: 520px;
+  overflow-y: auto;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
+}
+
+.excerpt-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.excerpt-row:last-child {
+  border-bottom: 0;
+}
+
+.excerpt-row p {
+  margin: 8px 0 0;
+  white-space: pre-wrap;
+}
+
+.excerpt-form {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.excerpt-form input,
+.excerpt-form textarea {
+  min-width: 0;
+  width: 100%;
+}
+
 .object-model-section + .object-model-section {
   border-top: 1px solid #edf0f5;
 }
@@ -1428,7 +1695,8 @@ textarea {
 
   .resource-layout,
   .object-model-layout,
-  .reference-layout {
+  .reference-layout,
+  .excerpt-panel__body {
     grid-template-columns: 1fr;
   }
 }

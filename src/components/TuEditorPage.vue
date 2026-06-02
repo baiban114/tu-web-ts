@@ -1,10 +1,11 @@
 ﻿<script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import type { Block, BlockTag, EmbeddedObject, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import { pageContentToTipTap, tipTapToPageContent } from '@/editor/converters'
 import TuEditor from './TuEditor.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
+import ExternalResourcePicker from './ExternalResourcePicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
@@ -26,7 +27,7 @@ interface TocItem {
   level: number
   text: string
   pos: number
-  sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'multiTable' | 'timeline' | 'spacer'
+  sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'multiTable' | 'timeline' | 'spacer' | 'externalResource'
   children?: TocItem[]
   refId?: string
   targetText?: string
@@ -38,6 +39,7 @@ const NODEVIEW_TYPE_LABELS: Record<string, string> = {
   multiTable: '多维表格',
   timeline: '时间轴',
   spacer: '分割',
+  externalResource: '外部资源',
 }
 
 const nodeViewLabel = (type: string): string => NODEVIEW_TYPE_LABELS[type] || type
@@ -133,7 +135,7 @@ watch(() => tocSettingsPopup.visible, (visible, wasVisible) => {
 })
 
 // --- NodeView floating toolbar ---
-const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock']
+const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock']
 
 const nodeViewToolbar = reactive({
   visible: false,
@@ -279,6 +281,10 @@ const localAnnotations = ref<TextAnnotation[]>([])
 const pageTitleDraft = ref('')
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
+const showResourcePicker = ref(false)
+const resourcePickerMode = ref<'insert' | 'markExcerpt'>('insert')
+const pendingResourceExcerptText = ref('')
+const pendingResourceExcerptTitle = ref('')
 const highlightedBlockId = ref<string | null>(null)
 const tocExpanded = ref(true)
 
@@ -304,6 +310,7 @@ const localBlocks = computed<Block[]>(() => {
       timelineData: embed.timelineData,
       refId: embed.refId,
       refType: embed.refType,
+      externalResource: embed.externalResource,
       spacerHeight: embed.spacerHeight,
       width: embed.width,
       height: embed.height,
@@ -327,6 +334,10 @@ let selectionToolbarTimer: ReturnType<typeof setTimeout> | null = null
 
 const canAddNoteFromSelection = computed(() => {
   return hasSelection.value && (selectedText.value.trim().length > 0 || selectionSpannedBlockIds.value.length > 0)
+})
+
+const canMarkResourceExcerptFromSelection = computed(() => {
+  return hasSelection.value && selectedText.value.trim().length > 0
 })
 
 const clearSelectionToolbarTimer = () => {
@@ -485,6 +496,7 @@ const handleBlocksChange = (blocks: Block[]) => {
         timelineData: block.timelineData,
         refId: block.refId,
         refType: block.refType,
+        externalResource: block.externalResource,
         spacerHeight: block.spacerHeight,
         width: block.width,
         height: block.height,
@@ -546,6 +558,13 @@ const handleOpenBlockPicker = () => {
   showBlockPicker.value = true
 }
 
+const handleOpenResourcePicker = () => {
+  resourcePickerMode.value = 'insert'
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = ''
+  showResourcePicker.value = true
+}
+
 const getSelectionAnnotationPayload = (from: number, to: number) => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return {
@@ -562,6 +581,72 @@ const getSelectionAnnotationPayload = (from: number, to: number) => {
 const handleBlockPickerSelect = (target: { type: 'block' | 'page'; id: string }) => {
   tuEditorRef.value?.completePendingRefInsert?.(target.id, target.type)
   showBlockPicker.value = false
+}
+
+const handleResourcePickerSelect = (selection: { title: string; externalResource: ExternalResourceEmbedData }) => {
+  const block: Block = {
+    id: 'external-resource-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+    type: 'externalResource',
+    title: selection.title,
+    externalResource: selection.externalResource,
+  }
+  tuEditorRef.value?.completePendingExternalResourceInsert?.(block)
+  showResourcePicker.value = false
+}
+
+const normalizeResourceExcerptSelectionText = (value: string): string => {
+  let text = value.trim()
+  const wrappedQuote = text.match(/^\{>\s*([\s\S]*?)\s*\}$/)
+  if (wrappedQuote) text = wrappedQuote[1].trim()
+  else text = text.replace(/^\{>\s*/, '').replace(/\s*\}$/, '').trim()
+  text = text
+    .split(/\r?\n/)
+    .map((line) => line.replace(/^\s*>\s?/, ''))
+    .join('\n')
+    .trim()
+  return text
+}
+
+const buildResourceExcerptTitle = (text: string): string => {
+  const firstLine = text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean) || '来自文档的节选'
+  return firstLine
+    .replace(/^#+\s+/, '')
+    .replace(/^[-*]\s+/, '')
+    .replace(/^\d+\.\s+/, '')
+    .slice(0, 80)
+}
+
+const handleMarkResourceExcerptFromSelection = () => {
+  if (!canMarkResourceExcerptFromSelection.value) return
+  const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
+  const excerptText = normalizeResourceExcerptSelectionText(payload.selectedText || selectedText.value)
+  if (!excerptText) return
+  pendingResourceExcerptText.value = excerptText
+  pendingResourceExcerptTitle.value = buildResourceExcerptTitle(excerptText)
+  resourcePickerMode.value = 'markExcerpt'
+  showResourcePicker.value = true
+  hideSelectionToolbar()
+}
+
+const handleResourceExcerptCreated = (payload: { excerpt: { title: string } }) => {
+  showResourcePicker.value = false
+  resourcePickerMode.value = 'insert'
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = ''
+  hasSelection.value = false
+  showToast(`已创建外部资源节选：${payload.excerpt.title}`)
+}
+
+const handleResourcePickerVisibleChange = (visible: boolean) => {
+  showResourcePicker.value = visible
+  if (!visible) {
+    resourcePickerMode.value = 'insert'
+    pendingResourceExcerptText.value = ''
+    pendingResourceExcerptTitle.value = ''
+  }
 }
 
 // --- TOC ---
@@ -765,6 +850,23 @@ const tocItems = computed<TocItem[]>(() => {
         text: nvSettings?.hideTitle ? '' : '分割空白',
         pos,
         sourceType: 'spacer',
+      })
+    } else if (typeName === 'externalResourceBlock') {
+      const nvSettings = tocSettingsMap.get(blockId)
+      const externalResource = node.attrs?.externalResource
+      const snapshot = externalResource?.snapshot || {}
+      const title = node.attrs?.title
+        || snapshot.excerptTitle
+        || snapshot.resourceTitle
+        || blockTitleMap.get(blockId)
+        || '外部资源'
+      allItems.push({
+        id: `er-${blockId}`,
+        blockId,
+        level: nvSettings?.titleLevel ?? 0,
+        text: nvSettings?.hideTitle ? '' : title,
+        pos,
+        sourceType: 'externalResource',
       })
     } else if (typeName === 'refBlock') {
       const refId: string = node.attrs?.refId || refMetaMap.get(blockId)?.refId || ''
@@ -1199,6 +1301,7 @@ const getBlockDisplayType = (block: Block | undefined, fallback: string): string
   if (block.type === 'spacer') return 'spacerBlock'
   if (block.type === 'table') return 'tableBlock'
   if (block.type === 'multiTable') return 'multiTableBlock'
+  if (block.type === 'externalResource') return 'externalResourceBlock'
   if (block.type === 'richtext' || block.type === 'richText') return 'paragraph'
   return block.type || fallback
 }
@@ -1348,6 +1451,13 @@ onBeforeUnmount(() => {
       </button>
       <button
         class="toolbar-button"
+        @click="handleOpenResourcePicker"
+        title="插入外部资源或图书节选"
+      >
+        插入资源
+      </button>
+      <button
+        class="toolbar-button"
         @click="handleExtractSelectionButtonClick"
         title="提取选中文本为新块"
       >
@@ -1444,6 +1554,7 @@ onBeforeUnmount(() => {
           @annotations-mapped="handleAnnotationsMapped"
           @compound-badge-click="handleCompoundBadgeClick"
           @open-block-picker="handleOpenBlockPicker"
+          @open-resource-picker="handleOpenResourcePicker"
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
         />
@@ -1628,7 +1739,7 @@ onBeforeUnmount(() => {
               </div>
               <!-- Top-level nodeView (before any local heading) -->
               <button
-                v-else-if="['x6', 'table', 'multiTable', 'timeline', 'spacer'].includes(item.sourceType)"
+                v-else-if="['x6', 'table', 'multiTable', 'timeline', 'spacer', 'externalResource'].includes(item.sourceType)"
                 type="button"
                 :class="[
                   'page-toc__item',
@@ -1737,7 +1848,9 @@ onBeforeUnmount(() => {
       :top="selectionToolbarPosition.top"
       :left="selectionToolbarPosition.left"
       :z-index="selectionToolbarPosition.zIndex"
+      :can-mark-resource-excerpt="canMarkResourceExcerptFromSelection"
       @add-note="handleAddNoteFromSelection"
+      @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
     />
 
     <!-- 引用块选择器 -->
@@ -1747,6 +1860,16 @@ onBeforeUnmount(() => {
       :current-page-id="workspaceStore.currentPageId"
       @select="handleBlockPickerSelect"
       @update:visible="showBlockPicker = $event"
+    />
+
+    <ExternalResourcePicker
+      :visible="showResourcePicker"
+      :mode="resourcePickerMode"
+      :initial-excerpt-text="pendingResourceExcerptText"
+      :initial-excerpt-title="pendingResourceExcerptTitle"
+      @select="handleResourcePickerSelect"
+      @excerpt-created="handleResourceExcerptCreated"
+      @update:visible="handleResourcePickerVisibleChange"
     />
 
     <!-- 标签编辑器 -->
