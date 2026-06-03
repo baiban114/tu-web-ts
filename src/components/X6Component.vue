@@ -6,6 +6,7 @@ import { useMaterialLibraryStore } from '@/stores/materialLibrary';
 import { useObjectModelStore } from '@/stores/objectModel';
 import type { GraphData } from '@/api/types';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
+import { didMaterialDragMove, resetMaterialDrag } from '@/components/x6/materialDrag';
 import {
   Clipboard,
   type Edge,
@@ -220,6 +221,8 @@ let pendingSyncAfterInteraction = false;
 let lastSerializedSnapshot = '';
 let pendingNodeInternalClickId: string | null = null;
 let suppressNextNodeInternalClickId: string | null = null;
+let lastMaterialInsertTime = 0;
+const MATERIAL_INSERT_DEBOUNCE_MS = 300;
 
 function splitLines(value: string): string[] {
   return value
@@ -1212,10 +1215,12 @@ function insertMaterial(graphData: GraphData) {
 /** Insert material's graph data at a specific graph-space position (or viewport center). */
 function insertMaterialAt(graphData: GraphData, position?: { x: number; y: number }) {
   if (!graph || !isEditable.value) return;
+  const now = Date.now();
+  if (now - lastMaterialInsertTime < MATERIAL_INSERT_DEBOUNCE_MS) return;
+  lastMaterialInsertTime = now;
   const center = position ?? getCanvasCenter();
   const dx = center.x;
   const dy = center.y;
-  // Find min position in material to offset from that
   let minX = Infinity, minY = Infinity;
   for (const node of graphData.nodes ?? []) {
     const x = node.x ?? node.position?.x ?? 0;
@@ -1225,51 +1230,75 @@ function insertMaterialAt(graphData: GraphData, position?: { x: number; y: numbe
   }
   const offsetX = dx - (isFinite(minX) ? minX : 0);
   const offsetY = dy - (isFinite(minY) ? minY : 0);
-  // Generate new IDs to avoid conflicts; remap edge terminals
   const idMap = new Map<string, string>();
   const addedNodes: Node[] = [];
-  for (const nodeData of graphData.nodes ?? []) {
-    const newId = `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    idMap.set(nodeData.id, newId);
-    const nx = (nodeData.x ?? 0) + offsetX;
-    const ny = (nodeData.y ?? 0) + offsetY;
-    addedNodes.push(graph.addNode({
-      ...(nodeData as CellData),
-      id: newId,
-      x: nx,
-      y: ny,
-      position: { x: nx, y: ny },
-    } as CellData));
-  }
-  const remapTerminal = (term: any): any => {
-    if (typeof term === 'string') return idMap.get(term) ?? term;
-    if (term?.cell) return { ...term, cell: idMap.get(term.cell) ?? term.cell };
-    return term;
-  };
-  for (const edgeData of graphData.edges ?? []) {
-    graph.addEdge({
-      ...edgeData,
-      id: undefined,
-      x: undefined, y: undefined, position: undefined,
-      source: remapTerminal(edgeData.source),
-      target: remapTerminal(edgeData.target),
-    });
-  }
-  if (addedNodes.length) {
-    graph.resetSelection(addedNodes);
-  }
+
+  isApplyingExternalData = true;
+  graph.batchUpdate(() => {
+    for (const nodeData of graphData.nodes ?? []) {
+      const newId = `mat_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      idMap.set(nodeData.id, newId);
+      const nx = (nodeData.x ?? 0) + offsetX;
+      const ny = (nodeData.y ?? 0) + offsetY;
+      addedNodes.push(graph!.addNode({
+        ...(nodeData as CellData),
+        id: newId,
+        x: nx,
+        y: ny,
+        position: { x: nx, y: ny },
+      } as CellData));
+    }
+    const remapTerminal = (term: any): any => {
+      if (typeof term === 'string') return idMap.get(term) ?? term;
+      if (term?.cell) return { ...term, cell: idMap.get(term.cell) ?? term.cell };
+      return term;
+    };
+    for (const edgeData of graphData.edges ?? []) {
+      graph!.addEdge({
+        ...edgeData,
+        id: undefined,
+        x: undefined, y: undefined, position: undefined,
+        source: remapTerminal(edgeData.source),
+        target: remapTerminal(edgeData.target),
+      });
+    }
+    if (addedNodes.length) {
+      graph!.resetSelection(addedNodes);
+    }
+    if (isMindmap.value) {
+      syncMindmapGraphState();
+    }
+  });
+  isApplyingExternalData = false;
+
   scheduleSync();
 }
 
+function onMaterialDragOver(e: DragEvent) {
+  if (e.dataTransfer?.types.includes('application/x6-material')) {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  }
+}
+
 function onMaterialDrop(e: DragEvent) {
-  if (!graph || !isEditable.value) return;
-  const raw = e.dataTransfer?.getData('application/x6-material');
+  if (!graph || !isEditable.value || isApplyingExternalData) return;
+  if (!e.dataTransfer?.types.includes('application/x6-material')) return;
+  const raw = e.dataTransfer.getData('application/x6-material');
   if (!raw) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (!didMaterialDragMove()) {
+    resetMaterialDrag();
+    return;
+  }
   try {
     const graphData: GraphData = JSON.parse(raw);
     const pos = graph.clientToLocal(e.clientX, e.clientY);
     insertMaterialAt(graphData, { x: pos.x, y: pos.y });
-  } catch { /* ignore invalid data */ }
+  } catch { /* ignore invalid data */ } finally {
+    resetMaterialDrag();
+  }
 }
 
 function requestInsertRefBlock() {
@@ -1712,6 +1741,7 @@ function bindGraphEvents() {
   });
 
   graph.on('blank:dblclick', () => {
+    if (inspectorTab.value === 'library') return;
     if (isMindmap.value) {
       addMindmapChildNode();
       return;
@@ -2066,7 +2096,14 @@ defineExpose({
     </div>
 
     <div class="x6-workspace" :class="{ 'x6-workspace--no-inspector': !inspectorVisible }">
-      <div ref="stageRef" class="x6-stage" :style="stageStyle" @dragover.prevent @drop="onMaterialDrop">
+      <div
+        ref="stageRef"
+        class="x6-stage"
+        :class="{ 'x6-stage--library': inspectorTab === 'library' }"
+        :style="stageStyle"
+        @dragover.capture="onMaterialDragOver"
+        @drop.capture="onMaterialDrop"
+      >
         <div ref="containerRef" class="x6-canvas"></div>
 
         <div
@@ -2133,11 +2170,14 @@ defineExpose({
             @keydown="handleEdgeEditKeydown"
             @blur="commitEdgeInlineEdit()"
           />
-          <span v-if="blockActionsEnabled">选中后可直接提取为素材</span>
         </div>
 
         <div class="x6-stage-hint">
-          <span v-if="blockActionsEnabled">选中后可直接提取为素材</span>
+          <template v-if="inspectorTab === 'library' && blockActionsEnabled">
+            <span>点击素材卡片：插入到视口中心</span>
+            <span>拖拽右侧把手：插入到画板指定位置</span>
+          </template>
+          <span v-else-if="blockActionsEnabled">选中后可直接提取为素材</span>
           <template v-if="isMindmap">
             <span>Tab 添加子节点 · Enter 添加同级</span>
             <span>双击节点编辑文字（支持富文本）</span>
@@ -2535,6 +2575,10 @@ defineExpose({
 }
 .x6-workspace--no-inspector {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.x6-stage--library .x6-canvas {
+  cursor: default;
 }
 
 .x6-stage {

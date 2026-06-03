@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
 import { useMaterialLibraryStore, type MaterialItem } from '@/stores/materialLibrary';
 import type { GraphData } from '@/api/types';
 import { Graph, Export } from '@antv/x6';
+import { beginMaterialDrag, endMaterialDrag, trackMaterialDrag } from '@/components/x6/materialDrag';
 
 const emit = defineEmits<{
   (e: 'insert', graphData: GraphData): void;
@@ -13,6 +14,8 @@ const store = useMaterialLibraryStore();
 const renamingId = ref<string | null>(null);
 const renameText = ref('');
 const thumbnailMap = ref<Record<string, string>>({});
+let suppressClickInsert = false;
+let isMounted = true;
 
 const THUMBNAIL_SIZE = { width: 160, height: 100 };
 
@@ -47,6 +50,7 @@ async function generateSvgPreview(data: GraphData): Promise<string> {
   } catch {
     return '';
   } finally {
+    preview.dispose();
     document.body.removeChild(container);
   }
 }
@@ -54,6 +58,7 @@ async function generateSvgPreview(data: GraphData): Promise<string> {
 async function generateThumbnail(item: MaterialItem) {
   if (thumbnailMap.value[item.id]) return;
   const svg = await generateSvgPreview(item.graphData);
+  if (!isMounted) return;
   if (svg) {
     thumbnailMap.value[item.id] = svg;
   }
@@ -76,14 +81,28 @@ watch(() => store.items.length, () => {
 });
 
 function handleInsert(item: MaterialItem) {
+  if (suppressClickInsert) return;
   emit('insert', item.graphData);
 }
 
 function handleDragStart(e: DragEvent, item: MaterialItem) {
+  beginMaterialDrag(e);
   if (e.dataTransfer) {
     e.dataTransfer.setData('application/x6-material', JSON.stringify(item.graphData));
     e.dataTransfer.effectAllowed = 'copy';
   }
+}
+
+function handleDrag(e: DragEvent) {
+  trackMaterialDrag(e);
+}
+
+function handleDragEnd() {
+  suppressClickInsert = true;
+  endMaterialDrag();
+  window.setTimeout(() => {
+    suppressClickInsert = false;
+  }, 0);
 }
 
 function handleDelete(id: string) {
@@ -118,10 +137,14 @@ function onRenameKeydown(e: KeyboardEvent) {
     cancelRename();
   }
 }
+
+onBeforeUnmount(() => {
+  isMounted = false;
+});
 </script>
 
 <template>
-  <div class="material-library">
+  <div class="material-library" @mousedown.stop @click.stop>
     <div class="material-library__header">
       <span class="material-library__title">素材库</span>
       <button
@@ -140,23 +163,38 @@ function onRenameKeydown(e: KeyboardEvent) {
       </p>
 
       <div v-for="item in store.items" :key="item.id" class="material-card">
-        <button
-          type="button"
-          class="material-card__preview"
-          :title="`点击插入「${item.name}」`"
-          draggable="true"
-          @click="handleInsert(item)"
-          @dragstart="handleDragStart($event, item)"
-        >
-          <div
-            v-if="getThumbnail(item)"
-            class="material-card__svg"
-            v-html="getThumbnail(item)"
-          />
-          <div v-else class="material-card__placeholder">
-            {{ item.graphData.nodes?.length ?? 0 }} 节点{{ item.graphData.edges?.length ? `, ${item.graphData.edges.length} 连线` : '' }}
-          </div>
-        </button>
+        <div class="material-card__preview-wrap">
+          <button
+            type="button"
+            class="material-card__preview"
+            :title="`点击插入「${item.name}」到画板中心`"
+            @mousedown.stop
+            @click.stop="handleInsert(item)"
+          >
+            <div
+              v-if="getThumbnail(item)"
+              class="material-card__svg"
+              v-html="getThumbnail(item)"
+            />
+            <div v-else class="material-card__placeholder">
+              {{ item.graphData.nodes?.length ?? 0 }} 节点{{ item.graphData.edges?.length ? `, ${item.graphData.edges.length} 连线` : '' }}
+            </div>
+          </button>
+          <button
+            type="button"
+            class="material-card__drag-handle"
+            title="拖拽到画板指定位置"
+            draggable="true"
+            aria-label="拖拽插入"
+            @mousedown.stop
+            @click.stop
+            @dragstart="handleDragStart($event, item)"
+            @drag="handleDrag"
+            @dragend="handleDragEnd"
+          >
+            ⠿
+          </button>
+        </div>
 
         <div class="material-card__meta">
           <input
@@ -267,9 +305,16 @@ function onRenameKeydown(e: KeyboardEvent) {
   box-shadow: 0 2px 8px rgba(22, 119, 255, 0.1);
 }
 
+.material-card__preview-wrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
 .material-card__preview {
   display: block;
-  width: 100%;
+  flex: 1;
+  min-width: 0;
   padding: 0;
   border: none;
   background: #fafafa;
@@ -279,6 +324,29 @@ function onRenameKeydown(e: KeyboardEvent) {
 
 .material-card__preview:hover {
   background: #f0f4ff;
+}
+
+.material-card__drag-handle {
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-left: 1px solid #e5e7eb;
+  background: #f3f4f6;
+  color: #6b7280;
+  cursor: grab;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.material-card__drag-handle:hover {
+  background: #e8eeff;
+  color: #1677ff;
+}
+
+.material-card__drag-handle:active {
+  cursor: grabbing;
 }
 
 .material-card__svg {
