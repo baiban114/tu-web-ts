@@ -3,6 +3,7 @@ import { computed, inject, unref, type Ref } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import X6Component from '@/components/X6Component.vue'
+import { isMindmapBlueprint } from '@/components/x6'
 
 const props = defineProps(nodeViewProps)
 
@@ -25,6 +26,10 @@ const graphData = computed({
   set: (val) => props.updateAttributes({ graphData: val }),
 })
 
+const blockTypeLabel = computed(() => (
+  isMindmapBlueprint(graphData.value) ? '思维导图' : 'X6 画板'
+))
+
 const onResize = (width: number | null, height: number | null) => {
   props.updateAttributes({ width, height })
 }
@@ -41,7 +46,7 @@ const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) 
       :resizable-axes="{ width: true, height: true }"
       :min-width="200"
       :min-height="150"
-      block-type-label="X6 画板"
+      :block-type-label="blockTypeLabel"
       :block-id="blockId"
       block-type="x6"
       :compound-badges="compoundBadges"

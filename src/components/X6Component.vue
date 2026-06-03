@@ -4,6 +4,7 @@ import X6NodeOverlay from './X6NodeOverlay.vue';
 import X6MaterialLibrary from './X6MaterialLibrary.vue';
 import { useMaterialLibraryStore } from '@/stores/materialLibrary';
 import { useObjectModelStore } from '@/stores/objectModel';
+import type { GraphData } from '@/api/types';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
 import {
   Clipboard,
@@ -16,17 +17,37 @@ import {
   Snapline,
   Transform,
 } from '@antv/x6';
+import {
+  type CellData,
+  createId,
+  mergeDeep,
+  isPlainObject,
+  getCellPosition,
+  getCellSize,
+  extractNodeLabel,
+  createNodePorts,
+  createNodeMetadata,
+  createEdgeMetadata,
+  createUmlClassNode,
+  formatUmlClassLabel,
+  createTaskNode,
+  createMindmapNode,
+  createStarterGraphData,
+  resolveBlueprintStarter,
+  getBlueprintRegionLabel,
+  isTaskFlowBlueprint,
+  isMindmapBlueprint,
+  layoutMindmapGraph,
+  syncMindmapEdgeStyles,
+  addMindmapChild,
+  addMindmapSibling,
+  deleteMindmapSelection,
+  attachMindmapDirection,
+  readMindmapDirection,
+  type NodePreset,
+} from '@/components/x6';
 
-type CellData = Record<string, any>;
 const BLUEPRINT_ANCHOR = { x: 480, y: 280 } as const;
-const TASK_FLOW_KIND = 'task-flow' as const;
-
-interface GraphData {
-  cells?: CellData[];
-  nodes: CellData[];
-  edges: CellData[];
-  [key: string]: any;
-}
 
 interface Props {
   graphData?: GraphData;
@@ -38,8 +59,6 @@ interface Props {
   sourceLoadEnabled?: boolean;
   sourceWriteBackEnabled?: boolean;
 }
-
-type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
 
 type SelectedCellState =
   | {
@@ -131,7 +150,8 @@ const edgeInlineEditText = ref('');
 const edgeInlineInputRef = ref<HTMLTextAreaElement | null>(null);
 
 const isEditable = computed(() => props.editable !== false);
-const isTaskFlow = computed(() => props.graphData?.blueprintMeta?.kind === TASK_FLOW_KIND);
+const isTaskFlow = computed(() => isTaskFlowBlueprint(props.graphData));
+const isMindmap = computed(() => isMindmapBlueprint(props.graphData));
 const hasGraphSourceActions = computed(() => props.sourceLoadEnabled || props.sourceWriteBackEnabled);
 const hasExplicitSize = computed(() => props.width != null && props.height != null)
 const editorStyle = computed(() => {
@@ -201,153 +221,6 @@ let lastSerializedSnapshot = '';
 let pendingNodeInternalClickId: string | null = null;
 let suppressNextNodeInternalClickId: string | null = null;
 
-const PORT_GROUPS = {
-  top: {
-    position: 'top',
-    attrs: {
-      circle: {
-        r: 4,
-        magnet: true,
-        stroke: '#1677ff',
-        strokeWidth: 2,
-        fill: '#ffffff',
-        visibility: 'hidden',
-      },
-    },
-  },
-  right: {
-    position: 'right',
-    attrs: {
-      circle: {
-        r: 4,
-        magnet: true,
-        stroke: '#1677ff',
-        strokeWidth: 2,
-        fill: '#ffffff',
-        visibility: 'hidden',
-      },
-    },
-  },
-  bottom: {
-    position: 'bottom',
-    attrs: {
-      circle: {
-        r: 4,
-        magnet: true,
-        stroke: '#1677ff',
-        strokeWidth: 2,
-        fill: '#ffffff',
-        visibility: 'hidden',
-      },
-    },
-  },
-  left: {
-    position: 'left',
-    attrs: {
-      circle: {
-        r: 4,
-        magnet: true,
-        stroke: '#1677ff',
-        strokeWidth: 2,
-        fill: '#ffffff',
-        visibility: 'hidden',
-      },
-    },
-  },
-} as const;
-
-const createNodePorts = () => ({
-  groups: PORT_GROUPS,
-  items: [
-    { id: 'port-top', group: 'top' },
-    { id: 'port-right', group: 'right' },
-    { id: 'port-bottom', group: 'bottom' },
-    { id: 'port-left', group: 'left' },
-  ],
-});
-
-function createId(prefix: string) {
-  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function isPlainObject(value: unknown): value is Record<string, any> {
-  return Object.prototype.toString.call(value) === '[object Object]';
-}
-
-function mergeDeep<T extends Record<string, any>>(base: T, extra: Record<string, any>): T {
-  const result: Record<string, any> = { ...base };
-  Object.entries(extra).forEach(([key, value]) => {
-    const baseValue = result[key];
-    if (isPlainObject(baseValue) && isPlainObject(value)) {
-      result[key] = mergeDeep(baseValue, value);
-      return;
-    }
-    result[key] = value;
-  });
-  return result as T;
-}
-
-function getCellPosition(cell: CellData, fallback = { x: 120, y: 120 }) {
-  const position = isPlainObject(cell.position) ? cell.position : undefined;
-  const style = isPlainObject(cell.style) ? cell.style : undefined;
-  return {
-    x: typeof position?.x === 'number'
-      ? position.x
-      : typeof cell.x === 'number'
-        ? cell.x
-        : typeof style?.x === 'number'
-          ? style.x
-          : fallback.x,
-    y: typeof position?.y === 'number'
-      ? position.y
-      : typeof cell.y === 'number'
-        ? cell.y
-        : typeof style?.y === 'number'
-          ? style.y
-          : fallback.y,
-  };
-}
-
-function getCellSize(cell: CellData) {
-  const size = isPlainObject(cell.size) ? cell.size : undefined;
-  return {
-    width: typeof size?.width === 'number'
-      ? size.width
-      : typeof cell.width === 'number'
-        ? cell.width
-        : undefined,
-    height: typeof size?.height === 'number'
-      ? size.height
-      : typeof cell.height === 'number'
-        ? cell.height
-        : undefined,
-  };
-}
-
-function createEdgeMetadata(edge: Partial<CellData> = {}): CellData {
-  return {
-    shape: 'edge',
-    router: { name: 'orth' },
-    connector: { name: 'rounded' },
-    attrs: mergeDeep(
-      {
-        line: {
-          stroke: '#52616b',
-          strokeWidth: 2,
-          targetMarker: {
-            name: 'block',
-            width: 10,
-            height: 8,
-          },
-        },
-      },
-      edge.attrs ?? {},
-    ),
-    zIndex: 0,
-    ...edge,
-  };
-}
-
 function splitLines(value: string): string[] {
   return value
     .split('\n')
@@ -380,312 +253,33 @@ function normalizeUmlModel(value: unknown): UmlModel {
   return { classes, objects };
 }
 
-function formatUmlClassLabel(definition: UmlClassDefinition): string {
-  const attributes = definition.attributes.length ? definition.attributes.join('\n') : ' ';
-  const methods = definition.methods.length ? definition.methods.join('\n') : ' ';
-  return `${definition.name}\n────────────\n${attributes}\n────────────\n${methods}`;
-}
-
-function createUmlClassNode(definition: UmlClassDefinition, options: Partial<CellData> = {}): CellData {
-  return {
-    id: options.id ?? definition.nodeId ?? createId('uml-class-node'),
-    shape: 'rect',
-    x: options.x ?? 160,
-    y: options.y ?? 120,
-    width: options.width ?? 240,
-    height: options.height ?? 172,
-    ports: options.ports ?? createNodePorts(),
-    attrs: mergeDeep(
-      {
-        body: {
-          fill: '#fffdf7',
-          stroke: '#31511e',
-          strokeWidth: 1.8,
-          rx: 2,
-          ry: 2,
-        },
-        label: {
-          text: formatUmlClassLabel(definition),
-          fill: '#1f2d1f',
-          fontSize: 13,
-          fontFamily: 'Consolas, Menlo, monospace',
-          textVerticalAnchor: 'middle',
-          textAnchor: 'middle',
-          lineHeight: 18,
-        },
-      },
-      options.attrs ?? {},
-    ),
-    data: {
-      preset: 'umlClass',
-      umlClassId: definition.id,
-      ...(options.data ?? {}),
-    },
-    ...options,
-  };
-}
-
-function extractNodeLabel(node: CellData) {
-  return node.label ?? node.data?.label ?? node.attrs?.label?.text ?? '节点';
-}
-
-function createNodeMetadata(preset: NodePreset, options: Partial<CellData> = {}): CellData {
-  if (preset === 'umlClass') {
-    const definition: UmlClassDefinition = options.data?.umlDefinition ?? {
-      id: options.data?.umlClassId ?? createId('uml-class'),
-      name: options.label ?? 'Class',
-      attributes: [],
-      methods: [],
-      nodeId: options.id,
+function normalizeNode(node: CellData, mindmap = false): CellData {
+  const mindRole = node.data?.mindRole;
+  if (mindmap && (mindRole === 'root' || mindRole === 'topic')) {
+    const position = getCellPosition(node);
+    const nodeSize = getCellSize(node);
+    const base = createMindmapNode({
+      id: node.id,
+      x: position.x,
+      y: position.y,
+      width: nodeSize.width,
+      height: nodeSize.height,
+      label: extractNodeLabel(node),
+      mindRole,
+      data: node.data,
+    });
+    return {
+      ...base,
+      ...node,
+      x: position.x,
+      y: position.y,
+      width: nodeSize.width ?? base.width,
+      height: nodeSize.height ?? base.height,
+      attrs: mergeDeep(base.attrs, node.attrs ?? {}),
+      ports: node.ports ?? base.ports,
     };
-    return createUmlClassNode(definition, options);
   }
 
-  const labels: Record<Exclude<NodePreset, 'umlClass'>, string> = {
-    rect: '处理步骤',
-    round: '子流程',
-    ellipse: '开始 / 结束',
-    diamond: '判断',
-  };
-
-  const fills: Record<Exclude<NodePreset, 'umlClass'>, string> = {
-    rect: '#fff7e6',
-    round: '#f6ffed',
-    ellipse: '#e6f4ff',
-    diamond: '#fff1f0',
-  };
-
-  const strokes: Record<Exclude<NodePreset, 'umlClass'>, string> = {
-    rect: '#d48806',
-    round: '#389e0d',
-    ellipse: '#1677ff',
-    diamond: '#cf1322',
-  };
-
-  const textColors: Record<Exclude<NodePreset, 'umlClass'>, string> = {
-    rect: '#593103',
-    round: '#135200',
-    ellipse: '#003a8c',
-    diamond: '#820014',
-  };
-
-  const shape = preset === 'diamond' ? 'polygon' : preset === 'ellipse' ? 'ellipse' : 'rect';
-  const defaultWidth = preset === 'ellipse' ? 140 : preset === 'diamond' ? 140 : 160;
-  const defaultHeight = preset === 'diamond' ? 88 : 64;
-  const baseBody: Record<string, any> = {
-    fill: fills[preset],
-    stroke: strokes[preset],
-    strokeWidth: 1.6,
-  };
-
-  if (preset === 'round') {
-    baseBody.rx = 16;
-    baseBody.ry = 16;
-  }
-
-  if (preset === 'diamond') {
-    baseBody.refPoints = '0,10 10,0 20,10 10,20';
-  }
-
-  return {
-    id: options.id ?? createId(`x6-${preset}`),
-    shape,
-    x: options.x ?? 120,
-    y: options.y ?? 120,
-    width: options.width ?? defaultWidth,
-    height: options.height ?? defaultHeight,
-    ports: options.ports ?? createNodePorts(),
-    attrs: mergeDeep(
-      {
-        body: baseBody,
-        label: {
-          text: options.label ?? labels[preset],
-          fill: textColors[preset],
-          fontSize: 14,
-          fontWeight: 600,
-        },
-      },
-      options.attrs ?? {},
-    ),
-    data: {
-      preset,
-      ...(options.data ?? {}),
-    },
-    ...options,
-  };
-}
-
-function createTaskNode(options: Partial<CellData> = {}): CellData {
-  const label = typeof options.label === 'string' && options.label.trim() ? options.label.trim() : '新任务';
-  const description = typeof options.data?.taskDescription === 'string' && options.data.taskDescription.trim()
-    ? options.data.taskDescription.trim()
-    : '连接上下游任务';
-
-  return createNodeMetadata('round', {
-    width: 196,
-    height: 86,
-    label,
-    attrs: mergeDeep(
-      {
-        body: {
-          fill: '#fff8e6',
-          stroke: '#d48806',
-          strokeWidth: 1.8,
-          rx: 18,
-          ry: 18,
-        },
-        label: {
-          text: `${label}\n${description}`,
-          fill: '#6b3f00',
-          fontSize: 14,
-          fontWeight: 700,
-          lineHeight: 18,
-        },
-      },
-      options.attrs ?? {},
-    ),
-    data: {
-      preset: 'round',
-      textMode: 'plain',
-      taskRole: 'task',
-      taskStatus: 'todo',
-      taskDescription: description,
-      ...(options.data ?? {}),
-    },
-    ...options,
-  });
-}
-
-function createStarterGraphData(): GraphData {
-  const startNode = createNodeMetadata('ellipse', {
-    id: 'x6-start-node',
-    x: 100,
-    y: 160,
-    label: '开始',
-  });
-
-  const processNode = createNodeMetadata('round', {
-    id: 'x6-process-node',
-    x: 340,
-    y: 150,
-    label: '编辑流程',
-  });
-
-  const decisionNode = createNodeMetadata('diamond', {
-    id: 'x6-decision-node',
-    x: 610,
-    y: 148,
-    label: '需要分支?',
-  });
-
-  const finishNode = createNodeMetadata('ellipse', {
-    id: 'x6-finish-node',
-    x: 870,
-    y: 160,
-    label: '完成',
-  });
-
-  const edges = [
-    createEdgeMetadata({
-      id: 'x6-edge-1',
-      source: { cell: startNode.id, port: 'port-right' },
-      target: { cell: processNode.id, port: 'port-left' },
-    }),
-    createEdgeMetadata({
-      id: 'x6-edge-2',
-      source: { cell: processNode.id, port: 'port-right' },
-      target: { cell: decisionNode.id, port: 'port-left' },
-    }),
-    createEdgeMetadata({
-      id: 'x6-edge-3',
-      source: { cell: decisionNode.id, port: 'port-right' },
-      target: { cell: finishNode.id, port: 'port-left' },
-      labels: [
-        {
-          attrs: {
-            label: {
-              text: '是',
-              fill: '#52616b',
-              fontSize: 12,
-            },
-          },
-        },
-      ],
-    }),
-  ];
-
-  const cells = [startNode, processNode, decisionNode, finishNode, ...edges];
-  return {
-    cells,
-    nodes: [startNode, processNode, decisionNode, finishNode],
-    edges,
-  };
-}
-
-function createTaskFlowStarterGraphData(): GraphData {
-  const startNode = createNodeMetadata('ellipse', {
-    id: 'task-flow-start-node',
-    x: 100,
-    y: 170,
-    width: 136,
-    height: 64,
-    label: '开始',
-    data: {
-      preset: 'ellipse',
-      taskRole: 'start',
-      taskStatus: 'ready',
-    },
-  });
-
-  const taskNode = createTaskNode({
-    id: 'task-flow-task-node',
-    x: 360,
-    y: 156,
-    label: '核心任务',
-    data: {
-      taskDescription: '双击后编辑任务内容',
-    },
-  });
-
-  const finishNode = createNodeMetadata('ellipse', {
-    id: 'task-flow-finish-node',
-    x: 660,
-    y: 170,
-    width: 136,
-    height: 64,
-    label: '完成',
-    data: {
-      preset: 'ellipse',
-      taskRole: 'finish',
-      taskStatus: 'ready',
-    },
-  });
-
-  const edges = [
-    createEdgeMetadata({
-      id: 'task-flow-edge-1',
-      source: { cell: startNode.id, port: 'port-right' },
-      target: { cell: taskNode.id, port: 'port-left' },
-    }),
-    createEdgeMetadata({
-      id: 'task-flow-edge-2',
-      source: { cell: taskNode.id, port: 'port-right' },
-      target: { cell: finishNode.id, port: 'port-left' },
-    }),
-  ];
-
-  return {
-    cells: [startNode, taskNode, finishNode, ...edges],
-    nodes: [startNode, taskNode, finishNode],
-    edges,
-    blueprintMeta: {
-      anchor: { x: 480, y: 240 },
-      kind: TASK_FLOW_KIND,
-    },
-  };
-}
-
-function normalizeNode(node: CellData): CellData {
   const preset = (node.data?.preset as NodePreset | undefined)
     ?? (node.shape === 'ellipse'
       ? 'ellipse'
@@ -769,7 +363,28 @@ function normalizeNode(node: CellData): CellData {
   };
 }
 
-function normalizeEdge(edge: CellData): CellData {
+function normalizeEdge(edge: CellData, mindmap = false): CellData {
+  if (mindmap) {
+    const base = createEdgeMetadata(edge, {
+      router: { name: 'normal' },
+      connector: { name: 'smooth' },
+      attrs: {
+        line: {
+          stroke: '#8c8c8c',
+          strokeWidth: 2,
+          targetMarker: { name: 'classic', size: 8 },
+        },
+      },
+    });
+    return {
+      ...base,
+      ...edge,
+      router: { name: 'normal' },
+      connector: { name: 'smooth' },
+      attrs: mergeDeep(base.attrs, edge.attrs ?? {}),
+    };
+  }
+
   const base = createEdgeMetadata(edge);
   const router = edge.router;
   const routerName = typeof router === 'string' ? router : router?.name;
@@ -782,34 +397,32 @@ function normalizeEdge(edge: CellData): CellData {
 }
 
 function normalizeGraphData(data?: GraphData): GraphData {
-  if (data == null) {
-    return createStarterGraphData();
-  }
+  const resolved = resolveBlueprintStarter(data ?? undefined);
+  const mindmap = isMindmapBlueprint(resolved);
 
-  if (data.blueprintMeta?.kind === TASK_FLOW_KIND && !(Array.isArray(data.cells) || data.nodes?.length || data.edges?.length)) {
-    return createTaskFlowStarterGraphData();
-  }
-
-  if (Array.isArray(data.cells)) {
-    const cells = data.cells.map((cell) =>
-      cell.shape === 'edge' || cell.source || cell.target ? normalizeEdge(cell) : normalizeNode(cell),
-    );
+  if (Array.isArray(resolved.cells)) {
+    const cells = resolved.cells.map((cell) => {
+      const item = cell as CellData;
+      return item.shape === 'edge' || item.source || item.target
+        ? normalizeEdge(item, mindmap)
+        : normalizeNode(item, mindmap);
+    });
     return {
-      ...data,
+      ...resolved,
       cells,
       nodes: cells.filter((cell) => !(cell.shape === 'edge' || cell.source || cell.target)),
       edges: cells.filter((cell) => cell.shape === 'edge' || cell.source || cell.target),
-    };
+    } as GraphData;
   }
 
-  const nodes = (data.nodes ?? []).map((node) => normalizeNode(node));
-  const edges = (data.edges ?? []).map((edge) => normalizeEdge(edge));
+  const nodes = (resolved.nodes ?? []).map((node) => normalizeNode(node as CellData, mindmap));
+  const edges = (resolved.edges ?? []).map((edge) => normalizeEdge(edge as CellData, mindmap));
   return {
-    ...data,
+    ...resolved,
     cells: [...nodes, ...edges],
     nodes,
     edges,
-  };
+  } as GraphData;
 }
 
 function getGraphSnapshot(data?: GraphData) {
@@ -827,8 +440,8 @@ function serializeGraphData(): GraphData {
     cells: graph.toJSON().cells as CellData[],
     nodes,
     edges,
-    uml: objectModelStore.model,
-  };
+    uml: objectModelStore.model as Record<string, unknown>,
+  } as GraphData;
 }
 
 function emitGraphData() {
@@ -905,15 +518,6 @@ function getNodeOverlayStyle(node: Node): Record<string, string> {
   };
 }
 
-function getGraphSourceRegionLabel(kind: string): string {
-  if (kind === 'knowledge-base-pages') return '知识库路线图';
-  if (kind === 'selection-blueprint') return '蓝图';
-  if (kind === 'knowledge-roadmap') return '知识库路线图';
-  if (kind === 'blueprint') return '蓝图';
-  if (kind === TASK_FLOW_KIND) return '任务流';
-  return kind;
-}
-
 function updateGraphSourceRegion() {
   const kind = props.graphSourceKind ?? props.graphData?.blueprintMeta?.kind;
   if (!graph || !kind) {
@@ -938,7 +542,7 @@ function updateGraphSourceRegion() {
 
   graphSourceRegion.value = {
     kind,
-    label: getGraphSourceRegionLabel(kind),
+    label: getBlueprintRegionLabel(kind),
     style: {
       left: `${(minX - padding) * zoom + tx}px`,
       top: `${(minY - padding) * zoom + ty}px`,
@@ -1247,6 +851,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   graph.fromJSON({ cells: normalized.cells ?? [] });
   graph.cleanSelection();
   syncTaskFlowEdgeState();
+  syncMindmapGraphState();
 
   // Hide SVG labels for rich-text nodes after loading
   graph.getNodes().forEach(n => {
@@ -1455,8 +1060,32 @@ function getRefInsertPosition() {
   };
 }
 
+function addMindmapChildNode() {
+  if (!graph || !isEditable.value || !isMindmap.value) return;
+  addMindmapChild(graph);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
+function addMindmapSiblingNode() {
+  if (!graph || !isEditable.value || !isMindmap.value) return;
+  addMindmapSibling(graph);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
+function relayoutMindmap() {
+  if (!graph || !isMindmap.value) return;
+  syncMindmapGraphState();
+  scheduleSync();
+}
+
 function addNode(preset: NodePreset, position?: { x: number; y: number }) {
   if (!graph || !isEditable.value) return;
+  if (isMindmap.value) {
+    addMindmapChildNode();
+    return;
+  }
   const center = position ?? getCanvasCenter();
   const node = graph.addNode(
     isTaskFlow.value
@@ -1507,8 +1136,22 @@ function syncTaskFlowEdgeState() {
   });
 }
 
+function syncMindmapGraphState() {
+  if (!graph || !isMindmap.value) return;
+  syncMindmapEdgeStyles(graph);
+  layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+}
+
 function deleteSelection() {
   if (!graph || !isEditable.value) return;
+  if (isMindmap.value) {
+    if (deleteMindmapSelection(graph)) {
+      graph.cleanSelection();
+      refreshSelectedCellState();
+      scheduleSync();
+    }
+    return;
+  }
   const cells = graph.getSelectedCells();
   if (!cells.length) return;
   graph.removeCells(cells);
@@ -1591,12 +1234,12 @@ function insertMaterialAt(graphData: GraphData, position?: { x: number; y: numbe
     const nx = (nodeData.x ?? 0) + offsetX;
     const ny = (nodeData.y ?? 0) + offsetY;
     addedNodes.push(graph.addNode({
-      ...nodeData,
+      ...(nodeData as CellData),
       id: newId,
       x: nx,
       y: ny,
       position: { x: nx, y: ny },
-    }));
+    } as CellData));
   }
   const remapTerminal = (term: any): any => {
     if (typeof term === 'string') return idMap.get(term) ?? term;
@@ -1929,6 +1572,19 @@ function resizeGraph() {
 function bindKeyboardShortcuts() {
   if (!graph || !isEditable.value) return;
 
+  if (isMindmap.value) {
+    graph.bindKey('tab', () => {
+      if (editingNodeId.value != null) return;
+      addMindmapChildNode();
+      return false;
+    });
+    graph.bindKey('enter', () => {
+      if (editingNodeId.value != null) return;
+      addMindmapSiblingNode();
+      return false;
+    });
+  }
+
   graph.bindKey(['backspace', 'delete'], () => {
     deleteSelection();
     return false;
@@ -2055,8 +1711,12 @@ function bindGraphEvents() {
     tryHandleNodeInternalClick(node);
   });
 
-  graph.on('blank:dblclick', ({ x, y }) => {
-    addNode(isTaskFlow.value ? 'round' : 'rect', { x: x - 80, y: y - 32 });
+  graph.on('blank:dblclick', () => {
+    if (isMindmap.value) {
+      addMindmapChildNode();
+      return;
+    }
+    addNode(isTaskFlow.value ? 'round' : 'rect');
   });
 
   graph.on('node:dblclick', ({ node }) => {
@@ -2100,6 +1760,8 @@ function bindGraphEvents() {
   graph.model.on('cell:removed', syncTaskFlowEdgeState);
   graph.model.on('cell:change:source', syncTaskFlowEdgeState);
   graph.model.on('cell:change:target', syncTaskFlowEdgeState);
+  graph.model.on('cell:added', syncMindmapGraphState);
+  graph.model.on('cell:removed', syncMindmapGraphState);
 
   // Update node overlays on graph transform / node changes
   graph.on('translate', updateNodeOverlays);
@@ -2170,6 +1832,7 @@ function initGraph() {
       validateMagnet: ({ magnet }) => isEditable.value && magnet.getAttribute('port-group') != null,
       validateConnection: ({ sourceCell, targetCell, sourceMagnet, targetMagnet }) => {
         if (!isEditable.value) return false;
+        if (isMindmap.value) return false;
         if (!sourceCell || !targetCell || !sourceMagnet || !targetMagnet) return false;
         if (sourceCell.id === targetCell.id && sourceMagnet === targetMagnet) return false;
         if (graph?.isNode(sourceCell) && graph?.isNode(targetCell) && !canCreateTaskFlowEdge(sourceCell, targetCell)) return false;
@@ -2177,10 +1840,10 @@ function initGraph() {
       },
     },
     interacting: () => ({
-      nodeMovable: isEditable.value,
-      edgeMovable: isEditable.value,
-      edgeLabelMovable: isEditable.value,
-      magnetConnectable: isEditable.value,
+      nodeMovable: isEditable.value && !isMindmap.value,
+      edgeMovable: isEditable.value && !isMindmap.value,
+      edgeLabelMovable: isEditable.value && !isMindmap.value,
+      magnetConnectable: isEditable.value && !isMindmap.value,
       arrowheadMovable: isEditable.value,
       vertexMovable: isEditable.value,
       vertexAddable: isEditable.value,
@@ -2216,6 +1879,7 @@ function initGraph() {
     }),
   );
 
+  attachMindmapDirection(graph, props.graphData);
   bindKeyboardShortcuts();
   bindGraphEvents();
   applyGraphData(props.graphData, true);
@@ -2298,6 +1962,17 @@ defineExpose({
         <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('ellipse')">
           <svg class="tool-button__icon" viewBox="0 0 24 24"><ellipse cx="12" cy="13" rx="9" ry="8" fill="#e6f4ff" stroke="#1677ff" stroke-width="1.2"/></svg>
           <span class="tool-button__label">起止节点</span>
+        </button>
+      </div>
+      <div class="toolbar-group" v-else-if="isMindmap">
+        <button type="button" class="tool-button" :disabled="!isEditable" @click="addMindmapChildNode">
+          子节点 (Tab)
+        </button>
+        <button type="button" class="tool-button" :disabled="!isEditable" @click="addMindmapSiblingNode">
+          同级 (Enter)
+        </button>
+        <button type="button" class="tool-button" :disabled="!isEditable" @click="relayoutMindmap">
+          自动布局
         </button>
       </div>
       <div class="toolbar-group" v-else>
@@ -2463,9 +2138,16 @@ defineExpose({
 
         <div class="x6-stage-hint">
           <span v-if="blockActionsEnabled">选中后可直接提取为素材</span>
-          <span>双击空白处快速新建节点</span>
-          <span>拖拽节点四周锚点创建连线</span>
-          <span>双击节点或连线直接改文字</span>
+          <template v-if="isMindmap">
+            <span>Tab 添加子节点 · Enter 添加同级</span>
+            <span>双击节点编辑文字（支持富文本）</span>
+            <span>Delete 删除分支（保留中心主题）</span>
+          </template>
+          <template v-else>
+            <span>双击空白处快速新建节点</span>
+            <span>拖拽节点四周锚点创建连线</span>
+            <span>双击节点或连线直接改文字</span>
+          </template>
         </div>
       </div>
 
@@ -2509,6 +2191,16 @@ defineExpose({
               </li>
             </ol>
             <p class="inspector-empty">每个任务节点只允许一条前驱和一条后继连线，用于表达明确的先后顺序。</p>
+          </div>
+
+          <div v-if="isMindmap" class="inspector-card">
+            <h4>思维导图</h4>
+            <p class="inspector-empty">树形结构由工具栏或快捷键维护，连线会自动布局为从左到右的分支。</p>
+            <ul class="inspector-tips">
+              <li><code>Tab</code> 为选中节点添加子分支</li>
+              <li><code>Enter</code> 添加同级分支</li>
+              <li>节点支持切换富文本模式并插入素材</li>
+            </ul>
           </div>
 
           <div class="inspector-card">
@@ -2889,6 +2581,14 @@ defineExpose({
   background: rgba(82, 196, 26, 0.05);
   box-shadow:
     0 0 0 4px rgba(82, 196, 26, 0.08),
+    0 12px 28px rgba(15, 23, 42, 0.08);
+}
+
+.x6-source-region--mindmap {
+  border-color: rgba(22, 119, 255, 0.72);
+  background: rgba(22, 119, 255, 0.05);
+  box-shadow:
+    0 0 0 4px rgba(22, 119, 255, 0.08),
     0 12px 28px rgba(15, 23, 42, 0.08);
 }
 

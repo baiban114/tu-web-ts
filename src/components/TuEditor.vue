@@ -31,6 +31,7 @@ import {
 } from '@/editor'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
+import { createMindmapStarterGraphData } from '@/components/x6'
 import { useWorkspaceStore } from '@/stores/workspace'
 import HoverHandle from './HoverHandle.vue'
 
@@ -61,7 +62,7 @@ const emit = defineEmits<{
   'open-tag-editor': [blockId: string]
 }>()
 
-type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
+type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
 type HandleAction = InsertBlockType | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
 
 interface InsertOption {
@@ -111,6 +112,7 @@ const insertOptions: InsertOption[] = [
   { key: 'externalResource', label: '外部资源', icon: '▣', keywords: ['resource', 'external', 'book', 'ziyuan', 'tushu'] },
   { key: 'line', label: '时间轴', icon: '🕒', keywords: ['timeline', 'line', 'shijianzhou'] },
   { key: 'x6', label: 'X6 画板', icon: '🧩', keywords: ['x6', 'graph', 'draw', 'huaban'] },
+  { key: 'x6-mindmap', label: '思维导图', icon: '🧠', keywords: ['mindmap', '思维导图', '脑图', 'tree'] },
   { key: 'knowledge-roadmap', label: '知识库路线图', icon: '🗺️', keywords: ['roadmap', 'knowledge', 'kb', 'zhishiku'] },
   { key: 'table', label: '表格', icon: '▦', keywords: ['table', 'biaoge'] },
   { key: 'multiTable', label: '多维表格', icon: '▤', keywords: ['multi', 'database', 'kanban', 'duowei'] },
@@ -401,6 +403,13 @@ const createExternalBlock = (type: InsertBlockType): Block | null => {
             { id: `${id}-edge-1`, source: `${id}-node-1`, target: `${id}-node-2` },
           ],
         },
+      }
+    case 'x6-mindmap':
+      return {
+        id,
+        type: 'x6',
+        title: '思维导图',
+        graphData: createMindmapStarterGraphData(),
       }
     case 'knowledge-roadmap':
       return {

@@ -58,7 +58,10 @@ export interface GraphData {
     };
     extractedCount?: number;
     kind?: string;
+    direction?: 'LR' | 'RL' | 'TB' | 'BT';
   };
+  /** UML 对象模型快照，仅 X6 画板序列化时使用 */
+  uml?: Record<string, unknown>;
 }
 
 export interface BlockTag {
