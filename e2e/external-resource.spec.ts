@@ -57,8 +57,8 @@ test('manages book excerpts on the resources page', async ({ page }) => {
   await panel.getByRole('button', { name: '保存节选' }).click()
   await expect(panel.getByText('已更新备注')).toBeVisible()
 
-  page.once('dialog', (dialog) => dialog.accept())
   await row.getByRole('button', { name: '删除' }).click()
+  await page.getByRole('button', { name: '确定' }).click()
   await expect(panel.getByText('第二个片段')).not.toBeVisible()
 })
 
