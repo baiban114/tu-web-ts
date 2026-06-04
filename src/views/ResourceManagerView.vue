@@ -8,23 +8,36 @@ import {
   createResourceExcerpt,
   createResourceType,
   createResourceWork,
+  createUrlClusterRule,
   removeResourceItem,
   deleteResourceExcerpt,
   deleteResourceType,
   deleteResourceWork,
+  deleteUrlClusterRule,
   listResourceExcerpts,
   listResourceItems,
   listResourceTypes,
   listResourceWorks,
+  createResourceItemRelation,
+  deleteResourceItemRelation,
+  listUrlClusterRules,
+  listResourceItemRelations,
+  mergeResourceWorks,
+  resetResourceItemAuto,
+  splitResourceItemToNewWork,
   updateResourceExcerpt,
   updateResourceItem,
   updateResourceType,
   updateResourceWork,
+  updateUrlClusterRule,
   supportsResourceExcerpts,
   type ResourceExcerpt,
   type ResourceItem,
+  type ResourceItemRelation,
   type ResourceType,
   type ResourceWork,
+  type UrlClusterRule,
+  type VariantKind,
 } from '@/api/externalResource';
 import {
   listReferences,
@@ -41,19 +54,20 @@ import {
 } from '@/api/orphanedAnnotation';
 import { useObjectModelStore } from '@/stores/objectModel';
 
-type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'objects' | 'orphaned';
+type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned';
 type ReferenceCategoryFilter = 'all' | 'internal' | 'external' | 'annotation';
 type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
 
 const route = useRoute();
 const router = useRouter();
-const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'objects', 'orphaned']);
+const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned']);
 
 const TAB_LABELS: Record<ResourceTab, string> = {
   references: '引用管理',
   items: '资源实体',
   works: '资源归类',
   types: '资源类型',
+  urlRules: 'URL 聚类规则',
   objects: '对象管理',
   orphaned: '孤立标注',
 };
@@ -82,6 +96,19 @@ const totalReferences = ref(0);
 const types = ref<ResourceType[]>([]);
 const works = ref<ResourceWork[]>([]);
 const items = ref<ResourceItem[]>([]);
+const urlClusterRules = ref<UrlClusterRule[]>([]);
+const itemRelations = ref<ResourceItemRelation[]>([]);
+const relationForm = reactive({
+  toItemId: '',
+  relationType: 'translation',
+  note: '',
+});
+
+const mergeWorkDialogVisible = ref(false);
+const mergeWorkSourceItem = ref<ResourceItem | null>(null);
+const mergeWorkSelectedId = ref('');
+const mergeWorkCandidates = ref<ResourceWork[]>([]);
+const mergeWorkSubmitting = ref(false);
 const excerpts = ref<ResourceExcerpt[]>([]);
 const references = ref<ReferenceItem[]>([]);
 const orphanedAnnotations = ref<OrphanedAnnotation[]>([]);
@@ -120,6 +147,20 @@ const itemForm = reactive({
   sourceUrl: '',
   edition: '',
   note: '',
+  titleSource: 'auto' as 'auto' | 'manual',
+  workIdSource: 'auto' as 'auto' | 'manual',
+  variantKind: '' as VariantKind | '',
+});
+
+const urlRuleForm = reactive({
+  id: '',
+  domain: '',
+  pathRegex: '',
+  clusterKeyFormat: '',
+  variantGroup: null as number | null,
+  priority: 10,
+  enabled: true,
+  description: '',
 });
 
 const excerptForm = reactive({
@@ -218,6 +259,22 @@ function resetItemForm() {
     sourceUrl: '',
     edition: '',
     note: '',
+    titleSource: 'auto',
+    workIdSource: 'auto',
+    variantKind: '',
+  });
+}
+
+function resetUrlRuleForm() {
+  Object.assign(urlRuleForm, {
+    id: '',
+    domain: '',
+    pathRegex: '',
+    clusterKeyFormat: '',
+    variantGroup: null,
+    priority: 10,
+    enabled: true,
+    description: '',
   });
 }
 
@@ -290,6 +347,7 @@ async function refreshAll() {
   try {
     types.value = await listResourceTypes();
     works.value = await listResourceWorks();
+    urlClusterRules.value = await listUrlClusterRules();
     items.value = await listResourceItems({
       typeId: selectedTypeId.value,
       workId: selectedWorkId.value,
@@ -441,13 +499,46 @@ async function saveWork() {
   }
 }
 
+function buildItemPayloadFromRecord(item: Pick<ResourceItem, 'typeId' | 'workId' | 'title' | 'identityValue' | 'sourceUrl' | 'edition' | 'note' | 'titleSource' | 'workIdSource' | 'variantKind'>, overrides: {
+  workId?: string;
+  workIdSource?: 'auto' | 'manual';
+  titleSource?: 'auto' | 'manual';
+} = {}) {
+  return {
+    typeId: item.typeId,
+    workId: overrides.workId ?? (item.workId || undefined),
+    title: item.title,
+    identityValue: item.identityValue || undefined,
+    sourceUrl: item.sourceUrl || undefined,
+    edition: item.edition || undefined,
+    note: item.note || undefined,
+    titleSource: overrides.titleSource ?? item.titleSource ?? 'auto',
+    workIdSource: overrides.workIdSource ?? item.workIdSource ?? 'auto',
+    variantKind: item.variantKind ? item.variantKind : undefined,
+  };
+}
+
+function buildItemPayload(manual = false) {
+  return buildItemPayloadFromRecord(
+    {
+      ...itemForm,
+      variantKind: itemForm.variantKind || undefined,
+    },
+    {
+      workId: itemForm.workId || undefined,
+      titleSource: manual ? 'manual' : (itemForm.titleSource || 'auto'),
+      workIdSource: manual ? 'manual' : (itemForm.workIdSource || 'auto'),
+    },
+  );
+}
+
 async function saveItem() {
   try {
     if (itemForm.id) {
-      await updateResourceItem(itemForm.id, { ...itemForm });
+      await updateResourceItem(itemForm.id, buildItemPayload(true));
       showSuccess('资源实体已更新');
     } else {
-      await createResourceItem({ ...itemForm });
+      await createResourceItem(buildItemPayload(false));
       showSuccess('资源实体已创建');
     }
     resetItemForm();
@@ -515,6 +606,48 @@ function editWork(work: ResourceWork) {
   activeTab.value = 'works';
 }
 
+async function loadItemRelations(itemId: string) {
+  if (!itemId) {
+    itemRelations.value = [];
+    return;
+  }
+  try {
+    itemRelations.value = await listResourceItemRelations(itemId);
+  } catch (error) {
+    showError(error);
+    itemRelations.value = [];
+  }
+}
+
+async function addItemRelation() {
+  if (!itemForm.id || !relationForm.toItemId.trim()) return;
+  try {
+    await createResourceItemRelation({
+      fromItemId: itemForm.id,
+      toItemId: relationForm.toItemId.trim(),
+      relationType: relationForm.relationType,
+      note: relationForm.note.trim() || undefined,
+    });
+    relationForm.toItemId = '';
+    relationForm.note = '';
+    showSuccess('实体关系已创建');
+    await loadItemRelations(itemForm.id);
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function removeItemRelation(relation: ResourceItemRelation) {
+  try {
+    await confirmAction('确定删除这条实体关系？', '删除关系');
+    await deleteResourceItemRelation(relation.id);
+    showSuccess('关系已删除');
+    if (itemForm.id) await loadItemRelations(itemForm.id);
+  } catch (error) {
+    showError(error);
+  }
+}
+
 function editItem(item: ResourceItem) {
   Object.assign(itemForm, {
     id: item.id,
@@ -525,8 +658,142 @@ function editItem(item: ResourceItem) {
     sourceUrl: item.sourceUrl || '',
     edition: item.edition || '',
     note: item.note || '',
+    titleSource: item.titleSource || 'auto',
+    workIdSource: item.workIdSource || 'auto',
+    variantKind: item.variantKind || '',
   });
   activeTab.value = 'items';
+  void loadItemRelations(item.id);
+}
+
+function countItemsInWork(workId: string): number {
+  return items.value.filter((entry) => entry.workId === workId).length;
+}
+
+function openMergeWorkDialog(item: ResourceItem) {
+  const candidates = works.value.filter((work) => work.typeId === item.typeId && work.id !== item.workId);
+  if (candidates.length === 0) {
+    showError('没有可合并的目标归类，请先在「资源归类」中创建。');
+    return;
+  }
+  mergeWorkSourceItem.value = item;
+  mergeWorkCandidates.value = candidates;
+  mergeWorkSelectedId.value = candidates[0]?.id ?? '';
+  mergeWorkDialogVisible.value = true;
+}
+
+function closeMergeWorkDialog() {
+  mergeWorkDialogVisible.value = false;
+  mergeWorkSourceItem.value = null;
+  mergeWorkSelectedId.value = '';
+  mergeWorkCandidates.value = [];
+  mergeWorkSubmitting.value = false;
+}
+
+function selectMergeWorkTarget(work: ResourceWork) {
+  mergeWorkSelectedId.value = work.id;
+}
+
+async function confirmMergeWork() {
+  const item = mergeWorkSourceItem.value;
+  if (!item) return;
+  const target = mergeWorkCandidates.value.find((work) => work.id === mergeWorkSelectedId.value);
+  if (!target) {
+    showError('请选择目标资源归类');
+    return;
+  }
+  mergeWorkSubmitting.value = true;
+  try {
+    const sourceWorkId = item.workId;
+    if (!sourceWorkId) {
+      await updateResourceItem(item.id, buildItemPayloadFromRecord(item, {
+        workId: target.id,
+        workIdSource: 'manual',
+        titleSource: item.titleSource === 'manual' ? 'manual' : item.titleSource,
+      }));
+    } else {
+      await mergeResourceWorks(sourceWorkId, target.id);
+    }
+    showSuccess(`已将「${item.title}」合并到归类「${target.title}」`);
+    closeMergeWorkDialog();
+    await refreshAll();
+  } catch (error) {
+    showError(error);
+  } finally {
+    mergeWorkSubmitting.value = false;
+  }
+}
+
+async function splitItemWork(item: ResourceItem) {
+  try {
+    await confirmAction(`确定将「${item.title}」拆分为独立的资源归类？`, '拆分为新归类');
+    await splitResourceItemToNewWork(item.id);
+    showSuccess('已拆分为新资源归类');
+    await refreshAll();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function resetItemAuto(item: ResourceItem) {
+  try {
+    await confirmAction(`确定将「${item.title}」的自动字段重置为规则推断结果？`, '重置为自动');
+    await resetResourceItemAuto(item.id);
+    showSuccess('已重置为自动归类');
+    await refreshAll();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function editUrlRule(rule: UrlClusterRule) {
+  Object.assign(urlRuleForm, {
+    id: rule.id,
+    domain: rule.domain,
+    pathRegex: rule.pathRegex,
+    clusterKeyFormat: rule.clusterKeyFormat,
+    variantGroup: rule.variantGroup ?? null,
+    priority: rule.priority,
+    enabled: rule.enabled,
+    description: rule.description || '',
+  });
+  activeTab.value = 'urlRules';
+}
+
+async function saveUrlRule() {
+  try {
+    const payload = {
+      domain: urlRuleForm.domain.trim(),
+      pathRegex: urlRuleForm.pathRegex.trim(),
+      clusterKeyFormat: urlRuleForm.clusterKeyFormat.trim(),
+      variantGroup: urlRuleForm.variantGroup,
+      priority: urlRuleForm.priority,
+      enabled: urlRuleForm.enabled,
+      description: urlRuleForm.description.trim() || undefined,
+    };
+    if (urlRuleForm.id) {
+      await updateUrlClusterRule(urlRuleForm.id, payload);
+      showSuccess('URL 聚类规则已更新');
+    } else {
+      await createUrlClusterRule(payload);
+      showSuccess('URL 聚类规则已创建');
+    }
+    resetUrlRuleForm();
+    urlClusterRules.value = await listUrlClusterRules();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function removeUrlRule(rule: UrlClusterRule) {
+  try {
+    await confirmAction(`确定删除规则「${rule.domain}」？`, '删除规则');
+    await deleteUrlClusterRule(rule.id);
+    showSuccess('规则已删除');
+    urlClusterRules.value = await listUrlClusterRules();
+  } catch (error) {
+    showError(error);
+  }
 }
 
 function editExcerpt(excerpt: ResourceExcerpt) {
@@ -902,6 +1169,7 @@ watch(
       <el-tab-pane label="资源实体" name="items" />
       <el-tab-pane label="资源归类" name="works" />
       <el-tab-pane label="资源类型" name="types" />
+      <el-tab-pane label="URL 聚类规则" name="urlRules" />
       <el-tab-pane label="对象管理" name="objects" />
       <el-tab-pane name="orphaned">
         <template #label>
@@ -1083,12 +1351,48 @@ watch(
           <el-form-item label="源 URL">
             <el-input v-model="itemForm.sourceUrl" maxlength="1024" />
           </el-form-item>
-          <el-form-item label="版本/发行">
-            <el-input v-model="itemForm.edition" maxlength="128" />
+          <el-form-item label="版本/变体">
+            <el-input v-model="itemForm.edition" maxlength="128" placeholder="规则推断或手动填写" />
+          </el-form-item>
+          <el-form-item label="变体类型">
+            <el-select v-model="itemForm.variantKind" clearable placeholder="未指定" style="width: 100%">
+              <el-option label="翻译" value="translation" />
+              <el-option label="格式" value="format" />
+              <el-option label="版次" value="edition" />
+              <el-option label="镜像" value="mirror" />
+              <el-option label="其他" value="other" />
+            </el-select>
           </el-form-item>
           <el-form-item label="备注">
             <el-input v-model="itemForm.note" type="textarea" :rows="4" maxlength="1024" />
           </el-form-item>
+          <template v-if="itemForm.id">
+            <el-divider content-position="left">实体关系</el-divider>
+            <el-table :data="itemRelations" size="small" empty-text="暂无关系">
+              <el-table-column label="关系" width="100" prop="relationType" />
+              <el-table-column label="目标" min-width="120" prop="toItemTitle" show-overflow-tooltip />
+              <el-table-column label="操作" width="80">
+                <template #default="{ row }">
+                  <el-button size="small" type="danger" link @click="removeItemRelation(row)">删除</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-form-item label="关联到实体 ID">
+              <el-input v-model="relationForm.toItemId" placeholder="目标资源实体 ID" />
+            </el-form-item>
+            <el-form-item label="关系类型">
+              <el-select v-model="relationForm.relationType" style="width: 100%">
+                <el-option label="翻译" value="translation" />
+                <el-option label="格式" value="format" />
+                <el-option label="版次" value="edition" />
+                <el-option label="镜像" value="mirror" />
+                <el-option label="其他" value="other" />
+              </el-select>
+            </el-form-item>
+            <el-form-item>
+              <el-button @click="addItemRelation">添加关系</el-button>
+            </el-form-item>
+          </template>
           <el-form-item>
             <el-space wrap>
               <el-button type="primary" native-type="submit">{{ itemForm.id ? '保存实体' : '创建实体' }}</el-button>
@@ -1118,8 +1422,15 @@ watch(
             <el-table-column label="类型/标识" min-width="160" show-overflow-tooltip>
               <template #default="{ row }">{{ row.typeName }} · {{ row.identityFieldLabel }}: {{ row.identityValue || '未填写' }}</template>
             </el-table-column>
-            <el-table-column label="归类" min-width="100" show-overflow-tooltip>
-              <template #default="{ row }">归类：{{ row.workTitle || '未归类' }}</template>
+            <el-table-column label="归类/来源" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">
+                <div>{{ row.workTitle || '未归类' }}</div>
+                <span class="row-meta">
+                  {{ row.titleSource === 'manual' ? '标题·手动' : '标题·自动' }}
+                  · {{ row.workIdSource === 'manual' ? '归类·手动' : '归类·自动' }}
+                  <template v-if="row.variantKind"> · {{ row.variantKind }}</template>
+                </span>
+              </template>
             </el-table-column>
             <el-table-column label="URL" min-width="120" show-overflow-tooltip>
               <template #default="{ row }">
@@ -1127,11 +1438,14 @@ watch(
                 <span v-else class="row-meta">-</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="200" fixed="right">
+            <el-table-column label="操作" width="320" fixed="right">
               <template #default="{ row }">
                 <el-space wrap>
                   <el-button v-if="supportsExcerptItem(row)" size="small" @click="selectExcerptItem(row)">节选</el-button>
                   <el-button size="small" @click="editItem(row)">编辑</el-button>
+                  <el-button size="small" @click="openMergeWorkDialog(row)">合并归类</el-button>
+                  <el-button size="small" @click="splitItemWork(row)">拆分</el-button>
+                  <el-button size="small" @click="resetItemAuto(row)">重置自动</el-button>
                   <el-button size="small" type="danger" plain @click="removeItem(row)">移除</el-button>
                 </el-space>
               </template>
@@ -1256,6 +1570,72 @@ watch(
               <el-space>
                 <el-button size="small" @click="editWork(row)">编辑</el-button>
                 <el-button size="small" type="danger" plain @click="removeWork(row.id)">删除</el-button>
+              </el-space>
+            </template>
+          </el-table-column>
+        </el-table>
+      </el-card>
+    </section>
+
+    <section v-if="activeTab === 'urlRules'" class="resource-layout">
+      <el-card shadow="never" class="resource-form-card">
+        <template #header>
+          <span>{{ urlRuleForm.id ? '编辑 URL 聚类规则' : '新增 URL 聚类规则' }}</span>
+        </template>
+        <el-form class="resource-form" label-position="top" @submit.prevent="saveUrlRule">
+          <el-form-item label="域名" required>
+            <el-input v-model="urlRuleForm.domain" placeholder="example.com 或 *" maxlength="255" />
+          </el-form-item>
+          <el-form-item label="路径正则" required>
+            <el-input v-model="urlRuleForm.pathRegex" placeholder="^/books/([0-9]+)/([^/]+)$" maxlength="512" />
+          </el-form-item>
+          <el-form-item label="聚类键格式" required>
+            <el-input v-model="urlRuleForm.clusterKeyFormat" placeholder="{domain}|books|{1}" maxlength="512" />
+          </el-form-item>
+          <el-form-item label="变体捕获组">
+            <el-input-number v-model="urlRuleForm.variantGroup" :min="0" :max="9" />
+          </el-form-item>
+          <el-form-item label="优先级">
+            <el-input-number v-model="urlRuleForm.priority" :min="0" :max="1000" />
+          </el-form-item>
+          <el-form-item label="启用">
+            <el-switch v-model="urlRuleForm.enabled" />
+          </el-form-item>
+          <el-form-item label="说明">
+            <el-input v-model="urlRuleForm.description" type="textarea" :rows="2" maxlength="512" />
+          </el-form-item>
+          <el-form-item>
+            <el-space wrap>
+              <el-button type="primary" native-type="submit">{{ urlRuleForm.id ? '保存规则' : '创建规则' }}</el-button>
+              <el-button @click="resetUrlRuleForm">清空</el-button>
+            </el-space>
+          </el-form-item>
+        </el-form>
+      </el-card>
+
+      <el-card shadow="never" class="resource-list-card">
+        <template #header>
+          <div class="list-card-header">
+            <span>URL 聚类规则</span>
+            <span class="row-meta">{{ urlClusterRules.length }} 条</span>
+          </div>
+        </template>
+        <el-table v-loading="loading" :data="urlClusterRules" stripe empty-text="暂无规则">
+          <el-table-column prop="domain" label="域名" width="140" />
+          <el-table-column prop="pathRegex" label="路径正则" min-width="180" show-overflow-tooltip />
+          <el-table-column prop="clusterKeyFormat" label="聚类键" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="priority" label="优先级" width="80" />
+          <el-table-column label="状态" width="90">
+            <template #default="{ row }">{{ row.enabled ? '启用' : '停用' }}</template>
+          </el-table-column>
+          <el-table-column label="来源" width="90">
+            <template #default="{ row }">{{ row.builtIn ? '内置' : '自定义' }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="160" fixed="right">
+            <template #default="{ row }">
+              <el-space>
+                <el-button size="small" @click="editUrlRule(row)">编辑</el-button>
+                <el-button size="small" type="danger" plain :disabled="row.builtIn" @click="removeUrlRule(row)">删除</el-button>
               </el-space>
             </template>
           </el-table-column>
@@ -1506,6 +1886,55 @@ watch(
         </div>
       </el-card>
     </section>
+
+    <el-dialog
+      v-model="mergeWorkDialogVisible"
+      title="合并到资源归类"
+      width="560px"
+      destroy-on-close
+      @closed="closeMergeWorkDialog"
+    >
+      <p v-if="mergeWorkSourceItem" class="merge-work-dialog__intro">
+        将实体「<strong>{{ mergeWorkSourceItem.title }}</strong>」合并到以下归类之一。
+        <span v-if="mergeWorkSourceItem.workTitle" class="row-meta">
+          当前归类：{{ mergeWorkSourceItem.workTitle }}
+        </span>
+      </p>
+      <el-table
+        :data="mergeWorkCandidates"
+        class="merge-work-dialog__table"
+        max-height="320"
+        highlight-current-row
+        :row-class-name="({ row }: { row: ResourceWork }) => mergeWorkSelectedId === row.id ? 'merge-work-row--selected' : ''"
+        @row-click="selectMergeWorkTarget"
+      >
+        <el-table-column width="48" align="center">
+          <template #default="{ row }">
+            <el-radio v-model="mergeWorkSelectedId" :label="row.id" @click.stop />
+          </template>
+        </el-table-column>
+        <el-table-column prop="title" label="归类名称" min-width="160" show-overflow-tooltip />
+        <el-table-column label="聚类键" min-width="140" show-overflow-tooltip>
+          <template #default="{ row }">
+            <span class="row-meta">{{ row.clusterKey || '-' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="实体数" width="72" align="center">
+          <template #default="{ row }">{{ countItemsInWork(row.id) }}</template>
+        </el-table-column>
+      </el-table>
+      <template #footer>
+        <el-button @click="closeMergeWorkDialog">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="mergeWorkSubmitting"
+          :disabled="!mergeWorkSelectedId"
+          @click="confirmMergeWork"
+        >
+          确认合并
+        </el-button>
+      </template>
+    </el-dialog>
   </main>
 </template>
 
@@ -1717,6 +2146,26 @@ watch(
 
 .orphaned-descriptions {
   margin: 4px 0;
+}
+
+.merge-work-dialog__intro {
+  margin: 0 0 12px;
+  color: #344054;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.merge-work-dialog__intro .row-meta {
+  display: block;
+  margin-top: 6px;
+}
+
+.merge-work-dialog__table :deep(.el-table__row) {
+  cursor: pointer;
+}
+
+.merge-work-dialog__table :deep(.merge-work-row--selected > td) {
+  background: #ecf5ff !important;
 }
 
 @media (max-width: 960px) {

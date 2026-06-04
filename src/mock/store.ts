@@ -11,19 +11,30 @@ import type {
   TextAnnotation,
 } from '@/api/types';
 import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
+import {
+  buildExcerptTitle,
+  formatExcerptLocator,
+  parseExternalUrl,
+} from '@/utils/externalUrlResource';
+import { BUILTIN_URL_CLUSTER_RULES, findWorkByClusterKey, matchUrlCluster } from '@/utils/urlCluster';
 import type {
   CreateResourceExcerptPayload,
   CreateResourceItemPayload,
   CreateResourceTypePayload,
   CreateResourceWorkPayload,
+  CreateUrlClusterRulePayload,
+  RegisterExternalUrlResult,
   ResourceExcerpt,
   ResourceItem,
+  ResourceItemRelation,
   ResourceType,
   ResourceWork,
   UpdateResourceExcerptPayload,
   UpdateResourceItemPayload,
   UpdateResourceTypePayload,
   UpdateResourceWorkPayload,
+  UpdateUrlClusterRulePayload,
+  UrlClusterRule,
 } from '@/api/externalResource';
 
 interface MockState {
@@ -34,6 +45,8 @@ interface MockState {
   resourceWorks: ResourceWork[];
   resourceItems: ResourceItem[];
   resourceExcerpts: ResourceExcerpt[];
+  urlClusterRules: UrlClusterRule[];
+  resourceItemRelations: ResourceItemRelation[];
 }
 
 const STORAGE_KEY = 'tu:mock-state';
@@ -203,6 +216,8 @@ const initialState: MockState = {
       title: '示例之书',
       subtitle: 'Mock 外部资源',
       description: '用于验证外部资源插入和图书节选。',
+      clusterKey: '978-7-0000-0000-1',
+      titleSource: 'manual',
     },
     {
       id: 'rw-link-demo',
@@ -211,6 +226,8 @@ const initialState: MockState = {
       title: '示例文档站',
       subtitle: 'Mock 网络链接',
       description: '用于验证网络链接节选。',
+      clusterKey: 'example.com|id|demo',
+      titleSource: 'auto',
     },
   ],
   resourceItems: [
@@ -227,6 +244,9 @@ const initialState: MockState = {
       sourceUrl: 'https://example.com/books/demo',
       edition: '第一版',
       note: 'Mock 图书资源',
+      titleSource: 'manual',
+      workIdSource: 'manual',
+      variantKind: 'edition',
     },
     {
       id: 'ri-link-demo',
@@ -241,8 +261,13 @@ const initialState: MockState = {
       sourceUrl: 'https://example.com/docs/demo',
       edition: undefined,
       note: 'Mock 网络链接资源',
+      titleSource: 'auto',
+      workIdSource: 'auto',
+      variantKind: undefined,
     },
   ],
+  urlClusterRules: [...BUILTIN_URL_CLUSTER_RULES],
+  resourceItemRelations: [],
   resourceExcerpts: [
     {
       id: 're-book-demo-1',
@@ -292,6 +317,8 @@ function loadState(): MockState {
       resourceWorks: Array.isArray(parsed.resourceWorks) ? parsed.resourceWorks : cloneState(initialState.resourceWorks),
       resourceItems: Array.isArray(parsed.resourceItems) ? parsed.resourceItems : cloneState(initialState.resourceItems),
       resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
+      urlClusterRules: Array.isArray(parsed.urlClusterRules) ? parsed.urlClusterRules : cloneState(initialState.urlClusterRules),
+      resourceItemRelations: Array.isArray(parsed.resourceItemRelations) ? parsed.resourceItemRelations : cloneState(initialState.resourceItemRelations),
     };
   } catch {
     return cloneState(initialState);
@@ -428,6 +455,8 @@ export function createResourceWorkMock(payload: CreateResourceWorkPayload): Reso
     title: payload.title.trim(),
     subtitle: payload.subtitle || '',
     description: payload.description || '',
+    clusterKey: payload.clusterKey || null,
+    titleSource: payload.titleSource || 'auto',
   };
   state.resourceWorks.push(work);
   persistState();
@@ -443,6 +472,8 @@ export function updateResourceWorkMock(id: string, payload: UpdateResourceWorkPa
     title: payload.title.trim(),
     subtitle: payload.subtitle || '',
     description: payload.description || '',
+    clusterKey: payload.clusterKey ?? work.clusterKey ?? null,
+    titleSource: payload.titleSource || work.titleSource || 'auto',
   });
   persistState();
   return cloneState(hydrateResourceWork(work));
@@ -489,6 +520,9 @@ export function createResourceItemMock(payload: CreateResourceItemPayload): Reso
     sourceUrl: payload.sourceUrl || '',
     edition: payload.edition || '',
     note: payload.note || '',
+    titleSource: payload.titleSource || 'auto',
+    workIdSource: payload.workIdSource || 'auto',
+    variantKind: payload.variantKind,
   };
   state.resourceItems.push(item);
   persistState();
@@ -513,6 +547,9 @@ export function updateResourceItemMock(id: string, payload: UpdateResourceItemPa
     sourceUrl: payload.sourceUrl || '',
     edition: payload.edition || '',
     note: payload.note || '',
+    titleSource: payload.titleSource || item.titleSource || 'auto',
+    workIdSource: payload.workIdSource || item.workIdSource || 'auto',
+    variantKind: payload.variantKind ?? item.variantKind,
   });
   state.resourceExcerpts
     .filter((excerpt) => excerpt.resourceItemId === id)
@@ -524,7 +561,303 @@ export function updateResourceItemMock(id: string, payload: UpdateResourceItemPa
 export function removeResourceItemMock(id: string): void {
   state.resourceItems = state.resourceItems.filter((item) => item.id !== id);
   state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.resourceItemId !== id);
+  state.resourceItemRelations = state.resourceItemRelations.filter(
+    (relation) => relation.fromItemId !== id && relation.toItemId !== id,
+  );
   persistState();
+}
+
+function normalizeExcerptLocatorKey(locator?: string | null): string {
+  return (locator ?? '').trim().replace(/^#/, '');
+}
+
+function getLinkTitle(label: string, url: string): string {
+  const title = label.trim();
+  if (title) return title.slice(0, 255);
+  try {
+    return new URL(url).hostname.slice(0, 255) || url.slice(0, 255);
+  } catch {
+    return url.slice(0, 255);
+  }
+}
+
+function resolveWebLinkWork(typeId: string, pageUrl: string, title: string): ResourceWork {
+  const cluster = matchUrlCluster(pageUrl, state.urlClusterRules);
+  if (cluster) {
+    const existing = findWorkByClusterKey(state.resourceWorks, typeId, cluster.clusterKey);
+    if (existing) {
+      const work = getResourceWorkOrThrow(existing.id);
+      if (work.titleSource !== 'manual' && title && title !== work.title) {
+        work.title = title;
+      }
+      return work;
+    }
+    const work: ResourceWork = {
+      id: nextId('rw'),
+      typeId,
+      typeName: getResourceTypeOrThrow(typeId).name,
+      title,
+      subtitle: '',
+      description: `URL 聚类：${cluster.clusterKey}`,
+      clusterKey: cluster.clusterKey,
+      titleSource: 'auto',
+    };
+    state.resourceWorks.push(work);
+    return work;
+  }
+
+  const work: ResourceWork = {
+    id: nextId('rw'),
+    typeId,
+    typeName: getResourceTypeOrThrow(typeId).name,
+    title,
+    subtitle: '',
+    description: `待归并：${pageUrl}`,
+    clusterKey: `single|${pageUrl}`,
+    titleSource: 'auto',
+  };
+  state.resourceWorks.push(work);
+  return work;
+}
+
+export function registerResourceUrlFromPasteMock(
+  url: string,
+  options: { label?: string; excerptText?: string } = {},
+): RegisterExternalUrlResult {
+  const parsed = parseExternalUrl(url);
+  if (!parsed) throw new Error('invalid resource URL');
+
+  const linkType = state.resourceTypes.find((type) => type.code === 'web-link')
+    ?? (() => { throw new Error('web-link resource type missing'); })();
+
+  let item = state.resourceItems.find(
+    (entry) => entry.typeId === linkType.id && (entry.identityValue === parsed.baseUrl || entry.identityValue === parsed.href),
+  );
+  let createdItem = false;
+
+  if (!item) {
+    const title = getLinkTitle(options.label ?? '', parsed.baseUrl);
+    const work = resolveWebLinkWork(linkType.id, parsed.baseUrl, title);
+    const cluster = matchUrlCluster(parsed.baseUrl, state.urlClusterRules);
+    item = {
+      id: nextId('ri'),
+      typeId: linkType.id,
+      typeName: linkType.name,
+      identityFieldKey: linkType.identityFieldKey,
+      identityFieldLabel: linkType.identityFieldLabel,
+      workId: work.id,
+      workTitle: work.title,
+      title,
+      identityValue: parsed.baseUrl,
+      sourceUrl: parsed.baseUrl,
+      edition: cluster?.variantHint || '',
+      note: '由粘贴/插入链接自动登记',
+      titleSource: 'auto',
+      workIdSource: 'auto',
+      variantKind: cluster?.variantHint ? 'other' : undefined,
+    };
+    state.resourceItems.push(item);
+    createdItem = true;
+  } else if (item.titleSource !== 'manual') {
+    item.title = getLinkTitle(options.label ?? '', parsed.baseUrl);
+    if (item.identityValue !== parsed.baseUrl) {
+      item.identityValue = parsed.baseUrl;
+      item.sourceUrl = parsed.baseUrl;
+    }
+  }
+
+  if (parsed.mode === 'resource') {
+    persistState();
+    return {
+      mode: 'resource',
+      item: cloneState(hydrateResourceItem(item)),
+      createdItem,
+      createdExcerpt: false,
+    };
+  }
+
+  const anchorKey = parsed.anchor!.trim();
+  const locator = formatExcerptLocator(anchorKey);
+  let excerpt = state.resourceExcerpts.find(
+    (entry) => entry.resourceItemId === item!.id && normalizeExcerptLocatorKey(entry.locator) === anchorKey,
+  );
+  let createdExcerpt = false;
+  const excerptBody = options.excerptText?.trim() || undefined;
+
+  if (!excerpt) {
+    excerpt = {
+      id: nextId('re'),
+      resourceItemId: item!.id,
+      resourceItemTitle: item!.title,
+      title: buildExcerptTitle(anchorKey, options.label),
+      locator,
+      excerptText: excerptBody,
+      note: '由粘贴/插入带锚点的链接自动创建',
+      sortOrder: state.resourceExcerpts.filter((entry) => entry.resourceItemId === item!.id).length,
+    };
+    state.resourceExcerpts.push(excerpt);
+    createdExcerpt = true;
+  } else if (excerptBody) {
+    excerpt.excerptText = excerptBody;
+  }
+
+  persistState();
+  return {
+    mode: 'excerpt',
+    item: cloneState(hydrateResourceItem(item!)),
+    excerpt: excerpt ? cloneState(hydrateResourceExcerpt(excerpt)) : undefined,
+    createdItem,
+    createdExcerpt,
+  };
+}
+
+export function mergeResourceWorksMock(sourceWorkId: string, targetWorkId: string): ResourceWork {
+  if (sourceWorkId === targetWorkId) throw new Error('cannot merge a work into itself');
+  const source = getResourceWorkOrThrow(sourceWorkId);
+  const target = getResourceWorkOrThrow(targetWorkId);
+  if (source.typeId !== target.typeId) throw new Error('resource works must share the same type');
+  state.resourceItems
+    .filter((item) => item.workId === sourceWorkId)
+    .forEach((item) => {
+      item.workId = targetWorkId;
+      item.workTitle = target.title;
+      item.workIdSource = 'manual';
+    });
+  state.resourceWorks = state.resourceWorks.filter((work) => work.id !== sourceWorkId);
+  persistState();
+  return cloneState(hydrateResourceWork(target));
+}
+
+export function splitResourceItemWorkMock(itemId: string): ResourceItem {
+  const item = getResourceItemOrThrow(itemId);
+  const type = getResourceTypeOrThrow(item.typeId);
+  const work: ResourceWork = {
+    id: nextId('rw'),
+    typeId: type.id,
+    typeName: type.name,
+    title: item.title,
+    subtitle: '',
+    description: '由资源实体拆分创建',
+    clusterKey: `single|${item.identityValue || item.id}`,
+    titleSource: 'manual',
+  };
+  state.resourceWorks.push(work);
+  item.workId = work.id;
+  item.workTitle = work.title;
+  item.workIdSource = 'manual';
+  persistState();
+  return cloneState(hydrateResourceItem(item));
+}
+
+export function resetResourceItemAutoMock(itemId: string): ResourceItem {
+  const item = getResourceItemOrThrow(itemId);
+  item.titleSource = 'auto';
+  item.workIdSource = 'auto';
+  if (item.identityValue) {
+    const work = resolveWebLinkWork(item.typeId, item.identityValue, item.title);
+    item.workId = work.id;
+    item.workTitle = work.title;
+    const cluster = matchUrlCluster(item.identityValue, state.urlClusterRules);
+    if (cluster?.variantHint) {
+      item.edition = cluster.variantHint;
+      item.variantKind = 'other';
+    }
+  }
+  persistState();
+  return cloneState(hydrateResourceItem(item));
+}
+
+export function listUrlClusterRulesMock(): UrlClusterRule[] {
+  return cloneState(state.urlClusterRules);
+}
+
+export function createUrlClusterRuleMock(payload: CreateUrlClusterRulePayload): UrlClusterRule {
+  const rule: UrlClusterRule = {
+    id: nextId('ucr'),
+    domain: payload.domain.trim().toLowerCase(),
+    pathRegex: payload.pathRegex.trim(),
+    clusterKeyFormat: payload.clusterKeyFormat.trim(),
+    variantGroup: payload.variantGroup ?? null,
+    priority: payload.priority,
+    enabled: payload.enabled ?? true,
+    builtIn: false,
+    description: payload.description || '',
+  };
+  state.urlClusterRules.push(rule);
+  persistState();
+  return cloneState(rule);
+}
+
+export function updateUrlClusterRuleMock(id: string, payload: UpdateUrlClusterRulePayload): UrlClusterRule {
+  const rule = state.urlClusterRules.find((entry) => entry.id === id);
+  if (!rule) throw new Error('url cluster rule not found');
+  Object.assign(rule, {
+    domain: payload.domain.trim().toLowerCase(),
+    pathRegex: payload.pathRegex.trim(),
+    clusterKeyFormat: payload.clusterKeyFormat.trim(),
+    variantGroup: payload.variantGroup ?? null,
+    priority: payload.priority,
+    enabled: payload.enabled,
+    description: payload.description || '',
+  });
+  persistState();
+  return cloneState(rule);
+}
+
+export function deleteUrlClusterRuleMock(id: string): void {
+  const rule = state.urlClusterRules.find((entry) => entry.id === id);
+  if (!rule) throw new Error('url cluster rule not found');
+  if (rule.builtIn) throw new Error('built-in url cluster rule cannot be deleted');
+  state.urlClusterRules = state.urlClusterRules.filter((entry) => entry.id !== id);
+  persistState();
+}
+
+export function listResourceItemRelationsMock(itemId: string): ResourceItemRelation[] {
+  getResourceItemOrThrow(itemId);
+  return cloneState(
+    state.resourceItemRelations
+      .filter((relation) => relation.fromItemId === itemId || relation.toItemId === itemId)
+      .map((relation) => hydrateResourceItemRelation(relation)),
+  );
+}
+
+export function createResourceItemRelationMock(payload: {
+  fromItemId: string;
+  toItemId: string;
+  relationType: string;
+  note?: string;
+}): ResourceItemRelation {
+  if (payload.fromItemId === payload.toItemId) throw new Error('cannot relate an item to itself');
+  const from = getResourceItemOrThrow(payload.fromItemId);
+  const to = getResourceItemOrThrow(payload.toItemId);
+  if (from.typeId !== to.typeId) throw new Error('related items must share the same resource type');
+  const relation: ResourceItemRelation = {
+    id: nextId('rir'),
+    fromItemId: from.id,
+    fromItemTitle: from.title,
+    toItemId: to.id,
+    toItemTitle: to.title,
+    relationType: payload.relationType.trim().toLowerCase(),
+    note: payload.note || '',
+  };
+  state.resourceItemRelations.push(relation);
+  persistState();
+  return cloneState(relation);
+}
+
+export function deleteResourceItemRelationMock(id: string): void {
+  state.resourceItemRelations = state.resourceItemRelations.filter((relation) => relation.id !== id);
+  persistState();
+}
+
+function hydrateResourceItemRelation(relation: ResourceItemRelation): ResourceItemRelation {
+  const from = state.resourceItems.find((item) => item.id === relation.fromItemId);
+  const to = state.resourceItems.find((item) => item.id === relation.toItemId);
+  return {
+    ...relation,
+    fromItemTitle: from?.title || relation.fromItemTitle,
+    toItemTitle: to?.title || relation.toItemTitle,
+  };
 }
 
 export function listResourceExcerptsMock(resourceItemId: string): ResourceExcerpt[] {

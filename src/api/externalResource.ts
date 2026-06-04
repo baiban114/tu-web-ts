@@ -13,6 +13,17 @@ import {
   createResourceWorkMock,
   deleteResourceExcerptMock,
   removeResourceItemMock,
+  mergeResourceWorksMock,
+  splitResourceItemWorkMock,
+  resetResourceItemAutoMock,
+  listUrlClusterRulesMock,
+  createUrlClusterRuleMock,
+  updateUrlClusterRuleMock,
+  deleteUrlClusterRuleMock,
+  listResourceItemRelationsMock,
+  createResourceItemRelationMock,
+  deleteResourceItemRelationMock,
+  registerResourceUrlFromPasteMock,
   deleteResourceTypeMock,
   deleteResourceWorkMock,
   getResourceExcerptMock,
@@ -37,6 +48,10 @@ export interface ResourceType {
   identityFieldLabel: string;
 }
 
+export type FieldSource = 'auto' | 'manual';
+
+export type VariantKind = 'translation' | 'format' | 'edition' | 'mirror' | 'other';
+
 export interface ResourceWork {
   id: string;
   typeId: string;
@@ -44,6 +59,8 @@ export interface ResourceWork {
   title: string;
   subtitle?: string;
   description?: string;
+  clusterKey?: string | null;
+  titleSource?: FieldSource;
 }
 
 export interface ResourceItem {
@@ -58,6 +75,31 @@ export interface ResourceItem {
   identityValue?: string | null;
   sourceUrl?: string;
   edition?: string;
+  note?: string;
+  titleSource?: FieldSource;
+  workIdSource?: FieldSource;
+  variantKind?: VariantKind | null;
+}
+
+export interface UrlClusterRule {
+  id: string;
+  domain: string;
+  pathRegex: string;
+  clusterKeyFormat: string;
+  variantGroup?: number | null;
+  priority: number;
+  enabled: boolean;
+  builtIn: boolean;
+  description?: string;
+}
+
+export interface ResourceItemRelation {
+  id: string;
+  fromItemId: string;
+  fromItemTitle: string;
+  toItemId: string;
+  toItemTitle: string;
+  relationType: string;
   note?: string;
 }
 
@@ -146,6 +188,87 @@ export function deleteResourceWork(id: string): Promise<void> {
     return Promise.resolve();
   }
   return request<void>(`/api/resource-works/${id}`, { method: 'DELETE' });
+}
+
+export function mergeResourceWorks(sourceWorkId: string, targetWorkId: string): Promise<ResourceWork> {
+  if (isMockDataSource()) return Promise.resolve(mergeResourceWorksMock(sourceWorkId, targetWorkId));
+  return request<ResourceWork>('/api/resource-works/merge', {
+    method: 'POST',
+    body: JSON.stringify({ sourceWorkId, targetWorkId }),
+  });
+}
+
+export function splitResourceItemToNewWork(itemId: string): Promise<ResourceItem> {
+  if (isMockDataSource()) return Promise.resolve(splitResourceItemWorkMock(itemId));
+  return request<ResourceItem>(`/api/resource-items/${encodeURIComponent(itemId)}/split-work`, { method: 'POST' });
+}
+
+export function resetResourceItemAuto(itemId: string): Promise<ResourceItem> {
+  if (isMockDataSource()) return Promise.resolve(resetResourceItemAutoMock(itemId));
+  return request<ResourceItem>(`/api/resource-items/${encodeURIComponent(itemId)}/reset-auto`, { method: 'POST' });
+}
+
+export function listUrlClusterRules(): Promise<UrlClusterRule[]> {
+  if (isMockDataSource()) return Promise.resolve(listUrlClusterRulesMock());
+  return request<UrlClusterRule[]>('/api/url-cluster-rules');
+}
+
+export type CreateUrlClusterRulePayload = Omit<UrlClusterRule, 'id' | 'builtIn'>;
+export type UpdateUrlClusterRulePayload = Omit<UrlClusterRule, 'id' | 'builtIn'>;
+
+export function createUrlClusterRule(payload: CreateUrlClusterRulePayload): Promise<UrlClusterRule> {
+  if (isMockDataSource()) return Promise.resolve(createUrlClusterRuleMock(payload));
+  return request<UrlClusterRule>('/api/url-cluster-rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateUrlClusterRule(id: string, payload: UpdateUrlClusterRulePayload): Promise<UrlClusterRule> {
+  if (isMockDataSource()) return Promise.resolve(updateUrlClusterRuleMock(id, payload));
+  return request<UrlClusterRule>(`/api/url-cluster-rules/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteUrlClusterRule(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteUrlClusterRuleMock(id);
+    return Promise.resolve();
+  }
+  return request<void>(`/api/url-cluster-rules/${id}`, { method: 'DELETE' });
+}
+
+export function listResourceItemRelations(itemId: string): Promise<ResourceItemRelation[]> {
+  if (isMockDataSource()) return Promise.resolve(listResourceItemRelationsMock(itemId));
+  return request<ResourceItemRelation[]>(`/api/resource-item-relations/by-item/${encodeURIComponent(itemId)}`);
+}
+
+export function createResourceItemRelation(payload: {
+  fromItemId: string;
+  toItemId: string;
+  relationType: string;
+  note?: string;
+}): Promise<ResourceItemRelation> {
+  if (isMockDataSource()) return Promise.resolve(createResourceItemRelationMock(payload));
+  return request<ResourceItemRelation>('/api/resource-item-relations', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteResourceItemRelation(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceItemRelationMock(id);
+    return Promise.resolve();
+  }
+  return request<void>(`/api/resource-item-relations/${id}`, { method: 'DELETE' });
+}
+
+export function fetchResourcePageTitle(url: string): Promise<string | null> {
+  if (isMockDataSource()) return Promise.resolve(null);
+  return request<string | null>(`/api/resource-items/fetch-page-title?url=${encodeURIComponent(url)}`);
 }
 
 export function listResourceItems(params: {
@@ -269,25 +392,6 @@ async function findWebLinkItem(typeId: string, baseUrl: string, fullHref: string
   return null;
 }
 
-async function createWebLinkItem(type: ResourceType, pageUrl: string, label = ''): Promise<ResourceItem> {
-  const title = getLinkTitle(label, pageUrl);
-  const work = await createResourceWork({
-    typeId: type.id,
-    title,
-    subtitle: undefined,
-    description: `自动登记的网络链接：${pageUrl}`,
-  });
-
-  return createResourceItem({
-    typeId: type.id,
-    workId: work.id,
-    title,
-    identityValue: pageUrl,
-    sourceUrl: pageUrl,
-    edition: undefined,
-    note: '由粘贴/插入链接自动登记',
-  });
-}
 
 export interface RegisterExternalUrlResult {
   mode: ExternalUrlRegistrationMode;
@@ -304,61 +408,25 @@ export async function registerExternalUrlFromPaste(
   url: string,
   options: { label?: string; excerptText?: string } = {},
 ): Promise<RegisterExternalUrlResult> {
-  const parsed = parseExternalUrl(url);
-  if (!parsed) {
-    throw new Error('invalid resource URL');
+  if (isMockDataSource()) {
+    return registerResourceUrlFromPasteMock(url, options);
   }
 
-  const linkType = await ensureWebLinkResourceType();
-  let item = await findWebLinkItem(linkType.id, parsed.baseUrl, parsed.href);
-  let createdItem = false;
-
-  if (!item) {
-    item = await createWebLinkItem(linkType, parsed.baseUrl, options.label ?? '');
-    createdItem = true;
-  }
-
-  if (parsed.mode === 'resource') {
-    return {
-      mode: 'resource',
-      item,
-      createdItem,
-      createdExcerpt: false,
-    };
-  }
-
-  const anchorKey = parsed.anchor!.trim();
-  const locator = formatExcerptLocator(anchorKey);
-  const excerpts = await listResourceExcerpts(item.id);
-  let excerpt = excerpts.find((entry) => normalizeExcerptLocatorKey(entry.locator) === anchorKey);
-  let createdExcerpt = false;
-  const excerptBody = options.excerptText?.trim() || undefined;
-
-  if (!excerpt) {
-    excerpt = await createResourceExcerpt(item.id, {
-      title: buildExcerptTitle(anchorKey, options.label),
-      locator,
-      excerptText: excerptBody,
-      note: '由粘贴/插入带锚点的链接自动创建',
-      sortOrder: excerpts.length,
-    });
-    createdExcerpt = true;
-  } else if (excerptBody) {
-    excerpt = await updateResourceExcerpt(excerpt.id, {
-      title: excerpt.title,
-      locator: excerpt.locator,
-      excerptText: excerptBody,
-      note: excerpt.note,
-      sortOrder: excerpt.sortOrder,
-    });
-  }
+  const result = await request<RegisterExternalUrlResult>('/api/resource-items/register-from-url', {
+    method: 'POST',
+    body: JSON.stringify({
+      url,
+      label: options.label,
+      excerptText: options.excerptText,
+    }),
+  });
 
   return {
-    mode: 'excerpt',
-    item,
-    excerpt,
-    createdItem,
-    createdExcerpt,
+    mode: result.mode as ExternalUrlRegistrationMode,
+    item: result.item,
+    excerpt: result.excerpt,
+    createdItem: result.createdItem,
+    createdExcerpt: result.createdExcerpt,
   };
 }
 
@@ -374,5 +442,6 @@ export async function ensureExternalLinkResource(url: string, label = ''): Promi
   const existing = await findWebLinkItem(linkType.id, pageUrl, parsed?.href ?? pageUrl);
   if (existing) return existing;
 
-  return createWebLinkItem(linkType, pageUrl, label);
+  const registered = await registerExternalUrlFromPaste(pageUrl, { label });
+  return registered.item;
 }
