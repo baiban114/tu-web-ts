@@ -102,7 +102,7 @@ onMounted(() => {
     >
       <article class="external-resource-card" :class="{ 'external-resource-card--excerpt': isExcerpt }">
         <header class="external-resource-card__header">
-          <span class="external-resource-card__badge">{{ isExcerpt ? '图书节选' : resourceTypeName }}</span>
+          <span class="external-resource-card__badge">{{ isExcerpt ? '资源节选' : resourceTypeName }}</span>
           <span v-if="usingSnapshot" class="external-resource-card__snapshot">快照</span>
         </header>
         <h3>{{ isExcerpt ? (excerptTitle || resourceTitle) : resourceTitle }}</h3>

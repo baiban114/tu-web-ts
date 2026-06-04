@@ -6,6 +6,7 @@ import {
   listResourceExcerpts,
   listResourceItems,
   listResourceTypes,
+  supportsResourceExcerpts,
   type ResourceExcerpt,
   type ResourceItem,
   type ResourceType,
@@ -56,8 +57,13 @@ const excerptForm = reactive({
 const typeById = computed(() => new Map(types.value.map((type) => [type.id, type])))
 const selectedItem = computed(() => items.value.find((item) => item.id === selectedItemId.value) || null)
 const selectedItemType = computed(() => selectedItem.value ? typeById.value.get(selectedItem.value.typeId) : null)
-const selectedIsBook = computed(() => selectedItemType.value?.code === 'book')
+const selectedSupportsExcerpts = computed(() => supportsResourceExcerpts(selectedItemType.value?.code))
 const isMarkExcerptMode = computed(() => props.mode === 'markExcerpt')
+const excerptLocatorPlaceholder = computed(() => (
+  selectedItemType.value?.code === 'web-link'
+    ? '章节锚点 / 段落位置（可选）'
+    : '页码/章节，例如 p. 18'
+))
 const excerptEditorBlocks = computed<Block[]>(() => [{
   id: EXCERPT_EDITOR_BLOCK_ID,
   type: 'richtext',
@@ -67,7 +73,7 @@ const excerptEditorBlocks = computed<Block[]>(() => [{
 const filteredItems = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   const sourceItems = isMarkExcerptMode.value
-    ? items.value.filter((item) => typeById.value.get(item.typeId)?.code === 'book')
+    ? items.value.filter((item) => supportsResourceExcerpts(typeById.value.get(item.typeId)?.code))
     : items.value
   if (!q) return sourceItems
   return sourceItems.filter((item) => [
@@ -103,11 +109,11 @@ const loadResources = async () => {
     items.value = nextItems
     const nextTypeById = new Map(nextTypes.map((type) => [type.id, type]))
     const firstAvailableItem = isMarkExcerptMode.value
-      ? nextItems.find((item) => nextTypeById.get(item.typeId)?.code === 'book')
+      ? nextItems.find((item) => supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
       : nextItems[0]
     const selectedStillUsable = nextItems.some((item) => (
       item.id === selectedItemId.value
-      && (!isMarkExcerptMode.value || nextTypeById.get(item.typeId)?.code === 'book')
+      && (!isMarkExcerptMode.value || supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
     ))
     if (!selectedItemId.value || !selectedStillUsable) {
       selectedItemId.value = firstAvailableItem?.id || ''
@@ -122,13 +128,13 @@ const loadResources = async () => {
 const loadExcerpts = async () => {
   excerpts.value = []
   resetExcerptForm()
-  if (!selectedItem.value || !selectedIsBook.value) return
+  if (!selectedItem.value || !selectedSupportsExcerpts.value) return
   excerptLoading.value = true
   error.value = ''
   try {
     excerpts.value = await listResourceExcerpts(selectedItem.value.id)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '加载图书节选失败'
+    error.value = err instanceof Error ? err.message : '加载节选失败'
   } finally {
     excerptLoading.value = false
   }
@@ -179,13 +185,13 @@ const selectExcerpt = (excerpt: ResourceExcerpt) => {
 
 const createAndInsertExcerpt = async () => {
   const item = selectedItem.value
-  if (!item || !selectedIsBook.value || !excerptForm.title.trim() || !excerptForm.excerptText.trim()) return
+  if (!item || !selectedSupportsExcerpts.value || !excerptForm.title.trim()) return
   error.value = ''
   try {
     const excerpt = await createResourceExcerpt(item.id, {
       title: excerptForm.title.trim(),
       locator: excerptForm.locator.trim(),
-      excerptText: excerptForm.excerptText.trim(),
+      excerptText: excerptForm.excerptText.trim() || undefined,
       note: excerptForm.note.trim(),
       sortOrder: excerpts.value.length,
     })
@@ -197,7 +203,7 @@ const createAndInsertExcerpt = async () => {
     }
     selectExcerpt(excerpt)
   } catch (err) {
-    error.value = err instanceof Error ? err.message : '创建图书节选失败'
+    error.value = err instanceof Error ? err.message : '创建节选失败'
   }
 }
 
@@ -229,7 +235,7 @@ watch(selectedItemId, () => {
       <p v-if="error" class="resource-picker__error">{{ error }}</p>
       <div class="resource-picker__layout">
         <section class="resource-picker__list">
-          <div class="resource-picker__section-title">{{ isMarkExcerptMode ? '图书资源' : '资源实体' }}</div>
+          <div class="resource-picker__section-title">{{ isMarkExcerptMode ? '可节选资源' : '资源实体' }}</div>
           <el-scrollbar height="360px">
             <button
               v-for="item in filteredItems"
@@ -244,7 +250,7 @@ watch(selectedItemId, () => {
             </button>
             <el-empty
               v-if="!loading && filteredItems.length === 0"
-              :description="isMarkExcerptMode ? '没有可标记节选的图书资源' : '没有找到外部资源'"
+              :description="isMarkExcerptMode ? '没有可标记节选的资源（图书/网络链接）' : '没有找到外部资源'"
               :image-size="64"
             />
           </el-scrollbar>
@@ -266,8 +272,8 @@ watch(selectedItemId, () => {
               插入整个资源
             </button>
 
-            <div v-if="selectedIsBook" class="resource-picker__excerpts">
-              <div class="resource-picker__section-title">图书节选</div>
+            <div v-if="selectedSupportsExcerpts" class="resource-picker__excerpts">
+              <div class="resource-picker__section-title">资源节选</div>
               <button
                 v-for="excerpt in excerpts"
                 :key="excerpt.id"
@@ -283,7 +289,7 @@ watch(selectedItemId, () => {
 
               <form class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
                 <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
-                <input v-model.trim="excerptForm.locator" placeholder="页码/章节，例如 p. 18" maxlength="255" />
+                <input v-model.trim="excerptForm.locator" :placeholder="excerptLocatorPlaceholder" maxlength="255" />
                 <div
                   class="resource-picker__rich-editor"
                   @mousedown.stop
@@ -298,7 +304,7 @@ watch(selectedItemId, () => {
                   />
                 </div>
                 <textarea v-model.trim="excerptForm.note" placeholder="备注，可选" rows="2" maxlength="1024" />
-                <button type="submit" :disabled="!excerptForm.title.trim() || !excerptForm.excerptText.trim()">
+                <button type="submit" :disabled="!excerptForm.title.trim()">
                   {{ isMarkExcerptMode ? '创建节选' : '创建并插入节选' }}
                 </button>
               </form>

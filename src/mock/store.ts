@@ -185,6 +185,15 @@ const initialState: MockState = {
       identityFieldKey: 'isbn',
       identityFieldLabel: 'ISBN',
     },
+    {
+      id: 'rt-web-link',
+      code: 'web-link',
+      name: '网络链接',
+      icon: 'link',
+      description: '外部网络链接，支持节选片段管理',
+      identityFieldKey: 'sourceUrl',
+      identityFieldLabel: '源 URL',
+    },
   ],
   resourceWorks: [
     {
@@ -194,6 +203,14 @@ const initialState: MockState = {
       title: '示例之书',
       subtitle: 'Mock 外部资源',
       description: '用于验证外部资源插入和图书节选。',
+    },
+    {
+      id: 'rw-link-demo',
+      typeId: 'rt-web-link',
+      typeName: '网络链接',
+      title: '示例文档站',
+      subtitle: 'Mock 网络链接',
+      description: '用于验证网络链接节选。',
     },
   ],
   resourceItems: [
@@ -211,6 +228,20 @@ const initialState: MockState = {
       edition: '第一版',
       note: 'Mock 图书资源',
     },
+    {
+      id: 'ri-link-demo',
+      typeId: 'rt-web-link',
+      typeName: '网络链接',
+      identityFieldKey: 'sourceUrl',
+      identityFieldLabel: '源 URL',
+      workId: 'rw-link-demo',
+      workTitle: '示例文档站',
+      title: '示例文档站',
+      identityValue: 'https://example.com/docs/demo',
+      sourceUrl: 'https://example.com/docs/demo',
+      edition: undefined,
+      note: 'Mock 网络链接资源',
+    },
   ],
   resourceExcerpts: [
     {
@@ -221,6 +252,16 @@ const initialState: MockState = {
       locator: '第 1 章',
       excerptText: '好的笔记系统应当让来源、节选和自己的思考保持清晰关系。',
       note: 'Mock 默认节选',
+      sortOrder: 0,
+    },
+    {
+      id: 're-link-demo-1',
+      resourceItemId: 'ri-link-demo',
+      resourceItemTitle: '示例文档站',
+      title: '入门段落',
+      locator: '#getting-started',
+      excerptText: '网络链接也可以保存节选，用于引用网页中的关键段落。',
+      note: 'Mock 网络链接节选',
       sortOrder: 0,
     },
   ],
@@ -293,9 +334,11 @@ function getResourceExcerptOrThrow(excerptId: string): ResourceExcerpt {
   return excerpt;
 }
 
-function ensureBookResourceItem(item: ResourceItem): void {
+function ensureExcerptSupportedResourceItem(item: ResourceItem): void {
   const type = getResourceTypeOrThrow(item.typeId);
-  if (type.code !== 'book') throw new Error('resource excerpts are only supported for book resources');
+  if (type.code !== 'book' && type.code !== 'web-link') {
+    throw new Error('resource excerpts are only supported for book or web-link resources');
+  }
 }
 
 function hydrateResourceWork(work: ResourceWork): ResourceWork {
@@ -478,7 +521,7 @@ export function updateResourceItemMock(id: string, payload: UpdateResourceItemPa
   return cloneState(hydrateResourceItem(item));
 }
 
-export function deleteResourceItemMock(id: string): void {
+export function removeResourceItemMock(id: string): void {
   state.resourceItems = state.resourceItems.filter((item) => item.id !== id);
   state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.resourceItemId !== id);
   persistState();
@@ -486,7 +529,7 @@ export function deleteResourceItemMock(id: string): void {
 
 export function listResourceExcerptsMock(resourceItemId: string): ResourceExcerpt[] {
   const item = getResourceItemOrThrow(resourceItemId);
-  ensureBookResourceItem(item);
+  ensureExcerptSupportedResourceItem(item);
   return cloneState(state.resourceExcerpts
     .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
@@ -495,7 +538,7 @@ export function listResourceExcerptsMock(resourceItemId: string): ResourceExcerp
 
 export function createResourceExcerptMock(resourceItemId: string, payload: CreateResourceExcerptPayload): ResourceExcerpt {
   const item = getResourceItemOrThrow(resourceItemId);
-  ensureBookResourceItem(item);
+  ensureExcerptSupportedResourceItem(item);
   const maxOrder = Math.max(-1, ...state.resourceExcerpts
     .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
     .map((excerpt) => excerpt.sortOrder));
@@ -505,7 +548,7 @@ export function createResourceExcerptMock(resourceItemId: string, payload: Creat
     resourceItemTitle: item.title,
     title: payload.title.trim(),
     locator: payload.locator || '',
-    excerptText: payload.excerptText.trim(),
+    excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
     sortOrder: payload.sortOrder ?? maxOrder + 1,
   };
@@ -521,11 +564,11 @@ export function getResourceExcerptMock(id: string): ResourceExcerpt {
 export function updateResourceExcerptMock(id: string, payload: UpdateResourceExcerptPayload): ResourceExcerpt {
   const excerpt = getResourceExcerptOrThrow(id);
   const item = getResourceItemOrThrow(excerpt.resourceItemId);
-  ensureBookResourceItem(item);
+  ensureExcerptSupportedResourceItem(item);
   Object.assign(excerpt, {
     title: payload.title.trim(),
     locator: payload.locator || '',
-    excerptText: payload.excerptText.trim(),
+    excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
     sortOrder: payload.sortOrder ?? excerpt.sortOrder,
   });

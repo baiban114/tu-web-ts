@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, type Ref } from 'vue'
+import { useContentContainerBounds } from '../composables/useContentContainerBounds'
 
 interface ResizableAxes {
   width?: boolean
@@ -39,6 +40,8 @@ const hovered = ref(false)
 const dragWidth = ref<number | null>(null)
 const dragHeight = ref<number | null>(null)
 
+const { clampWidth: clampToContentWidth } = useContentContainerBounds(wrapper)
+
 const showHandles = computed(() => props.selected || hovered.value)
 
 // Lasso selection state (multi-select for batch operations)
@@ -47,9 +50,20 @@ const isLassoSelected = computed(() => lassoSelectedBlockIds?.value.has(props.bl
 
 const wrapperStyle = computed(() => {
   const style: Record<string, string> = {}
-  const width = dragWidth.value ?? props.width
+  const rawWidth = dragWidth.value ?? props.width
   const height = dragHeight.value ?? props.height
-  if (width != null) style.width = `${width}px`
+
+  if (rawWidth != null) {
+    const minW = props.minWidth ?? 0
+    const capped = props.maxWidth != null
+      ? Math.min(rawWidth, props.maxWidth)
+      : rawWidth
+    style.width = `${clampToContentWidth(capped, minW)}px`
+  } else {
+    style.width = '100%'
+    style.maxWidth = '100%'
+  }
+
   if (height != null) style.height = `${height}px`
   return style
 })
@@ -74,17 +88,9 @@ const handleMouseDown = (direction: 'right' | 'bottom' | 'corner', event: MouseE
 
     if (direction === 'right' || direction === 'corner') {
       newW = startW + (e.clientX - startX)
-      if (props.minWidth != null) newW = Math.max(props.minWidth, newW)
-      if (props.maxWidth != null) newW = Math.min(props.maxWidth, newW)
       if (!props.resizableAxes.width) newW = startW
-
-      const container = el.closest('.content-container')
-      if (container) {
-        const containerRect = container.getBoundingClientRect()
-        const elRect = el.getBoundingClientRect()
-        const maxAllowed = containerRect.right - elRect.left - 12
-        newW = Math.min(newW, Math.max(props.minWidth ?? 0, maxAllowed))
-      }
+      newW = clampToContentWidth(newW, props.minWidth ?? 0)
+      if (props.maxWidth != null) newW = Math.min(props.maxWidth, newW)
     }
 
     if (direction === 'bottom' || direction === 'corner') {
@@ -198,6 +204,9 @@ onBeforeUnmount(() => {
   position: relative;
   display: flex;
   flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   box-sizing: border-box;
   border: 1px solid transparent;
   border-radius: 6px;

@@ -8,7 +8,7 @@ import {
   createResourceExcerpt,
   createResourceType,
   createResourceWork,
-  deleteResourceItem,
+  removeResourceItem,
   deleteResourceExcerpt,
   deleteResourceType,
   deleteResourceWork,
@@ -20,6 +20,7 @@ import {
   updateResourceItem,
   updateResourceType,
   updateResourceWork,
+  supportsResourceExcerpts,
   type ResourceExcerpt,
   type ResourceItem,
   type ResourceType,
@@ -322,9 +323,16 @@ async function refreshItems() {
   }
 }
 
-function isBookItem(item: ResourceItem): boolean {
-  return typeById.value.get(item.typeId)?.code === 'book';
+function supportsExcerptItem(item: ResourceItem): boolean {
+  return supportsResourceExcerpts(typeById.value.get(item.typeId)?.code);
 }
+
+const excerptLocatorPlaceholder = computed(() => {
+  const code = selectedExcerptItem.value
+    ? typeById.value.get(selectedExcerptItem.value.typeId)?.code
+    : undefined;
+  return code === 'web-link' ? '章节锚点 / 段落位置（可选）' : '第 1 章 / p. 18';
+});
 
 async function loadExcerpts(resourceItemId: string) {
   if (!resourceItemId) {
@@ -344,7 +352,7 @@ async function loadExcerpts(resourceItemId: string) {
 }
 
 async function selectExcerptItem(item: ResourceItem) {
-  if (!isBookItem(item)) return;
+  if (!supportsExcerptItem(item)) return;
   selectedExcerptItemId.value = item.id;
   await loadExcerpts(item.id);
 }
@@ -453,18 +461,18 @@ async function saveExcerpt() {
   if (!selectedExcerptItem.value) return;
   try {
     const payload = {
-      title: excerptForm.title,
-      locator: excerptForm.locator,
-      excerptText: excerptForm.excerptText,
-      note: excerptForm.note,
+      title: excerptForm.title.trim(),
+      locator: excerptForm.locator.trim() || undefined,
+      excerptText: excerptForm.excerptText.trim() || undefined,
+      note: excerptForm.note.trim() || undefined,
       sortOrder: Number.isFinite(excerptForm.sortOrder) ? excerptForm.sortOrder : excerpts.value.length,
     };
     if (excerptForm.id) {
       await updateResourceExcerpt(excerptForm.id, payload);
-      showSuccess('图书节选已更新');
+      showSuccess('节选已更新');
     } else {
       await createResourceExcerpt(selectedExcerptItem.value.id, payload);
-      showSuccess('图书节选已创建');
+      showSuccess('节选已创建');
     }
     await loadExcerpts(selectedExcerptItem.value.id);
     await refreshReferences();
@@ -659,11 +667,15 @@ async function removeWork(id: string) {
   }
 }
 
-async function removeItem(id: string) {
+async function removeItem(item: ResourceItem) {
   try {
-    await deleteResourceItem(id);
-    showSuccess('资源实体已删除');
-    if (selectedExcerptItemId.value === id) {
+    await confirmAction(
+      `确定从资源库移除「${item.title}」？页面中的引用不会因此删除。`,
+      '移除资源实体',
+    );
+    await removeResourceItem(item.id);
+    showSuccess('已从资源库移除该资源实体');
+    if (selectedExcerptItemId.value === item.id) {
       clearExcerptPanel();
     }
     await refreshAll();
@@ -677,7 +689,7 @@ async function removeExcerpt(excerpt: ResourceExcerpt) {
   try {
     await confirmAction(`确定删除节选「${excerpt.title}」？`, '删除节选');
     await deleteResourceExcerpt(excerpt.id);
-    showSuccess('图书节选已删除');
+    showSuccess('节选已删除');
     if (selectedExcerptItem.value) {
       await loadExcerpts(selectedExcerptItem.value.id);
     }
@@ -1118,9 +1130,9 @@ watch(
             <el-table-column label="操作" width="200" fixed="right">
               <template #default="{ row }">
                 <el-space wrap>
-                  <el-button v-if="isBookItem(row)" size="small" @click="selectExcerptItem(row)">节选</el-button>
+                  <el-button v-if="supportsExcerptItem(row)" size="small" @click="selectExcerptItem(row)">节选</el-button>
                   <el-button size="small" @click="editItem(row)">编辑</el-button>
-                  <el-button size="small" type="danger" plain @click="removeItem(row.id)">删除</el-button>
+                  <el-button size="small" type="danger" plain @click="removeItem(row)">移除</el-button>
                 </el-space>
               </template>
             </el-table-column>
@@ -1131,7 +1143,7 @@ watch(
           <template #header>
             <div class="excerpt-panel__header">
               <div>
-                <h2>图书节选</h2>
+                <h2>资源节选</h2>
                 <p>{{ selectedExcerptItem.title }} · {{ excerpts.length }} 个片段</p>
               </div>
               <el-button @click="clearExcerptPanel">关闭</el-button>
@@ -1143,7 +1155,7 @@ watch(
                 class="excerpt-table"
                 :data="excerpts"
                 :row-class-name="({ row }: { row: ResourceExcerpt }) => excerptForm.id === row.id ? 'excerpt-row excerpt-row--active' : 'excerpt-row'"
-                empty-text="暂无图书节选"
+                empty-text="暂无节选"
               >
                 <el-table-column prop="title" label="标题" min-width="120" />
                 <el-table-column prop="locator" label="定位" width="100" show-overflow-tooltip />
@@ -1165,10 +1177,10 @@ watch(
                 <el-input v-model="excerptForm.title" maxlength="255" />
               </el-form-item>
               <el-form-item label="页码/定位">
-                <el-input v-model="excerptForm.locator" maxlength="255" placeholder="第 1 章 / p. 18" />
+                <el-input v-model="excerptForm.locator" maxlength="255" :placeholder="excerptLocatorPlaceholder" />
               </el-form-item>
-              <el-form-item label="节选正文" required>
-                <el-input v-model="excerptForm.excerptText" type="textarea" :rows="6" maxlength="20000" />
+              <el-form-item label="节选正文">
+                <el-input v-model="excerptForm.excerptText" type="textarea" :rows="6" maxlength="20000" placeholder="可选" />
               </el-form-item>
               <el-form-item label="备注">
                 <el-input v-model="excerptForm.note" type="textarea" :rows="3" maxlength="1024" />
@@ -1181,7 +1193,7 @@ watch(
                   <el-button
                     type="primary"
                     native-type="submit"
-                    :disabled="!excerptForm.title.trim() || !excerptForm.excerptText.trim()"
+                    :disabled="!excerptForm.title.trim()"
                   >
                     {{ excerptForm.id ? '保存节选' : '创建节选' }}
                   </el-button>

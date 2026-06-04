@@ -15,7 +15,8 @@ import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useA
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
-import { ensureExternalLinkResource } from '@/api/externalResource'
+import { registerExternalUrlFromPaste } from '@/api/externalResource'
+import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 
@@ -1091,16 +1092,29 @@ const submitLinkPopover = () => {
   const label = linkPopoverLabel.value || url
 
   editor.chain().focus().setLink({ href: url }).run()
-  registerExternalLinkResource(url, label)
+  const excerptText = label.trim() && label.trim() !== url ? label.trim() : undefined
+  registerExternalLinkResource(url, label, excerptText)
   showInsertedLinkToolbar(url, label)
   closeLinkPopover()
 }
 
-const registerExternalLinkResource = (url: string, label: string) => {
-  void ensureExternalLinkResource(url, label).catch((error) => {
-    console.warn('Failed to register external link resource:', error)
-    showToast('链接已插入，但外部资源登记失败')
-  })
+const registerExternalLinkResource = (url: string, label: string, excerptText?: string) => {
+  void registerExternalUrlFromPaste(url, { label, excerptText })
+    .then((result) => {
+      if (result.mode === 'excerpt') {
+        if (result.createdExcerpt) {
+          showToast('链接已登记为页面节选（已创建父级网络资源）')
+        } else {
+          showToast('链接已关联到已有页面节选')
+        }
+        return
+      }
+      showToast(result.createdItem ? '链接已登记为网络资源实体' : '链接已关联到已有网络资源')
+    })
+    .catch((error) => {
+      console.warn('Failed to register external link resource:', error)
+      showToast('链接已插入，但外部资源登记失败')
+    })
 }
 
 const showInsertedLinkToolbar = (url: string, label: string) => {
@@ -1124,16 +1138,7 @@ const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
 }
 
 // --- Paste URL detection ---
-const normalizePastedUrl = (text: string): string | null => {
-  const value = text.trim()
-  if (!value || /\s/.test(value)) return null
-  try {
-    const url = new URL(value)
-    return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
-  } catch {
-    return null
-  }
-}
+const normalizePastedUrl = (text: string): string | null => parseExternalUrl(text)?.href ?? null
 
 // --- Extract selection ---
 const handleExtractSelectionButtonClick = () => {
@@ -1401,15 +1406,19 @@ const handleGlobalPaste = (event: ClipboardEvent) => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
 
-  // If there's a text selection, apply the link to it
-  const { empty } = editor.state.selection
+  const { empty, from, to } = editor.state.selection
+  const selectedText = empty ? '' : editor.state.doc.textBetween(from, to, ' ').trim()
+
   if (!empty) {
     editor.chain().focus().setLink({ href: url }).run()
-    registerExternalLinkResource(url, url)
+    registerExternalLinkResource(url, selectedText || url, selectedText || undefined)
     event.preventDefault()
     event.stopPropagation()
     showToast('链接已插入')
+    return
   }
+
+  registerExternalLinkResource(url, url)
 }
 
 // --- Lifecycle ---

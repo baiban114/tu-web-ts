@@ -76,8 +76,22 @@ const onResize = (width: number | null, height: number | null) => {
 </template>
 
 <style scoped>
+.multi-table-block-view {
+  width: 100%;
+  max-width: 100%;
+}
+
 .multi-table-block-view__body {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 0;
+}
+
+.multi-table-block-view__body :deep(.multi-table) {
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .multi-table-block-view__body--fixed-height {

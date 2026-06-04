@@ -1,12 +1,18 @@
 import { request } from './http';
 import { isMockDataSource } from '@/dev/dataSource';
 import {
+  buildExcerptTitle,
+  formatExcerptLocator,
+  parseExternalUrl,
+  type ExternalUrlRegistrationMode,
+} from '@/utils/externalUrlResource';
+import {
   createResourceExcerptMock,
   createResourceItemMock,
   createResourceTypeMock,
   createResourceWorkMock,
   deleteResourceExcerptMock,
-  deleteResourceItemMock,
+  removeResourceItemMock,
   deleteResourceTypeMock,
   deleteResourceWorkMock,
   getResourceExcerptMock,
@@ -61,7 +67,7 @@ export interface ResourceExcerpt {
   resourceItemTitle: string;
   title: string;
   locator?: string;
-  excerptText: string;
+  excerptText?: string;
   note?: string;
   sortOrder: number;
 }
@@ -172,9 +178,9 @@ export function updateResourceItem(id: string, payload: UpdateResourceItemPayloa
   });
 }
 
-export function deleteResourceItem(id: string): Promise<void> {
+export function removeResourceItem(id: string): Promise<void> {
   if (isMockDataSource()) {
-    deleteResourceItemMock(id);
+    removeResourceItemMock(id);
     return Promise.resolve();
   }
   return request<void>(`/api/resource-items/${id}`, { method: 'DELETE' });
@@ -214,7 +220,13 @@ export function deleteResourceExcerpt(id: string): Promise<void> {
   return request<void>(`/api/resource-excerpts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
-const LINK_RESOURCE_TYPE_CODE = 'web-link';
+export const BOOK_RESOURCE_TYPE_CODE = 'book';
+export const WEB_LINK_RESOURCE_TYPE_CODE = 'web-link';
+
+/** Resource types that support excerpt CRUD (books and registered web links). */
+export function supportsResourceExcerpts(typeCode: string | undefined | null): boolean {
+  return typeCode === BOOK_RESOURCE_TYPE_CODE || typeCode === WEB_LINK_RESOURCE_TYPE_CODE;
+}
 
 function getLinkTitle(label: string, url: string): string {
   const title = label.trim();
@@ -226,48 +238,141 @@ function getLinkTitle(label: string, url: string): string {
   }
 }
 
-export async function ensureExternalLinkResource(url: string, label = ''): Promise<ResourceItem> {
-  const identityValue = url.trim();
-  if (!identityValue) {
-    throw new Error('resource URL required');
-  }
-
+async function ensureWebLinkResourceType(): Promise<ResourceType> {
   const types = await listResourceTypes();
-  let linkType = types.find((type) => type.code === LINK_RESOURCE_TYPE_CODE);
-  if (!linkType) {
-    linkType = await createResourceType({
-      code: LINK_RESOURCE_TYPE_CODE,
-      name: '网络链接',
-      icon: 'link',
-      description: '由插入链接功能自动登记的外部网络链接',
-      identityFieldKey: 'sourceUrl',
-      identityFieldLabel: '源 URL',
-    });
-  }
+  const existing = types.find((type) => type.code === WEB_LINK_RESOURCE_TYPE_CODE);
+  if (existing) return existing;
 
-  const existingItems = await listResourceItems({
-    typeId: linkType.id,
-    identityValue,
+  return createResourceType({
+    code: WEB_LINK_RESOURCE_TYPE_CODE,
+    name: '网络链接',
+    icon: 'link',
+    description: '由插入链接功能自动登记的外部网络链接',
+    identityFieldKey: 'sourceUrl',
+    identityFieldLabel: '源 URL',
   });
-  if (existingItems.length > 0) {
-    return existingItems[0];
+}
+
+function normalizeExcerptLocatorKey(locator?: string | null): string {
+  return (locator ?? '').trim().replace(/^#/, '');
+}
+
+async function findWebLinkItem(typeId: string, baseUrl: string, fullHref: string): Promise<ResourceItem | null> {
+  const byBase = await listResourceItems({ typeId, identityValue: baseUrl });
+  if (byBase.length > 0) return byBase[0];
+
+  if (fullHref !== baseUrl) {
+    const byFull = await listResourceItems({ typeId, identityValue: fullHref });
+    if (byFull.length > 0) return byFull[0];
   }
 
-  const title = getLinkTitle(label, identityValue);
+  return null;
+}
+
+async function createWebLinkItem(type: ResourceType, pageUrl: string, label = ''): Promise<ResourceItem> {
+  const title = getLinkTitle(label, pageUrl);
   const work = await createResourceWork({
-    typeId: linkType.id,
+    typeId: type.id,
     title,
     subtitle: undefined,
-    description: `自动登记的网络链接：${identityValue}`,
+    description: `自动登记的网络链接：${pageUrl}`,
   });
 
   return createResourceItem({
-    typeId: linkType.id,
+    typeId: type.id,
     workId: work.id,
     title,
-    identityValue,
-    sourceUrl: identityValue,
+    identityValue: pageUrl,
+    sourceUrl: pageUrl,
     edition: undefined,
-    note: '由插入链接功能自动登记',
+    note: '由粘贴/插入链接自动登记',
   });
+}
+
+export interface RegisterExternalUrlResult {
+  mode: ExternalUrlRegistrationMode;
+  item: ResourceItem;
+  excerpt?: ResourceExcerpt;
+  createdItem: boolean;
+  createdExcerpt: boolean;
+}
+
+/**
+ * Register a pasted or inserted URL as a web-link resource, or as an excerpt when the URL carries a hash anchor.
+ */
+export async function registerExternalUrlFromPaste(
+  url: string,
+  options: { label?: string; excerptText?: string } = {},
+): Promise<RegisterExternalUrlResult> {
+  const parsed = parseExternalUrl(url);
+  if (!parsed) {
+    throw new Error('invalid resource URL');
+  }
+
+  const linkType = await ensureWebLinkResourceType();
+  let item = await findWebLinkItem(linkType.id, parsed.baseUrl, parsed.href);
+  let createdItem = false;
+
+  if (!item) {
+    item = await createWebLinkItem(linkType, parsed.baseUrl, options.label ?? '');
+    createdItem = true;
+  }
+
+  if (parsed.mode === 'resource') {
+    return {
+      mode: 'resource',
+      item,
+      createdItem,
+      createdExcerpt: false,
+    };
+  }
+
+  const anchorKey = parsed.anchor!.trim();
+  const locator = formatExcerptLocator(anchorKey);
+  const excerpts = await listResourceExcerpts(item.id);
+  let excerpt = excerpts.find((entry) => normalizeExcerptLocatorKey(entry.locator) === anchorKey);
+  let createdExcerpt = false;
+  const excerptBody = options.excerptText?.trim() || undefined;
+
+  if (!excerpt) {
+    excerpt = await createResourceExcerpt(item.id, {
+      title: buildExcerptTitle(anchorKey, options.label),
+      locator,
+      excerptText: excerptBody,
+      note: '由粘贴/插入带锚点的链接自动创建',
+      sortOrder: excerpts.length,
+    });
+    createdExcerpt = true;
+  } else if (excerptBody) {
+    excerpt = await updateResourceExcerpt(excerpt.id, {
+      title: excerpt.title,
+      locator: excerpt.locator,
+      excerptText: excerptBody,
+      note: excerpt.note,
+      sortOrder: excerpt.sortOrder,
+    });
+  }
+
+  return {
+    mode: 'excerpt',
+    item,
+    excerpt,
+    createdItem,
+    createdExcerpt,
+  };
+}
+
+/** Ensure a page-level web-link resource exists (hash fragments are stripped from identity). */
+export async function ensureExternalLinkResource(url: string, label = ''): Promise<ResourceItem> {
+  const parsed = parseExternalUrl(url);
+  const pageUrl = parsed?.baseUrl ?? url.trim();
+  if (!pageUrl) {
+    throw new Error('resource URL required');
+  }
+
+  const linkType = await ensureWebLinkResourceType();
+  const existing = await findWebLinkItem(linkType.id, pageUrl, parsed?.href ?? pageUrl);
+  if (existing) return existing;
+
+  return createWebLinkItem(linkType, pageUrl, label);
 }
