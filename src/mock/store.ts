@@ -19,17 +19,20 @@ import {
 import { BUILTIN_URL_CLUSTER_RULES, findWorkByClusterKey, matchUrlCluster } from '@/utils/urlCluster';
 import type {
   CreateResourceExcerptPayload,
+  CreateResourceChapterPayload,
   CreateResourceItemPayload,
   CreateResourceTypePayload,
   CreateResourceWorkPayload,
   CreateUrlClusterRulePayload,
   RegisterExternalUrlResult,
   ResourceExcerpt,
+  ResourceChapter,
   ResourceItem,
   ResourceItemRelation,
   ResourceType,
   ResourceWork,
   UpdateResourceExcerptPayload,
+  UpdateResourceChapterPayload,
   UpdateResourceItemPayload,
   UpdateResourceTypePayload,
   UpdateResourceWorkPayload,
@@ -44,6 +47,7 @@ interface MockState {
   resourceTypes: ResourceType[];
   resourceWorks: ResourceWork[];
   resourceItems: ResourceItem[];
+  resourceChapters: ResourceChapter[];
   resourceExcerpts: ResourceExcerpt[];
   urlClusterRules: UrlClusterRule[];
   resourceItemRelations: ResourceItemRelation[];
@@ -268,13 +272,27 @@ const initialState: MockState = {
   ],
   urlClusterRules: [...BUILTIN_URL_CLUSTER_RULES],
   resourceItemRelations: [],
+  resourceChapters: [
+    {
+      id: 'rc-book-demo-1',
+      resourceItemId: 'ri-book-demo',
+      resourceItemTitle: '示例之书',
+      parentId: null,
+      title: '第 1 章',
+      locator: 'p.1–p.20',
+      note: 'Mock 章节',
+      sortOrder: 0,
+    },
+  ],
   resourceExcerpts: [
     {
       id: 're-book-demo-1',
       resourceItemId: 'ri-book-demo',
       resourceItemTitle: '示例之书',
       title: '关于结构化笔记',
-      locator: '第 1 章',
+      chapterId: 'rc-book-demo-1',
+      chapterTitle: '第 1 章',
+      locator: 'p. 12',
       excerptText: '好的笔记系统应当让来源、节选和自己的思考保持清晰关系。',
       note: 'Mock 默认节选',
       sortOrder: 0,
@@ -316,6 +334,7 @@ function loadState(): MockState {
       resourceTypes: Array.isArray(parsed.resourceTypes) ? parsed.resourceTypes : cloneState(initialState.resourceTypes),
       resourceWorks: Array.isArray(parsed.resourceWorks) ? parsed.resourceWorks : cloneState(initialState.resourceWorks),
       resourceItems: Array.isArray(parsed.resourceItems) ? parsed.resourceItems : cloneState(initialState.resourceItems),
+      resourceChapters: Array.isArray(parsed.resourceChapters) ? parsed.resourceChapters : cloneState(initialState.resourceChapters),
       resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
       urlClusterRules: Array.isArray(parsed.urlClusterRules) ? parsed.urlClusterRules : cloneState(initialState.urlClusterRules),
       resourceItemRelations: Array.isArray(parsed.resourceItemRelations) ? parsed.resourceItemRelations : cloneState(initialState.resourceItemRelations),
@@ -368,6 +387,78 @@ function ensureExcerptSupportedResourceItem(item: ResourceItem): void {
   }
 }
 
+function ensureBookResourceItem(item: ResourceItem): void {
+  const type = getResourceTypeOrThrow(item.typeId);
+  if (type.code !== 'book') {
+    throw new Error('resource chapters are only supported for book resources');
+  }
+}
+
+function getResourceChapterOrThrow(chapterId: string): ResourceChapter {
+  const chapter = state.resourceChapters.find((entry) => entry.id === chapterId);
+  if (!chapter) throw new Error(`Resource chapter not found: ${chapterId}`);
+  return chapter;
+}
+
+function collectChapterDescendantIds(resourceItemId: string, rootId: string): string[] {
+  const chapters = state.resourceChapters.filter((entry) => entry.resourceItemId === resourceItemId);
+  const byParent = new Map<string | null, ResourceChapter[]>();
+  for (const chapter of chapters) {
+    const parentId = chapter.parentId ?? null;
+    const bucket = byParent.get(parentId) ?? [];
+    bucket.push(chapter);
+    byParent.set(parentId, bucket);
+  }
+  const result: string[] = [];
+  const walk = (chapterId: string) => {
+    result.push(chapterId);
+    for (const child of byParent.get(chapterId) ?? []) {
+      walk(child.id);
+    }
+  };
+  walk(rootId);
+  return result;
+}
+
+function validateChapterParent(
+  resourceItemId: string,
+  parentId: string | null | undefined,
+  selfId?: string,
+): void {
+  if (!parentId) return;
+  if (selfId && selfId === parentId) {
+    throw new Error('resource chapter cannot be its own parent');
+  }
+  const parent = getResourceChapterOrThrow(parentId);
+  if (parent.resourceItemId !== resourceItemId) {
+    throw new Error('resource chapter parent must belong to the same resource item');
+  }
+  if (selfId) {
+    const descendants = collectChapterDescendantIds(resourceItemId, selfId);
+    if (descendants.includes(parentId)) {
+      throw new Error('resource chapter parent cannot be a descendant');
+    }
+  }
+}
+
+function resolveChapterForExcerpt(resourceItemId: string, chapterId?: string | null): string | undefined {
+  const normalized = chapterId?.trim();
+  if (!normalized) return undefined;
+  const chapter = getResourceChapterOrThrow(normalized);
+  if (chapter.resourceItemId !== resourceItemId) {
+    throw new Error('resource chapter does not belong to resource item');
+  }
+  return chapter.id;
+}
+
+function hydrateResourceChapter(chapter: ResourceChapter): ResourceChapter {
+  const item = state.resourceItems.find((entry) => entry.id === chapter.resourceItemId);
+  return {
+    ...chapter,
+    resourceItemTitle: item?.title || chapter.resourceItemTitle || '',
+  };
+}
+
 function hydrateResourceWork(work: ResourceWork): ResourceWork {
   const type = state.resourceTypes.find((item) => item.id === work.typeId);
   return {
@@ -391,9 +482,13 @@ function hydrateResourceItem(item: ResourceItem): ResourceItem {
 
 function hydrateResourceExcerpt(excerpt: ResourceExcerpt): ResourceExcerpt {
   const item = state.resourceItems.find((entry) => entry.id === excerpt.resourceItemId);
+  const chapter = excerpt.chapterId
+    ? state.resourceChapters.find((entry) => entry.id === excerpt.chapterId)
+    : undefined;
   return {
     ...excerpt,
     resourceItemTitle: item?.title || excerpt.resourceItemTitle || '',
+    chapterTitle: chapter?.title || excerpt.chapterTitle || undefined,
   };
 }
 
@@ -583,6 +678,7 @@ export function updateResourceItemMock(id: string, payload: UpdateResourceItemPa
 
 export function removeResourceItemMock(id: string): void {
   state.resourceItems = state.resourceItems.filter((item) => item.id !== id);
+  state.resourceChapters = state.resourceChapters.filter((chapter) => chapter.resourceItemId !== id);
   state.resourceExcerpts = state.resourceExcerpts.filter((excerpt) => excerpt.resourceItemId !== id);
   state.resourceItemRelations = state.resourceItemRelations.filter(
     (relation) => relation.fromItemId !== id && relation.toItemId !== id,
@@ -891,6 +987,78 @@ function hydrateResourceItemRelation(relation: ResourceItemRelation): ResourceIt
   };
 }
 
+export function listResourceChaptersMock(resourceItemId: string): ResourceChapter[] {
+  const item = getResourceItemOrThrow(resourceItemId);
+  ensureBookResourceItem(item);
+  return cloneState(state.resourceChapters
+    .filter((chapter) => chapter.resourceItemId === resourceItemId)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
+    .map(hydrateResourceChapter));
+}
+
+export function createResourceChapterMock(
+  resourceItemId: string,
+  payload: CreateResourceChapterPayload,
+): ResourceChapter {
+  const item = getResourceItemOrThrow(resourceItemId);
+  ensureBookResourceItem(item);
+  const parentId = payload.parentId?.trim() || null;
+  validateChapterParent(resourceItemId, parentId);
+  const siblings = state.resourceChapters.filter(
+    (chapter) => chapter.resourceItemId === resourceItemId && (chapter.parentId ?? null) === parentId,
+  );
+  const maxOrder = Math.max(-1, ...siblings.map((chapter) => chapter.sortOrder));
+  const chapter: ResourceChapter = {
+    id: nextId('rc'),
+    resourceItemId,
+    resourceItemTitle: item.title,
+    parentId,
+    title: payload.title.trim(),
+    locator: payload.locator?.trim() || undefined,
+    note: payload.note?.trim() || undefined,
+    sortOrder: payload.sortOrder ?? maxOrder + 1,
+  };
+  state.resourceChapters.push(chapter);
+  persistState();
+  return cloneState(hydrateResourceChapter(chapter));
+}
+
+export function updateResourceChapterMock(id: string, payload: UpdateResourceChapterPayload): ResourceChapter {
+  const chapter = getResourceChapterOrThrow(id);
+  const item = getResourceItemOrThrow(chapter.resourceItemId);
+  ensureBookResourceItem(item);
+  const parentId = payload.parentId?.trim() || null;
+  validateChapterParent(chapter.resourceItemId, parentId, chapter.id);
+  Object.assign(chapter, {
+    parentId,
+    title: payload.title.trim(),
+    locator: payload.locator?.trim() || undefined,
+    note: payload.note?.trim() || undefined,
+    sortOrder: payload.sortOrder ?? chapter.sortOrder,
+    resourceItemTitle: item.title,
+  });
+  state.resourceExcerpts
+    .filter((excerpt) => excerpt.chapterId === chapter.id)
+    .forEach((excerpt) => { excerpt.chapterTitle = chapter.title; });
+  persistState();
+  return cloneState(hydrateResourceChapter(chapter));
+}
+
+export function deleteResourceChapterMock(id: string): void {
+  const chapter = getResourceChapterOrThrow(id);
+  const item = getResourceItemOrThrow(chapter.resourceItemId);
+  ensureBookResourceItem(item);
+  const chapterIds = new Set(collectChapterDescendantIds(chapter.resourceItemId, chapter.id));
+  state.resourceExcerpts.forEach((excerpt) => {
+    if (excerpt.chapterId && chapterIds.has(excerpt.chapterId)) {
+      excerpt.chapterId = undefined;
+      excerpt.chapterTitle = undefined;
+    }
+  });
+  state.resourceChapters = state.resourceChapters.filter((entry) => !chapterIds.has(entry.id));
+  persistState();
+}
+
 export function listResourceExcerptsMock(
   resourceItemId: string,
   page = 0,
@@ -913,11 +1081,15 @@ export function createResourceExcerptMock(resourceItemId: string, payload: Creat
   const maxOrder = Math.max(-1, ...state.resourceExcerpts
     .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
     .map((excerpt) => excerpt.sortOrder));
+  const chapterId = resolveChapterForExcerpt(resourceItemId, payload.chapterId);
+  const chapter = chapterId ? getResourceChapterOrThrow(chapterId) : undefined;
   const excerpt: ResourceExcerpt = {
     id: nextId('re'),
     resourceItemId,
     resourceItemTitle: item.title,
     title: payload.title.trim(),
+    chapterId,
+    chapterTitle: chapter?.title,
     locator: payload.locator || '',
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',
@@ -936,8 +1108,12 @@ export function updateResourceExcerptMock(id: string, payload: UpdateResourceExc
   const excerpt = getResourceExcerptOrThrow(id);
   const item = getResourceItemOrThrow(excerpt.resourceItemId);
   ensureExcerptSupportedResourceItem(item);
+  const chapterId = resolveChapterForExcerpt(excerpt.resourceItemId, payload.chapterId);
+  const chapter = chapterId ? getResourceChapterOrThrow(chapterId) : undefined;
   Object.assign(excerpt, {
     title: payload.title.trim(),
+    chapterId,
+    chapterTitle: chapter?.title,
     locator: payload.locator || '',
     excerptText: payload.excerptText?.trim() || undefined,
     note: payload.note || '',

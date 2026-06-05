@@ -186,11 +186,15 @@ export interface FlatTreeNode<TMeta = unknown> {
 ResourceType (根下第一层，或虚拟根「外部资源」)
   └── ResourceWork (同 typeId 过滤)
         └── ResourceItem (workId 匹配；无 work 的 item 可挂「未归类」节点)
-              └── ResourceExcerpt (resourceItemId 匹配)
+              ├── [book] ResourceChapter (parentId 树，前缀 rc:)
+              │     └── ResourceExcerpt (chapterId 匹配)
+              ├── [book] 「未归类节选」 (chapterId 为空时)
+              └── [web-link] ResourceExcerpt (扁平，resourceItemId 匹配)
 ```
 
-- 节点 `id` 建议加前缀避免冲突：`rt:`, `rw:`, `ri:`, `re:`。
-- `label`：实体 `title`；归类可附 `clusterKey` 缩写。
+- 节点 `id` 建议加前缀避免冲突：`rt:`, `rw:`, `ri:`, `rc:`, `re:`；未归类节选容器为 `re-unassigned:{itemId}`。
+- `label`：实体 `title`；归类可附 `clusterKey` 缩写；章节可附 `locator`。
+- 图书章节挂在 **ResourceItem** 级；节选 `chapterId` 可选，未关联时归入「未归类节选」或（无章节时）直接挂在实体下。
 - 不在 v1 展示 `ResourceItemRelation` 边（属图结构，可后续用「关系」面板）。
 
 ---

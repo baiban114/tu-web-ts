@@ -1,13 +1,22 @@
 import type {
+  ResourceChapter,
   ResourceExcerpt,
   ResourceItem,
   ResourceType,
   ResourceWork,
 } from '@/api/externalResource';
-import { supportsResourceExcerpts } from '@/api/externalResource';
+import { supportsBookChapters, supportsResourceExcerpts } from '@/api/externalResource';
 import type { TreeNode } from '../types';
 
-export type ResourceTreeLayer = 'root' | 'type' | 'work' | 'unassigned' | 'item' | 'excerpt';
+export type ResourceTreeLayer =
+  | 'root'
+  | 'type'
+  | 'work'
+  | 'unassigned'
+  | 'item'
+  | 'chapter'
+  | 'unassigned_excerpts'
+  | 'excerpt';
 
 export interface ResourceTreeMeta {
   layer: ResourceTreeLayer;
@@ -16,6 +25,7 @@ export interface ResourceTreeMeta {
   typeCode?: string;
   workId?: string | null;
   itemId?: string;
+  chapterId?: string;
   clusterKey?: string | null;
 }
 
@@ -25,12 +35,15 @@ export interface ResourceTreeInput {
   items: ResourceItem[];
   /** resourceItemId → excerpts (optional; omit for lighter trees) */
   excerptsByItemId?: Record<string, ResourceExcerpt[]>;
+  /** resourceItemId → flat chapter list (book only) */
+  chaptersByItemId?: Record<string, ResourceChapter[]>;
   /** When set, only include this resource type branch */
   filterTypeId?: string;
 }
 
 const ROOT_ID = 'rt-root';
 const UNASSIGNED_PREFIX = 'rw-unassigned:';
+const UNASSIGNED_EXCERPTS_PREFIX = 're-unassigned:';
 
 function truncateClusterKey(value: string | null | undefined, max = 24): string {
   const text = value?.trim();
@@ -38,24 +51,133 @@ function truncateClusterKey(value: string | null | undefined, max = 24): string 
   return text.length <= max ? text : `${text.slice(0, max)}…`;
 }
 
-function buildExcerptNodes(
-  item: ResourceItem,
+function buildExcerptNode(
+  excerpt: ResourceExcerpt,
   typeId: string,
   workId: string | null,
-  excerptsByItemId: Record<string, ResourceExcerpt[]>,
-): TreeNode<ResourceTreeMeta>[] {
-  const excerpts = excerptsByItemId[item.id] ?? [];
-  return excerpts.map((excerpt) => ({
+  itemId: string,
+  chapterId?: string,
+): TreeNode<ResourceTreeMeta> {
+  const label = excerpt.chapterTitle && !chapterId
+    ? excerpt.title
+    : excerpt.title;
+  return {
     id: `re:${excerpt.id}`,
-    label: excerpt.title,
+    label,
     meta: {
       layer: 'excerpt',
       entityId: excerpt.id,
       typeId,
+      typeCode: undefined,
       workId,
-      itemId: item.id,
+      itemId,
+      chapterId: excerpt.chapterId ?? chapterId,
     },
-  }));
+  };
+}
+
+function buildChapterNodes(
+  item: ResourceItem,
+  type: ResourceType,
+  workId: string | null,
+  chapters: ResourceChapter[],
+  excerptsByChapterId: Map<string, ResourceExcerpt[]>,
+  parentId: string | null,
+): TreeNode<ResourceTreeMeta>[] {
+  return chapters
+    .filter((chapter) => (chapter.parentId ?? null) === parentId)
+    .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title, 'zh-CN'))
+    .map((chapter) => {
+      const childChapters = buildChapterNodes(
+        item,
+        type,
+        workId,
+        chapters,
+        excerptsByChapterId,
+        chapter.id,
+      );
+      const chapterExcerpts = (excerptsByChapterId.get(chapter.id) ?? [])
+        .map((excerpt) => buildExcerptNode(excerpt, type.id, workId, item.id, chapter.id));
+      const children = [...childChapters, ...chapterExcerpts];
+      const label = chapter.locator ? `${chapter.title} · ${chapter.locator}` : chapter.title;
+      return {
+        id: `rc:${chapter.id}`,
+        label,
+        ...(children.length > 0 ? { children } : {}),
+        meta: {
+          layer: 'chapter',
+          entityId: chapter.id,
+          typeId: type.id,
+          typeCode: type.code,
+          workId,
+          itemId: item.id,
+          chapterId: chapter.id,
+        },
+      };
+    });
+}
+
+function buildBookItemChildren(
+  item: ResourceItem,
+  type: ResourceType,
+  workId: string | null,
+  excerpts: ResourceExcerpt[],
+  chapters: ResourceChapter[],
+): TreeNode<ResourceTreeMeta>[] {
+  if (chapters.length === 0) {
+    return excerpts.map((excerpt) => buildExcerptNode(excerpt, type.id, workId, item.id));
+  }
+
+  const excerptsByChapterId = new Map<string, ResourceExcerpt[]>();
+  const unassigned: ResourceExcerpt[] = [];
+  for (const excerpt of excerpts) {
+    if (excerpt.chapterId) {
+      const bucket = excerptsByChapterId.get(excerpt.chapterId) ?? [];
+      bucket.push(excerpt);
+      excerptsByChapterId.set(excerpt.chapterId, bucket);
+    } else {
+      unassigned.push(excerpt);
+    }
+  }
+
+  const children = buildChapterNodes(item, type, workId, chapters, excerptsByChapterId, null);
+  if (unassigned.length > 0) {
+    children.push({
+      id: `${UNASSIGNED_EXCERPTS_PREFIX}${item.id}`,
+      label: '未归类节选',
+      children: unassigned.map((excerpt) => buildExcerptNode(excerpt, type.id, workId, item.id)),
+      meta: {
+        layer: 'unassigned_excerpts',
+        entityId: item.id,
+        typeId: type.id,
+        typeCode: type.code,
+        workId,
+        itemId: item.id,
+      },
+    });
+  }
+  return children;
+}
+
+function buildItemChildren(
+  item: ResourceItem,
+  type: ResourceType,
+  workId: string | null,
+  excerptsByItemId: Record<string, ResourceExcerpt[]>,
+  chaptersByItemId: Record<string, ResourceChapter[]>,
+  includeExcerpts: boolean,
+): TreeNode<ResourceTreeMeta>[] | undefined {
+  if (!includeExcerpts || !supportsResourceExcerpts(type.code)) return undefined;
+
+  const excerpts = excerptsByItemId[item.id] ?? [];
+  if (supportsBookChapters(type.code)) {
+    const chapters = chaptersByItemId[item.id] ?? [];
+    const children = buildBookItemChildren(item, type, workId, excerpts, chapters);
+    return children.length > 0 ? children : undefined;
+  }
+
+  const excerptNodes = excerpts.map((excerpt) => buildExcerptNode(excerpt, type.id, workId, item.id));
+  return excerptNodes.length > 0 ? excerptNodes : undefined;
 }
 
 function buildItemNodes(
@@ -63,12 +185,18 @@ function buildItemNodes(
   workId: string | null,
   items: ResourceItem[],
   excerptsByItemId: Record<string, ResourceExcerpt[]>,
+  chaptersByItemId: Record<string, ResourceChapter[]>,
   includeExcerpts: boolean,
 ): TreeNode<ResourceTreeMeta>[] {
   return items.map((item) => {
-    const children = includeExcerpts && supportsResourceExcerpts(type.code)
-      ? buildExcerptNodes(item, type.id, workId, excerptsByItemId)
-      : undefined;
+    const children = buildItemChildren(
+      item,
+      type,
+      workId,
+      excerptsByItemId,
+      chaptersByItemId,
+      includeExcerpts,
+    );
     return {
       id: `ri:${item.id}`,
       label: item.title,
@@ -90,12 +218,20 @@ function buildWorkBranch(
   work: ResourceWork,
   items: ResourceItem[],
   excerptsByItemId: Record<string, ResourceExcerpt[]>,
+  chaptersByItemId: Record<string, ResourceChapter[]>,
   includeExcerpts: boolean,
 ): TreeNode<ResourceTreeMeta> {
   const workItems = items.filter((item) => item.workId === work.id);
   const clusterHint = truncateClusterKey(work.clusterKey);
   const label = clusterHint ? `${work.title} · ${clusterHint}` : work.title;
-  const children = buildItemNodes(type, work.id, workItems, excerptsByItemId, includeExcerpts);
+  const children = buildItemNodes(
+    type,
+    work.id,
+    workItems,
+    excerptsByItemId,
+    chaptersByItemId,
+    includeExcerpts,
+  );
 
   return {
     id: `rw:${work.id}`,
@@ -117,17 +253,25 @@ function buildTypeBranch(
   works: ResourceWork[],
   items: ResourceItem[],
   excerptsByItemId: Record<string, ResourceExcerpt[]>,
+  chaptersByItemId: Record<string, ResourceChapter[]>,
   includeExcerpts: boolean,
 ): TreeNode<ResourceTreeMeta> {
   const typeWorks = works.filter((work) => work.typeId === type.id);
   const unassignedItems = items.filter((item) => item.typeId === type.id && !item.workId);
 
   const children: TreeNode<ResourceTreeMeta>[] = typeWorks.map((work) => (
-    buildWorkBranch(type, work, items, excerptsByItemId, includeExcerpts)
+    buildWorkBranch(type, work, items, excerptsByItemId, chaptersByItemId, includeExcerpts)
   ));
 
   if (unassignedItems.length > 0) {
-    const unassignedChildren = buildItemNodes(type, null, unassignedItems, excerptsByItemId, includeExcerpts);
+    const unassignedChildren = buildItemNodes(
+      type,
+      null,
+      unassignedItems,
+      excerptsByItemId,
+      chaptersByItemId,
+      includeExcerpts,
+    );
     children.push({
       id: `${UNASSIGNED_PREFIX}${type.id}`,
       label: '未归类',
@@ -156,7 +300,7 @@ function buildTypeBranch(
 }
 
 /**
- * ResourceType → ResourceWork → ResourceItem → ResourceExcerpt
+ * ResourceType → ResourceWork → ResourceItem → (book: Chapter → Excerpt | 未归类节选; web-link: Excerpt)
  */
 export function resourcesToTreeNodes(input: ResourceTreeInput): TreeNode<ResourceTreeMeta>[] {
   const {
@@ -164,6 +308,7 @@ export function resourcesToTreeNodes(input: ResourceTreeInput): TreeNode<Resourc
     works,
     items,
     excerptsByItemId = {},
+    chaptersByItemId = {},
     filterTypeId,
   } = input;
   const includeExcerpts = Object.keys(excerptsByItemId).length > 0;
@@ -172,7 +317,7 @@ export function resourcesToTreeNodes(input: ResourceTreeInput): TreeNode<Resourc
     : types;
 
   const typeBranches = filteredTypes.map((type) => (
-    buildTypeBranch(type, works, items, excerptsByItemId, includeExcerpts)
+    buildTypeBranch(type, works, items, excerptsByItemId, chaptersByItemId, includeExcerpts)
   ));
 
   if (filterTypeId) {
@@ -218,5 +363,9 @@ export function resourceWorksToTreeNodes(
 }
 
 export function isResourceTreeNodeId(id: string): boolean {
-  return id.startsWith('rt:') || id.startsWith('rw:') || id.startsWith('ri:') || id.startsWith('re:');
+  return id.startsWith('rt:')
+    || id.startsWith('rw:')
+    || id.startsWith('ri:')
+    || id.startsWith('re:')
+    || id.startsWith('rc:');
 }

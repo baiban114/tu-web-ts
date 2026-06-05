@@ -6,15 +6,18 @@ import type { TabPaneName } from 'element-plus';
 import {
   createResourceItem,
   createResourceExcerpt,
+  createResourceChapter,
   createResourceType,
   createResourceWork,
   createUrlClusterRule,
   removeResourceItem,
   deleteResourceExcerpt,
+  deleteResourceChapter,
   deleteResourceType,
   deleteResourceWork,
   deleteUrlClusterRule,
   listResourceExcerpts,
+  listResourceChapters,
   listResourceItems,
   listResourceTypes,
   listResourceWorks,
@@ -26,13 +29,16 @@ import {
   resetResourceItemAuto,
   splitResourceItemToNewWork,
   updateResourceExcerpt,
+  updateResourceChapter,
   updateResourceItem,
   updateResourceType,
   updateResourceWork,
   updateUrlClusterRule,
   fetchResourcePageTitle,
   supportsResourceExcerpts,
+  supportsBookChapters,
   WEB_LINK_RESOURCE_TYPE_CODE,
+  type ResourceChapter,
   type ResourceExcerpt,
   type ResourceItem,
   type ResourceItemRelation,
@@ -62,6 +68,7 @@ import TreeListPanel from '@/components/tree/TreeListPanel.vue';
 import {
   resourcesToTreeNodes,
   resourceWorksToTreeNodes,
+  buildTreeFromFlat,
   type ResourceTreeMeta,
   type TreeNode,
 } from '@/utils/tree';
@@ -98,6 +105,8 @@ const selectedTypeId = ref('');
 const selectedWorkId = ref('');
 const selectedExcerptItemId = ref('');
 const excerptPanelVisible = ref(false);
+const selectedChapterItemId = ref('');
+const chapterPanelVisible = ref(false);
 const selectedReferenceCategory = ref<ReferenceCategoryFilter>('all');
 const selectedReferenceStatus = ref<ReferenceStatusFilter>('all');
 const referenceKeyword = ref('');
@@ -134,7 +143,10 @@ const mergeWorkSelectedId = ref('');
 const mergeWorkSubmitting = ref(false);
 const resourceTreeSelectedId = ref<string | null>(null);
 const resourceTreeExcerpts = ref<Record<string, ResourceExcerpt[]>>({});
+const resourceTreeChapters = ref<Record<string, ResourceChapter[]>>({});
 const resourceTreeLoading = ref(false);
+const chaptersLoading = ref(false);
+const chapters = ref<ResourceChapter[]>([]);
 const excerpts = ref<ResourceExcerpt[]>([]);
 const excerptPage = ref(0);
 const excerptPageSize = ref(DEFAULT_PAGE_SIZE);
@@ -195,8 +207,18 @@ const urlRuleForm = reactive({
 const excerptForm = reactive({
   id: '',
   title: '',
+  chapterId: '' as string | null,
   locator: '',
   excerptText: '',
+  note: '',
+  sortOrder: 0,
+});
+
+const chapterForm = reactive({
+  id: '',
+  title: '',
+  parentId: '' as string | null,
+  locator: '',
   note: '',
   sortOrder: 0,
 });
@@ -242,8 +264,49 @@ const resourceTreeNodes = computed(() => resourcesToTreeNodes({
   works: allWorks.value,
   items: itemSelectOptions.value,
   excerptsByItemId: resourceTreeExcerpts.value,
+  chaptersByItemId: resourceTreeChapters.value,
   filterTypeId: selectedTypeId.value || undefined,
 }));
+
+const selectedChapterItem = computed(() => (
+  itemSelectOptions.value.find((item) => item.id === selectedChapterItemId.value) || null
+));
+
+const chapterTreeNodes = computed(() => {
+  const flat = chapters.value.map((chapter) => ({
+    id: chapter.id,
+    parentId: chapter.parentId ?? null,
+    label: chapter.locator ? `${chapter.title} · ${chapter.locator}` : chapter.title,
+    order: chapter.sortOrder,
+    meta: chapter,
+  }));
+  return buildTreeFromFlat(flat);
+});
+
+const chapterParentOptions = computed(() => chapters.value
+  .filter((chapter) => chapter.id !== chapterForm.id)
+  .map((chapter) => ({
+    value: chapter.id,
+    label: chapter.title,
+  })));
+
+const excerptChapterTreeOptions = computed(() => {
+  type TreeSelectOption = { value: string; label: string; children?: TreeSelectOption[] };
+  const flat = chapters.value.map((chapter) => ({
+    id: chapter.id,
+    parentId: chapter.parentId ?? null,
+    label: chapter.title,
+    order: chapter.sortOrder,
+  }));
+  const toTreeSelect = (nodes: ReturnType<typeof buildTreeFromFlat>): TreeSelectOption[] => (
+    nodes.map((node) => ({
+      value: node.id,
+      label: node.label,
+      ...(node.children?.length ? { children: toTreeSelect(node.children) } : {}),
+    }))
+  );
+  return toTreeSelect(buildTreeFromFlat(flat));
+});
 
 const mergeWorkTreeNodes = computed(() => {
   const item = mergeWorkSourceItem.value;
@@ -336,11 +399,30 @@ function resetExcerptForm() {
   Object.assign(excerptForm, {
     id: '',
     title: '',
+    chapterId: '',
     locator: '',
     excerptText: '',
     note: '',
     sortOrder: excerpts.value.length,
   });
+}
+
+function resetChapterForm() {
+  Object.assign(chapterForm, {
+    id: '',
+    title: '',
+    parentId: '',
+    locator: '',
+    note: '',
+    sortOrder: chapters.value.length,
+  });
+}
+
+function clearChapterPanel() {
+  chapterPanelVisible.value = false;
+  selectedChapterItemId.value = '';
+  chapters.value = [];
+  resetChapterForm();
 }
 
 function clearExcerptPanel() {
@@ -357,7 +439,31 @@ async function openExcerptPanel(item: ResourceItem) {
   selectedExcerptItemId.value = item.id;
   excerptPage.value = 0;
   excerptPanelVisible.value = true;
+  if (supportsBookChapters(typeById.value.get(item.typeId)?.code)) {
+    await loadChapters(item.id);
+  } else {
+    chapters.value = [];
+  }
   await loadExcerpts(item.id, 0);
+}
+
+async function openChapterPanel(item: ResourceItem) {
+  if (!supportsBookChapters(typeById.value.get(item.typeId)?.code)) return;
+  selectedChapterItemId.value = item.id;
+  chapterPanelVisible.value = true;
+  resetChapterForm();
+  await loadChapters(item.id);
+}
+
+async function loadChapters(resourceItemId: string) {
+  chaptersLoading.value = true;
+  try {
+    chapters.value = await listResourceChapters(resourceItemId);
+  } catch (error) {
+    showError(error);
+  } finally {
+    chaptersLoading.value = false;
+  }
 }
 
 function resetClassForm() {
@@ -417,15 +523,26 @@ async function loadTreeExcerpts(items: ResourceItem[]) {
     const excerptItems = items.filter((item) => supportsResourceExcerpts(typeById.value.get(item.typeId)?.code));
     if (excerptItems.length === 0) {
       resourceTreeExcerpts.value = {};
+      resourceTreeChapters.value = {};
       return;
     }
-    const entries = await Promise.all(
-      excerptItems.map(async (item) => {
-        const result = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE });
-        return [item.id, result.items] as const;
-      }),
-    );
-    resourceTreeExcerpts.value = Object.fromEntries(entries);
+    const bookItems = excerptItems.filter((item) => supportsBookChapters(typeById.value.get(item.typeId)?.code));
+    const [excerptEntries, chapterEntries] = await Promise.all([
+      Promise.all(
+        excerptItems.map(async (item) => {
+          const result = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE });
+          return [item.id, result.items] as const;
+        }),
+      ),
+      Promise.all(
+        bookItems.map(async (item) => {
+          const chapterList = await listResourceChapters(item.id);
+          return [item.id, chapterList] as const;
+        }),
+      ),
+    ]);
+    resourceTreeExcerpts.value = Object.fromEntries(excerptEntries);
+    resourceTreeChapters.value = Object.fromEntries(chapterEntries);
   } catch (error) {
     showError(error);
   } finally {
@@ -554,11 +671,15 @@ function supportsExcerptItem(item: ResourceItem): boolean {
   return supportsResourceExcerpts(typeById.value.get(item.typeId)?.code);
 }
 
+function supportsBookChapterItem(item: ResourceItem): boolean {
+  return supportsBookChapters(typeById.value.get(item.typeId)?.code);
+}
+
 const excerptLocatorPlaceholder = computed(() => {
   const code = selectedExcerptItem.value
     ? typeById.value.get(selectedExcerptItem.value.typeId)?.code
     : undefined;
-  return code === 'web-link' ? '章节锚点 / 段落位置（可选）' : '第 1 章 / p. 18';
+  return code === 'web-link' ? '章节锚点 / 段落位置（可选）' : '页码/段落，例如 p. 18';
 });
 
 const excerptSelectedTypeCode = computed(() => {
@@ -799,11 +920,16 @@ async function saveItem() {
   }
 }
 
+async function refreshResourceTreeData() {
+  await loadTreeExcerpts(itemSelectOptions.value);
+}
+
 async function saveExcerpt() {
   if (!selectedExcerptItem.value) return;
   try {
     const payload = {
       title: excerptForm.title.trim(),
+      chapterId: excerptForm.chapterId?.trim() || undefined,
       locator: excerptForm.locator.trim() || undefined,
       excerptText: excerptForm.excerptText.trim() || undefined,
       note: excerptForm.note.trim() || undefined,
@@ -817,9 +943,65 @@ async function saveExcerpt() {
       showSuccess('节选已创建');
     }
     await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
+    await refreshResourceTreeData();
     await refreshReferences();
   } catch (error) {
     showError(error);
+  }
+}
+
+async function saveChapter() {
+  if (!selectedChapterItem.value || !chapterForm.title.trim()) return;
+  try {
+    const payload = {
+      parentId: chapterForm.parentId?.trim() || undefined,
+      title: chapterForm.title.trim(),
+      locator: chapterForm.locator.trim() || undefined,
+      note: chapterForm.note.trim() || undefined,
+      sortOrder: Number.isFinite(chapterForm.sortOrder) ? chapterForm.sortOrder : chapters.value.length,
+    };
+    if (chapterForm.id) {
+      await updateResourceChapter(chapterForm.id, payload);
+      showSuccess('章节已更新');
+    } else {
+      await createResourceChapter(selectedChapterItem.value.id, payload);
+      showSuccess('章节已创建');
+    }
+    await loadChapters(selectedChapterItem.value.id);
+    await refreshResourceTreeData();
+    resetChapterForm();
+  } catch (error) {
+    showError(error);
+  }
+}
+
+function editChapter(chapter: ResourceChapter) {
+  resourceTreeSelectedId.value = `rc:${chapter.id}`;
+  Object.assign(chapterForm, {
+    id: chapter.id,
+    title: chapter.title,
+    parentId: chapter.parentId || '',
+    locator: chapter.locator || '',
+    note: chapter.note || '',
+    sortOrder: chapter.sortOrder ?? 0,
+  });
+}
+
+async function removeChapter(chapter: ResourceChapter) {
+  try {
+    await confirmAction(`确定删除章节「${chapter.title}」及其子章节？相关节选的章节关联将被清除。`, '删除章节');
+    await deleteResourceChapter(chapter.id);
+    showSuccess('章节已删除');
+    if (selectedChapterItem.value) {
+      await loadChapters(selectedChapterItem.value.id);
+    }
+    if (selectedExcerptItem.value?.id === chapter.resourceItemId) {
+      await loadExcerpts(chapter.resourceItemId, excerptPage.value);
+    }
+    await refreshResourceTreeData();
+    if (chapterForm.id === chapter.id) resetChapterForm();
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') showError(error);
   }
 }
 
@@ -1045,6 +1227,7 @@ function editExcerpt(excerpt: ResourceExcerpt) {
   Object.assign(excerptForm, {
     id: excerpt.id,
     title: excerpt.title,
+    chapterId: excerpt.chapterId || '',
     locator: excerpt.locator || '',
     excerptText: excerpt.excerptText,
     note: excerpt.note || '',
@@ -1205,6 +1388,7 @@ async function removeExcerpt(excerpt: ResourceExcerpt) {
     if (selectedExcerptItem.value) {
       await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
     }
+    await refreshResourceTreeData();
     await refreshReferences();
   } catch (error) {
     if (error !== 'cancel' && error !== 'close') showError(error);
@@ -1278,6 +1462,21 @@ async function onResourceTreeSelect(node: TreeNode) {
       selectedWorkId.value = item.workId || '';
       activeTab.value = 'items';
       editItem(item);
+      break;
+    }
+    case 'chapter': {
+      const item = itemSelectOptions.value.find((entry) => entry.id === meta.itemId);
+      if (!item || !meta.entityId) return;
+      await openChapterPanel(item);
+      const chapter = chapters.value.find((entry) => entry.id === meta.entityId)
+        ?? resourceTreeChapters.value[item.id]?.find((entry) => entry.id === meta.entityId);
+      if (chapter) editChapter(chapter);
+      break;
+    }
+    case 'unassigned_excerpts': {
+      const item = itemSelectOptions.value.find((entry) => entry.id === meta.itemId);
+      if (!item) return;
+      await openExcerptPanel(item);
       break;
     }
     case 'excerpt': {
@@ -1501,7 +1700,7 @@ watch(
         <template #header>
           <div class="list-card-header">
             <span>资源结构</span>
-            <span class="row-meta">类型 → 归类 → 实体 → 节选</span>
+            <span class="row-meta">类型 → 归类 → 实体 → 章节 → 节选</span>
           </div>
         </template>
         <TreeListPanel
@@ -1786,9 +1985,10 @@ watch(
                 <span v-else class="row-meta">-</span>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="320" fixed="right">
+            <el-table-column label="操作" width="380" fixed="right">
               <template #default="{ row }">
                 <el-space wrap>
+                  <el-button v-if="supportsBookChapterItem(row)" size="small" @click="openChapterPanel(row)">章节</el-button>
                   <el-button v-if="supportsExcerptItem(row)" size="small" @click="openExcerptPanel(row)">节选</el-button>
                   <el-button size="small" @click="editItem(row)">编辑</el-button>
                   <el-button size="small" @click="openMergeWorkDialog(row)">合并归类</el-button>
@@ -2246,7 +2446,14 @@ watch(
               empty-text="暂无节选"
             >
               <el-table-column prop="title" label="标题" min-width="140" />
-              <el-table-column prop="locator" label="定位" width="120" show-overflow-tooltip />
+              <el-table-column
+                v-if="supportsBookChapters(excerptSelectedTypeCode)"
+                prop="chapterTitle"
+                label="章节"
+                width="120"
+                show-overflow-tooltip
+              />
+              <el-table-column prop="locator" label="页码/定位" width="120" show-overflow-tooltip />
               <el-table-column prop="excerptText" label="正文" min-width="240" show-overflow-tooltip />
               <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
               <el-table-column label="操作" width="140" fixed="right">
@@ -2299,6 +2506,17 @@ watch(
           <el-form-item label="标题" required>
             <el-input v-model="excerptForm.title" maxlength="255" />
           </el-form-item>
+          <el-form-item v-if="supportsBookChapters(excerptSelectedTypeCode)" label="所属章节">
+            <el-tree-select
+              v-model="excerptForm.chapterId"
+              :data="excerptChapterTreeOptions"
+              check-strictly
+              clearable
+              filterable
+              placeholder="可选；留空表示不关联章节"
+              style="width: 100%"
+            />
+          </el-form-item>
           <el-form-item label="页码/定位">
             <el-input v-model="excerptForm.locator" maxlength="255" :placeholder="excerptLocatorPlaceholder" />
           </el-form-item>
@@ -2321,6 +2539,84 @@ watch(
                 {{ excerptForm.id ? '保存节选' : '创建节选' }}
               </el-button>
               <el-button @click="resetExcerptForm">取消</el-button>
+            </el-space>
+          </el-form-item>
+        </el-form>
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="chapterPanelVisible"
+      class="chapter-panel-dialog tu-dialog-viewport"
+      width="min(960px, 96vw)"
+      align-center
+      destroy-on-close
+      @closed="clearChapterPanel"
+    >
+      <template #header>
+        <div class="chapter-panel__header">
+          <div>
+            <span class="chapter-panel__title">图书章节</span>
+            <p v-if="selectedChapterItem" class="chapter-panel__subtitle">
+              {{ selectedChapterItem.title }} · {{ chapters.length }} 个章节
+            </p>
+          </div>
+        </div>
+      </template>
+      <div v-loading="chaptersLoading" class="chapter-panel__body">
+        <div class="chapter-panel__tree">
+          <TreeListPanel
+            :nodes="chapterTreeNodes"
+            :selected-id="chapterForm.id || null"
+            :default-expand-depth="2"
+            empty-text="暂无章节，可在右侧新增"
+            @select="(node) => editChapter(node.meta as ResourceChapter)"
+          />
+        </div>
+        <el-form class="chapter-form resource-form" label-position="top" @submit.prevent="saveChapter">
+          <h3>{{ chapterForm.id ? '编辑章节' : '新增章节' }}</h3>
+          <el-form-item label="标题" required>
+            <el-input v-model="chapterForm.title" maxlength="255" />
+          </el-form-item>
+          <el-form-item label="父章节">
+            <el-select
+              v-model="chapterForm.parentId"
+              clearable
+              filterable
+              placeholder="留空表示根章节"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="option in chapterParentOptions"
+                :key="option.value"
+                :label="option.label"
+                :value="option.value"
+              />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="结构定位">
+            <el-input v-model="chapterForm.locator" maxlength="255" placeholder="例如 第 1 卷、p.1–p.20" />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="chapterForm.note" type="textarea" :rows="3" maxlength="1024" />
+          </el-form-item>
+          <el-form-item label="排序">
+            <el-input-number v-model="chapterForm.sortOrder" :min="0" :step="1" />
+          </el-form-item>
+          <el-form-item>
+            <el-space wrap>
+              <el-button type="primary" native-type="submit" :disabled="!chapterForm.title.trim()">
+                {{ chapterForm.id ? '保存章节' : '创建章节' }}
+              </el-button>
+              <el-button
+                v-if="chapterForm.id"
+                type="danger"
+                plain
+                @click="() => { const chapter = chapters.find((entry) => entry.id === chapterForm.id); if (chapter) removeChapter(chapter); }"
+              >
+                删除
+              </el-button>
+              <el-button @click="resetChapterForm">取消</el-button>
             </el-space>
           </el-form-item>
         </el-form>
@@ -2587,6 +2883,52 @@ watch(
   font-size: 12px;
   line-height: 1.5;
   color: #52606d;
+}
+
+.chapter-panel-dialog :deep(.el-dialog__body) {
+  display: flex;
+  flex-direction: column;
+  padding-top: 8px;
+}
+
+.chapter-panel__header {
+  padding-right: 24px;
+}
+
+.chapter-panel__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #101828;
+}
+
+.chapter-panel__subtitle {
+  margin: 4px 0 0;
+  color: #667085;
+  font-size: 13px;
+}
+
+.chapter-panel__body {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.chapter-panel__tree {
+  min-height: 320px;
+  max-height: min(60vh, 520px);
+  overflow: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.chapter-form {
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
 }
 
 .reference-url {

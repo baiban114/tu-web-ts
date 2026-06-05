@@ -174,6 +174,7 @@ export interface ExternalResourceSnapshot {
   edition?: string;
   note?: string;
   excerptTitle?: string;
+  chapterTitle?: string;
   excerptLocator?: string;
   excerptText?: string;
   excerptNote?: string;

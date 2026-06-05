@@ -43,6 +43,7 @@ const identityLabel = computed(() => latestItem.value?.identityFieldLabel || sna
 const identityValue = computed(() => latestItem.value?.identityValue || snapshot.value.identityValue || '')
 const sourceUrl = computed(() => latestItem.value?.sourceUrl || snapshot.value.sourceUrl || '')
 const excerptTitle = computed(() => latestExcerpt.value?.title || snapshot.value.excerptTitle || '')
+const chapterTitle = computed(() => latestExcerpt.value?.chapterTitle || snapshot.value.chapterTitle || '')
 const excerptLocator = computed(() => latestExcerpt.value?.locator || snapshot.value.excerptLocator || '')
 const excerptText = computed(() => latestExcerpt.value?.excerptText || snapshot.value.excerptText || '')
 const excerptNote = computed(() => latestExcerpt.value?.note || snapshot.value.excerptNote || '')
@@ -111,6 +112,7 @@ onMounted(() => {
           <span v-if="workTitle"> · {{ workTitle }}</span>
           <span v-if="identityValue"> · {{ identityLabel }}: {{ identityValue }}</span>
         </p>
+        <p v-if="isExcerpt && chapterTitle" class="external-resource-card__locator">章节：{{ chapterTitle }}</p>
         <p v-if="isExcerpt && excerptLocator" class="external-resource-card__locator">{{ excerptLocator }}</p>
         <blockquote v-if="isExcerpt && excerptText">{{ excerptText }}</blockquote>
         <p v-if="isExcerpt && excerptNote" class="external-resource-card__note">{{ excerptNote }}</p>

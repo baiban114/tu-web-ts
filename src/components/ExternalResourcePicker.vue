@@ -4,14 +4,18 @@ import { ElDialog, ElEmpty, ElInput, ElScrollbar } from 'element-plus'
 import {
   createResourceExcerpt,
   listResourceExcerpts,
+  listResourceChapters,
   listResourceItems,
   listResourceTypes,
   supportsResourceExcerpts,
+  supportsBookChapters,
+  type ResourceChapter,
   type ResourceExcerpt,
   type ResourceItem,
   type ResourceType,
 } from '@/api/externalResource'
 import { MAX_PAGE_SIZE } from '@/constants/pagination'
+import { buildTreeFromFlat } from '@/utils/tree'
 import type { Block, ExternalResourceEmbedData } from '@/api/types'
 import TuEditor from './TuEditor.vue'
 
@@ -45,11 +49,13 @@ const keyword = ref('')
 const types = ref<ResourceType[]>([])
 const items = ref<ResourceItem[]>([])
 const excerpts = ref<ResourceExcerpt[]>([])
+const chapters = ref<ResourceChapter[]>([])
 const selectedItemId = ref('')
 const EXCERPT_EDITOR_BLOCK_ID = 'resource-picker-excerpt-editor'
 
 const excerptForm = reactive({
   title: '',
+  chapterId: '' as string | null,
   locator: '',
   excerptText: '',
   note: '',
@@ -59,12 +65,30 @@ const typeById = computed(() => new Map(types.value.map((type) => [type.id, type
 const selectedItem = computed(() => items.value.find((item) => item.id === selectedItemId.value) || null)
 const selectedItemType = computed(() => selectedItem.value ? typeById.value.get(selectedItem.value.typeId) : null)
 const selectedSupportsExcerpts = computed(() => supportsResourceExcerpts(selectedItemType.value?.code))
+const selectedSupportsBookChapters = computed(() => supportsBookChapters(selectedItemType.value?.code))
 const isMarkExcerptMode = computed(() => props.mode === 'markExcerpt')
 const excerptLocatorPlaceholder = computed(() => (
   selectedItemType.value?.code === 'web-link'
     ? '章节锚点 / 段落位置（可选）'
-    : '页码/章节，例如 p. 18'
+    : '页码/段落，例如 p. 18'
 ))
+const excerptChapterTreeOptions = computed(() => {
+  type TreeSelectOption = { value: string; label: string; children?: TreeSelectOption[] };
+  const flat = chapters.value.map((chapter) => ({
+    id: chapter.id,
+    parentId: chapter.parentId ?? null,
+    label: chapter.title,
+    order: chapter.sortOrder,
+  }));
+  const toTreeSelect = (nodes: ReturnType<typeof buildTreeFromFlat>): TreeSelectOption[] => (
+    nodes.map((node) => ({
+      value: node.id,
+      label: node.label,
+      ...(node.children?.length ? { children: toTreeSelect(node.children) } : {}),
+    }))
+  );
+  return toTreeSelect(buildTreeFromFlat(flat));
+})
 const excerptEditorBlocks = computed<Block[]>(() => [{
   id: EXCERPT_EDITOR_BLOCK_ID,
   type: 'richtext',
@@ -88,6 +112,7 @@ const filteredItems = computed(() => {
 
 const resetExcerptForm = () => {
   excerptForm.title = props.initialExcerptTitle || ''
+  excerptForm.chapterId = ''
   excerptForm.locator = ''
   excerptForm.excerptText = props.initialExcerptText || ''
   excerptForm.note = ''
@@ -128,13 +153,20 @@ const loadResources = async () => {
 
 const loadExcerpts = async () => {
   excerpts.value = []
+  chapters.value = []
   resetExcerptForm()
   if (!selectedItem.value || !selectedSupportsExcerpts.value) return
   excerptLoading.value = true
   error.value = ''
   try {
-    const result = await listResourceExcerpts(selectedItem.value.id, { page: 0, pageSize: MAX_PAGE_SIZE })
+    const [result, chapterList] = await Promise.all([
+      listResourceExcerpts(selectedItem.value.id, { page: 0, pageSize: MAX_PAGE_SIZE }),
+      selectedSupportsBookChapters.value
+        ? listResourceChapters(selectedItem.value.id)
+        : Promise.resolve([]),
+    ])
     excerpts.value = result.items
+    chapters.value = chapterList
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载节选失败'
   } finally {
@@ -152,6 +184,7 @@ const snapshotFor = (item: ResourceItem, excerpt?: ResourceExcerpt) => ({
   edition: item.edition,
   note: item.note,
   excerptTitle: excerpt?.title,
+  chapterTitle: excerpt?.chapterTitle || undefined,
   excerptLocator: excerpt?.locator,
   excerptText: excerpt?.excerptText,
   excerptNote: excerpt?.note,
@@ -192,6 +225,7 @@ const createAndInsertExcerpt = async () => {
   try {
     const excerpt = await createResourceExcerpt(item.id, {
       title: excerptForm.title.trim(),
+      chapterId: excerptForm.chapterId?.trim() || undefined,
       locator: excerptForm.locator.trim(),
       excerptText: excerptForm.excerptText.trim() || undefined,
       note: excerptForm.note.trim(),
@@ -284,6 +318,7 @@ watch(selectedItemId, () => {
                 @click="selectExcerpt(excerpt)"
               >
                 <span>{{ excerpt.title }}</span>
+                <small v-if="excerpt.chapterTitle">章节：{{ excerpt.chapterTitle }}</small>
                 <small v-if="excerpt.locator">{{ excerpt.locator }}</small>
                 <em>{{ excerpt.excerptText }}</em>
               </button>
@@ -291,6 +326,16 @@ watch(selectedItemId, () => {
 
               <form class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
                 <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
+                <el-tree-select
+                  v-if="selectedSupportsBookChapters && excerptChapterTreeOptions.length"
+                  v-model="excerptForm.chapterId"
+                  :data="excerptChapterTreeOptions"
+                  check-strictly
+                  clearable
+                  filterable
+                  placeholder="所属章节（可选）"
+                  style="width: 100%"
+                />
                 <input v-model.trim="excerptForm.locator" :placeholder="excerptLocatorPlaceholder" maxlength="255" />
                 <div
                   class="resource-picker__rich-editor"

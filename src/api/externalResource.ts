@@ -30,6 +30,10 @@ import {
   getResourceExcerptMock,
   getResourceItemMock,
   listResourceExcerptsMock,
+  listResourceChaptersMock,
+  createResourceChapterMock,
+  updateResourceChapterMock,
+  deleteResourceChapterMock,
   listResourceItemsMock,
   listResourceTypesMock,
   listResourceWorksMock,
@@ -109,11 +113,27 @@ export interface ResourceExcerpt {
   resourceItemId: string;
   resourceItemTitle: string;
   title: string;
+  chapterId?: string | null;
+  chapterTitle?: string | null;
   locator?: string;
   excerptText?: string;
   note?: string;
   sortOrder: number;
 }
+
+export interface ResourceChapter {
+  id: string;
+  resourceItemId: string;
+  resourceItemTitle: string;
+  parentId?: string | null;
+  title: string;
+  locator?: string;
+  note?: string;
+  sortOrder: number;
+}
+
+export type CreateResourceChapterPayload = Omit<ResourceChapter, 'id' | 'resourceItemId' | 'resourceItemTitle'>;
+export type UpdateResourceChapterPayload = CreateResourceChapterPayload;
 
 export type CreateResourceTypePayload = Omit<ResourceType, 'id'>;
 export type UpdateResourceTypePayload = Omit<ResourceType, 'id' | 'code'>;
@@ -387,12 +407,49 @@ export function deleteResourceExcerpt(id: string): Promise<void> {
   return request<void>(`/api/resource-excerpts/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
+export function listResourceChapters(resourceItemId: string): Promise<ResourceChapter[]> {
+  if (isMockDataSource()) return Promise.resolve(listResourceChaptersMock(resourceItemId));
+  return request<ResourceChapter[]>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/chapters`);
+}
+
+export function createResourceChapter(
+  resourceItemId: string,
+  payload: CreateResourceChapterPayload,
+): Promise<ResourceChapter> {
+  if (isMockDataSource()) return Promise.resolve(createResourceChapterMock(resourceItemId, payload));
+  return request<ResourceChapter>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/chapters`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateResourceChapter(id: string, payload: UpdateResourceChapterPayload): Promise<ResourceChapter> {
+  if (isMockDataSource()) return Promise.resolve(updateResourceChapterMock(id, payload));
+  return request<ResourceChapter>(`/api/resource-chapters/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteResourceChapter(id: string): Promise<void> {
+  if (isMockDataSource()) {
+    deleteResourceChapterMock(id);
+    return Promise.resolve();
+  }
+  return request<void>(`/api/resource-chapters/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 export const BOOK_RESOURCE_TYPE_CODE = 'book';
 export const WEB_LINK_RESOURCE_TYPE_CODE = 'web-link';
 
 /** Resource types that support excerpt CRUD (books and registered web links). */
 export function supportsResourceExcerpts(typeCode: string | undefined | null): boolean {
   return typeCode === BOOK_RESOURCE_TYPE_CODE || typeCode === WEB_LINK_RESOURCE_TYPE_CODE;
+}
+
+/** Book items may define a multi-level chapter tree. */
+export function supportsBookChapters(typeCode: string | undefined | null): boolean {
+  return typeCode === BOOK_RESOURCE_TYPE_CODE;
 }
 
 function getLinkTitle(label: string, url: string): string {
