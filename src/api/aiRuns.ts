@@ -60,7 +60,7 @@ export function appendMockAiAgentRunLog(log: Omit<AiAgentRunLogDetail, 'id'> & {
 
 export function listAiAgentRunLogs(params: ListAiAgentRunLogsParams = {}): Promise<PageResponse<AiAgentRunLogSummary>> {
   const page = Math.max(0, params.page ?? 0)
-  const pageSize = Math.max(1, Math.min(params.pageSize ?? 50, 200))
+  const pageSize = Math.max(1, Math.min(params.pageSize ?? 10, 200))
   if (isMockDataSource()) {
     const filtered = readMockLogs()
       .filter((log) => !params.taskType || log.taskType === params.taskType)

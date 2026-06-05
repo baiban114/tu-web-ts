@@ -11,6 +11,7 @@ import {
   type ResourceItem,
   type ResourceType,
 } from '@/api/externalResource'
+import { MAX_PAGE_SIZE } from '@/constants/pagination'
 import type { Block, ExternalResourceEmbedData } from '@/api/types'
 import TuEditor from './TuEditor.vue'
 
@@ -102,16 +103,16 @@ const loadResources = async () => {
   error.value = ''
   try {
     const [nextTypes, nextItems] = await Promise.all([
-      listResourceTypes(),
-      listResourceItems(),
+      listResourceTypes({ page: 0, pageSize: MAX_PAGE_SIZE }),
+      listResourceItems({ page: 0, pageSize: MAX_PAGE_SIZE }),
     ])
-    types.value = nextTypes
-    items.value = nextItems
-    const nextTypeById = new Map(nextTypes.map((type) => [type.id, type]))
+    types.value = nextTypes.items
+    items.value = nextItems.items
+    const nextTypeById = new Map(nextTypes.items.map((type) => [type.id, type]))
     const firstAvailableItem = isMarkExcerptMode.value
-      ? nextItems.find((item) => supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
-      : nextItems[0]
-    const selectedStillUsable = nextItems.some((item) => (
+      ? nextItems.items.find((item) => supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
+      : nextItems.items[0]
+    const selectedStillUsable = nextItems.items.some((item) => (
       item.id === selectedItemId.value
       && (!isMarkExcerptMode.value || supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
     ))
@@ -132,7 +133,8 @@ const loadExcerpts = async () => {
   excerptLoading.value = true
   error.value = ''
   try {
-    excerpts.value = await listResourceExcerpts(selectedItem.value.id)
+    const result = await listResourceExcerpts(selectedItem.value.id, { page: 0, pageSize: MAX_PAGE_SIZE })
+    excerpts.value = result.items
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载节选失败'
   } finally {

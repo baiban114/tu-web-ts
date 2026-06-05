@@ -1,5 +1,6 @@
 import { request } from './http';
 import { isMockDataSource } from '@/dev/dataSource';
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, type PageResult } from '@/constants/pagination';
 import {
   buildExcerptTitle,
   formatExcerptLocator,
@@ -132,9 +133,16 @@ function query(params: Record<string, string | undefined>): string {
   return value ? `?${value}` : '';
 }
 
-export function listResourceTypes(): Promise<ResourceType[]> {
-  if (isMockDataSource()) return Promise.resolve(listResourceTypesMock());
-  return request<ResourceType[]>('/api/resource-types');
+export interface ListResourcePageParams {
+  page?: number;
+  pageSize?: number;
+}
+
+export function listResourceTypes(params: ListResourcePageParams = {}): Promise<PageResult<ResourceType>> {
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  if (isMockDataSource()) return Promise.resolve(listResourceTypesMock(page, pageSize));
+  return request<PageResult<ResourceType>>(`/api/resource-types?page=${page}&pageSize=${pageSize}`);
 }
 
 export function createResourceType(payload: CreateResourceTypePayload): Promise<ResourceType> {
@@ -161,9 +169,17 @@ export function deleteResourceType(id: string): Promise<void> {
   return request<void>(`/api/resource-types/${id}`, { method: 'DELETE' });
 }
 
-export function listResourceWorks(typeId?: string): Promise<ResourceWork[]> {
-  if (isMockDataSource()) return Promise.resolve(listResourceWorksMock(typeId));
-  return request<ResourceWork[]>(`/api/resource-works${query({ typeId })}`);
+export function listResourceWorks(
+  params: { typeId?: string; page?: number; pageSize?: number } = {},
+): Promise<PageResult<ResourceWork>> {
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  if (isMockDataSource()) return Promise.resolve(listResourceWorksMock(params.typeId, page, pageSize));
+  return request<PageResult<ResourceWork>>(`/api/resource-works${query({
+    typeId: params.typeId,
+    page: String(page),
+    pageSize: String(pageSize),
+  })}`);
 }
 
 export function createResourceWork(payload: CreateResourceWorkPayload): Promise<ResourceWork> {
@@ -208,9 +224,11 @@ export function resetResourceItemAuto(itemId: string): Promise<ResourceItem> {
   return request<ResourceItem>(`/api/resource-items/${encodeURIComponent(itemId)}/reset-auto`, { method: 'POST' });
 }
 
-export function listUrlClusterRules(): Promise<UrlClusterRule[]> {
-  if (isMockDataSource()) return Promise.resolve(listUrlClusterRulesMock());
-  return request<UrlClusterRule[]>('/api/url-cluster-rules');
+export function listUrlClusterRules(params: ListResourcePageParams = {}): Promise<PageResult<UrlClusterRule>> {
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  if (isMockDataSource()) return Promise.resolve(listUrlClusterRulesMock(page, pageSize));
+  return request<PageResult<UrlClusterRule>>(`/api/url-cluster-rules?page=${page}&pageSize=${pageSize}`);
 }
 
 export type CreateUrlClusterRulePayload = Omit<UrlClusterRule, 'id' | 'builtIn'>;
@@ -275,9 +293,19 @@ export function listResourceItems(params: {
   typeId?: string;
   workId?: string;
   identityValue?: string;
-} = {}): Promise<ResourceItem[]> {
-  if (isMockDataSource()) return Promise.resolve(listResourceItemsMock(params));
-  return request<ResourceItem[]>(`/api/resource-items${query(params)}`);
+  page?: number;
+  pageSize?: number;
+} = {}): Promise<PageResult<ResourceItem>> {
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  if (isMockDataSource()) return Promise.resolve(listResourceItemsMock(params, page, pageSize));
+  return request<PageResult<ResourceItem>>(`/api/resource-items${query({
+    typeId: params.typeId,
+    workId: params.workId,
+    identityValue: params.identityValue,
+    page: String(page),
+    pageSize: String(pageSize),
+  })}`);
 }
 
 export function getResourceItem(id: string): Promise<ResourceItem> {
@@ -309,9 +337,25 @@ export function removeResourceItem(id: string): Promise<void> {
   return request<void>(`/api/resource-items/${id}`, { method: 'DELETE' });
 }
 
-export function listResourceExcerpts(resourceItemId: string): Promise<ResourceExcerpt[]> {
-  if (isMockDataSource()) return Promise.resolve(listResourceExcerptsMock(resourceItemId));
-  return request<ResourceExcerpt[]>(`/api/resource-items/${encodeURIComponent(resourceItemId)}/excerpts`);
+export type { PageResult } from '@/constants/pagination';
+
+export interface ListResourceExcerptsParams {
+  page?: number;
+  pageSize?: number;
+}
+
+export function listResourceExcerpts(
+  resourceItemId: string,
+  params: ListResourceExcerptsParams = {},
+): Promise<PageResult<ResourceExcerpt>> {
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  if (isMockDataSource()) {
+    return Promise.resolve(listResourceExcerptsMock(resourceItemId, page, pageSize));
+  }
+  return request<PageResult<ResourceExcerpt>>(
+    `/api/resource-items/${encodeURIComponent(resourceItemId)}/excerpts?page=${page}&pageSize=${pageSize}`,
+  );
 }
 
 export function createResourceExcerpt(resourceItemId: string, payload: CreateResourceExcerptPayload): Promise<ResourceExcerpt> {
@@ -362,8 +406,8 @@ function getLinkTitle(label: string, url: string): string {
 }
 
 async function ensureWebLinkResourceType(): Promise<ResourceType> {
-  const types = await listResourceTypes();
-  const existing = types.find((type) => type.code === WEB_LINK_RESOURCE_TYPE_CODE);
+  const types = await listResourceTypes({ page: 0, pageSize: MAX_PAGE_SIZE });
+  const existing = types.items.find((type) => type.code === WEB_LINK_RESOURCE_TYPE_CODE);
   if (existing) return existing;
 
   return createResourceType({
@@ -382,11 +426,11 @@ function normalizeExcerptLocatorKey(locator?: string | null): string {
 
 async function findWebLinkItem(typeId: string, baseUrl: string, fullHref: string): Promise<ResourceItem | null> {
   const byBase = await listResourceItems({ typeId, identityValue: baseUrl });
-  if (byBase.length > 0) return byBase[0];
+  if (byBase.items.length > 0) return byBase.items[0];
 
   if (fullHref !== baseUrl) {
     const byFull = await listResourceItems({ typeId, identityValue: fullHref });
-    if (byFull.length > 0) return byFull[0];
+    if (byFull.items.length > 0) return byFull.items[0];
   }
 
   return null;

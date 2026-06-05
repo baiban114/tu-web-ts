@@ -24,7 +24,7 @@ const runsError = ref('')
 const selectedRun = ref<AiAgentRunLogDetail | null>(null)
 const selectedRunId = ref('')
 const runsPage = ref(0)
-const runsPageSize = 20
+const runsPageSize = 10
 const totalRuns = ref(0)
 
 const form = reactive({

@@ -1,5 +1,6 @@
 import { request } from './http';
 import { isMockDataSource } from '@/dev/dataSource';
+import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 import {
   listReferencesMock,
   deleteAnnotationReferenceMock,
@@ -80,18 +81,21 @@ function query(params: Record<string, string | undefined>): string {
 }
 
 export function listReferences(params: ListReferencesParams = {}): Promise<ListReferencesResult> {
-  if (isMockDataSource()) {
-    return Promise.resolve(listReferencesMock(params));
-  }
-  return request<ListReferencesResult>(`/api/references${query({
+  const page = params.page ?? 0;
+  const pageSize = params.pageSize ?? DEFAULT_PAGE_SIZE;
+  const requestParams = {
     category: params.category,
     pageId: params.pageId,
     resourceItemId: params.resourceItemId,
     status: params.status,
     q: params.q,
-    page: params.page !== undefined ? String(params.page) : undefined,
-    pageSize: params.pageSize !== undefined ? String(params.pageSize) : undefined,
-  })}`);
+    page: String(page),
+    pageSize: String(pageSize),
+  };
+  if (isMockDataSource()) {
+    return Promise.resolve(listReferencesMock({ ...params, page, pageSize }));
+  }
+  return request<ListReferencesResult>(`/api/references${query(requestParams)}`);
 }
 
 export function updateExternalReference(id: string, payload: UpdateExternalReferencePayload): Promise<ReferenceItem> {

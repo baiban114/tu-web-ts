@@ -26,7 +26,7 @@ export interface PageResult<T> {
   pageSize: number;
 }
 
-export function listOrphanedAnnotations(page = 0, pageSize = 50): Promise<PageResult<OrphanedAnnotation>> {
+export function listOrphanedAnnotations(page = 0, pageSize = 10): Promise<PageResult<OrphanedAnnotation>> {
   if (isMockDataSource()) {
     return Promise.resolve(mockListOrphaned(page, pageSize));
   }

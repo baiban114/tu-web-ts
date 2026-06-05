@@ -397,8 +397,16 @@ function hydrateResourceExcerpt(excerpt: ResourceExcerpt): ResourceExcerpt {
   };
 }
 
-export function listResourceTypesMock(): ResourceType[] {
-  return cloneState(state.resourceTypes);
+export function listResourceTypesMock(page = 0, pageSize = 10): {
+  items: ResourceType[];
+  total: number;
+  page: number;
+  pageSize: number;
+} {
+  const all = cloneState(state.resourceTypes);
+  const from = page * pageSize;
+  const items = from >= all.length ? [] : all.slice(from, from + pageSize);
+  return { items, total: all.length, page, pageSize };
 }
 
 export function createResourceTypeMock(payload: CreateResourceTypePayload): ResourceType {
@@ -440,10 +448,18 @@ export function deleteResourceTypeMock(id: string): void {
   persistState();
 }
 
-export function listResourceWorksMock(typeId?: string): ResourceWork[] {
-  return cloneState(state.resourceWorks
+export function listResourceWorksMock(typeId?: string, page = 0, pageSize = 10): {
+  items: ResourceWork[];
+  total: number;
+  page: number;
+  pageSize: number;
+} {
+  const all = cloneState(state.resourceWorks
     .filter((work) => !typeId || work.typeId === typeId)
     .map(hydrateResourceWork));
+  const from = page * pageSize;
+  const items = from >= all.length ? [] : all.slice(from, from + pageSize);
+  return { items, total: all.length, page, pageSize };
 }
 
 export function createResourceWorkMock(payload: CreateResourceWorkPayload): ResourceWork {
@@ -485,14 +501,21 @@ export function deleteResourceWorkMock(id: string): void {
   persistState();
 }
 
-export function listResourceItemsMock(params: { typeId?: string; workId?: string; identityValue?: string } = {}): ResourceItem[] {
-  const items = state.resourceItems.filter((item) => {
+export function listResourceItemsMock(
+  params: { typeId?: string; workId?: string; identityValue?: string } = {},
+  page = 0,
+  pageSize = 10,
+): { items: ResourceItem[]; total: number; page: number; pageSize: number } {
+  const filtered = state.resourceItems.filter((item) => {
     if (params.typeId && item.typeId !== params.typeId) return false;
     if (params.workId && item.workId !== params.workId) return false;
     if (params.identityValue && item.identityValue !== params.identityValue) return false;
     return true;
   });
-  return cloneState(items.map(hydrateResourceItem));
+  const all = cloneState(filtered.map(hydrateResourceItem));
+  const from = page * pageSize;
+  const items = from >= all.length ? [] : all.slice(from, from + pageSize);
+  return { items, total: all.length, page, pageSize };
 }
 
 export function getResourceItemMock(id: string): ResourceItem {
@@ -767,8 +790,16 @@ export function resetResourceItemAutoMock(itemId: string): ResourceItem {
   return cloneState(hydrateResourceItem(item));
 }
 
-export function listUrlClusterRulesMock(): UrlClusterRule[] {
-  return cloneState(state.urlClusterRules);
+export function listUrlClusterRulesMock(page = 0, pageSize = 10): {
+  items: UrlClusterRule[];
+  total: number;
+  page: number;
+  pageSize: number;
+} {
+  const all = cloneState(state.urlClusterRules);
+  const from = page * pageSize;
+  const items = from >= all.length ? [] : all.slice(from, from + pageSize);
+  return { items, total: all.length, page, pageSize };
 }
 
 export function createUrlClusterRuleMock(payload: CreateUrlClusterRulePayload): UrlClusterRule {
@@ -860,13 +891,20 @@ function hydrateResourceItemRelation(relation: ResourceItemRelation): ResourceIt
   };
 }
 
-export function listResourceExcerptsMock(resourceItemId: string): ResourceExcerpt[] {
+export function listResourceExcerptsMock(
+  resourceItemId: string,
+  page = 0,
+  pageSize = 10,
+): { items: ResourceExcerpt[]; total: number; page: number; pageSize: number } {
   const item = getResourceItemOrThrow(resourceItemId);
   ensureExcerptSupportedResourceItem(item);
-  return cloneState(state.resourceExcerpts
+  const all = cloneState(state.resourceExcerpts
     .filter((excerpt) => excerpt.resourceItemId === resourceItemId)
     .sort((a, b) => a.sortOrder - b.sortOrder || a.title.localeCompare(b.title))
     .map(hydrateResourceExcerpt));
+  const from = page * pageSize;
+  const items = from >= all.length ? [] : all.slice(from, from + pageSize);
+  return { items, total: all.length, page, pageSize };
 }
 
 export function createResourceExcerptMock(resourceItemId: string, payload: CreateResourceExcerptPayload): ResourceExcerpt {
@@ -1360,7 +1398,7 @@ export function listReferencesMock(params: ListReferencesParams = {}): ListRefer
 
   const total = filtered.length;
   const page = params.page ?? 0;
-  const pageSize = params.pageSize ?? 50;
+  const pageSize = params.pageSize ?? 10;
   const from = page * pageSize;
   const items = from >= total ? [] : filtered.slice(from, from + pageSize);
 
