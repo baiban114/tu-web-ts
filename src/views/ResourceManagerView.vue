@@ -105,6 +105,7 @@ const selectedTypeId = ref('');
 const selectedWorkId = ref('');
 const selectedExcerptItemId = ref('');
 const excerptPanelVisible = ref(false);
+const excerptPanelRoute = ref<'list' | 'edit'>('list');
 const selectedChapterItemId = ref('');
 const chapterPanelVisible = ref(false);
 const selectedReferenceCategory = ref<ReferenceCategoryFilter>('all');
@@ -251,9 +252,12 @@ const referenceForm = reactive({
 
 const itemFormType = computed(() => allTypes.value.find((type) => type.id === itemForm.typeId));
 const typeById = computed(() => new Map(allTypes.value.map((type) => [type.id, type])));
+const visibleResourceTypes = computed(() => allTypes.value.filter((type) => type.code !== WEB_LINK_RESOURCE_TYPE_CODE));
+const visibleResourceTypeIds = computed(() => new Set(visibleResourceTypes.value.map((type) => type.id)));
 const worksForFilter = computed(() => {
-  if (!selectedTypeId.value) return allWorks.value;
-  return allWorks.value.filter((work) => work.typeId === selectedTypeId.value);
+  const visibleWorks = allWorks.value.filter((work) => visibleResourceTypeIds.value.has(work.typeId));
+  if (!selectedTypeId.value) return visibleWorks;
+  return visibleWorks.filter((work) => work.typeId === selectedTypeId.value);
 });
 const worksForItemForm = computed(() => allWorks.value.filter((work) => work.typeId === itemForm.typeId));
 
@@ -356,7 +360,7 @@ function resetTypeForm() {
 function resetWorkForm() {
   Object.assign(workForm, {
     id: '',
-    typeId: selectedTypeId.value || allTypes.value[0]?.id || '',
+    typeId: selectedTypeId.value || visibleResourceTypes.value[0]?.id || '',
     title: '',
     subtitle: '',
     description: '',
@@ -364,7 +368,7 @@ function resetWorkForm() {
 }
 
 function resetItemForm() {
-  const typeId = selectedTypeId.value || allTypes.value[0]?.id || '';
+  const typeId = selectedTypeId.value || visibleResourceTypes.value[0]?.id || '';
   const workId = selectedWorkId.value || '';
   Object.assign(itemForm, {
     id: '',
@@ -407,6 +411,16 @@ function resetExcerptForm() {
   });
 }
 
+function openExcerptCreateRoute() {
+  resetExcerptForm();
+  excerptPanelRoute.value = 'edit';
+}
+
+function backToExcerptListRoute() {
+  resetExcerptForm();
+  excerptPanelRoute.value = 'list';
+}
+
 function resetChapterForm() {
   Object.assign(chapterForm, {
     id: '',
@@ -428,6 +442,7 @@ function clearChapterPanel() {
 function clearExcerptPanel() {
   excerptPanelVisible.value = false;
   selectedExcerptItemId.value = '';
+  excerptPanelRoute.value = 'list';
   excerpts.value = [];
   excerptPage.value = 0;
   excerptTotal.value = 0;
@@ -438,6 +453,7 @@ async function openExcerptPanel(item: ResourceItem) {
   if (!supportsExcerptItem(item)) return;
   selectedExcerptItemId.value = item.id;
   excerptPage.value = 0;
+  excerptPanelRoute.value = 'list';
   excerptPanelVisible.value = true;
   if (supportsBookChapters(typeById.value.get(item.typeId)?.code)) {
     await loadChapters(item.id);
@@ -564,8 +580,9 @@ async function loadLookupData() {
 
 async function refreshTypesTable() {
   const result = await listResourceTypes({ page: typesPage.value, pageSize: DEFAULT_PAGE_SIZE });
-  types.value = result.items;
-  typesTotal.value = result.total;
+  const visibleTypes = result.items.filter((type) => type.code !== WEB_LINK_RESOURCE_TYPE_CODE);
+  types.value = visibleTypes;
+  typesTotal.value = Math.max(0, result.total - (result.items.length - visibleTypes.length));
   typesPage.value = result.page;
   if (typesPage.value > 0 && types.value.length === 0 && result.total > 0) {
     typesPage.value = Math.max(0, Math.ceil(result.total / DEFAULT_PAGE_SIZE) - 1);
@@ -579,8 +596,9 @@ async function refreshWorksTable() {
     page: worksPage.value,
     pageSize: DEFAULT_PAGE_SIZE,
   });
-  works.value = result.items;
-  worksTotal.value = result.total;
+  const visibleWorks = result.items.filter((work) => visibleResourceTypeIds.value.has(work.typeId));
+  works.value = visibleWorks;
+  worksTotal.value = Math.max(0, result.total - (result.items.length - visibleWorks.length));
   worksPage.value = result.page;
   if (worksPage.value > 0 && works.value.length === 0 && result.total > 0) {
     worksPage.value = Math.max(0, Math.ceil(result.total / DEFAULT_PAGE_SIZE) - 1);
@@ -630,8 +648,9 @@ async function refreshItems() {
       page: itemsPage.value,
       pageSize: DEFAULT_PAGE_SIZE,
     });
-    items.value = result.items;
-    itemsTotal.value = result.total;
+    const visibleItems = result.items.filter((item) => visibleResourceTypeIds.value.has(item.typeId));
+    items.value = visibleItems;
+    itemsTotal.value = Math.max(0, result.total - (result.items.length - visibleItems.length));
     itemsPage.value = result.page;
     if (itemsPage.value > 0 && items.value.length === 0 && result.total > 0) {
       itemsPage.value = Math.max(0, Math.ceil(result.total / DEFAULT_PAGE_SIZE) - 1);
@@ -782,6 +801,8 @@ async function loadExcerpts(resourceItemId: string, page = excerptPage.value) {
 
 function onExcerptPageChange(page: number) {
   excerptPage.value = page - 1;
+  excerptPanelRoute.value = 'list';
+  resetExcerptForm();
   if (selectedExcerptItemId.value) {
     void loadExcerpts(selectedExcerptItemId.value, excerptPage.value);
   }
@@ -943,6 +964,8 @@ async function saveExcerpt() {
       showSuccess('节选已创建');
     }
     await loadExcerpts(selectedExcerptItem.value.id, excerptPage.value);
+    excerptPanelRoute.value = 'list';
+    resetExcerptForm();
     await refreshResourceTreeData();
     await refreshReferences();
   } catch (error) {
@@ -1224,6 +1247,7 @@ async function removeUrlRule(rule: UrlClusterRule) {
 
 function editExcerpt(excerpt: ResourceExcerpt) {
   resourceTreeSelectedId.value = `re:${excerpt.id}`;
+  excerptPanelRoute.value = 'edit';
   Object.assign(excerptForm, {
     id: excerpt.id,
     title: excerpt.title,
@@ -1677,7 +1701,7 @@ watch(
         <el-form-item label="类型">
           <el-select v-model="selectedTypeId" clearable placeholder="全部类型" style="width: 200px" @change="onTypeFilterChange">
             <el-option
-              v-for="type in allTypes"
+              v-for="type in visibleResourceTypes"
               :key="type.id"
               :label="`${type.icon || '·'} ${type.name}`"
               :value="type.id"
@@ -1877,7 +1901,7 @@ watch(
         <el-form class="resource-form" label-position="top" @submit.prevent="saveItem">
           <el-form-item label="类型" required>
             <el-select v-model="itemForm.typeId" placeholder="选择类型" style="width: 100%" @change="itemForm.workId = ''">
-              <el-option v-for="type in allTypes" :key="type.id" :label="type.name" :value="type.id" />
+              <el-option v-for="type in visibleResourceTypes" :key="type.id" :label="type.name" :value="type.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="归类 Work">
@@ -2020,7 +2044,7 @@ watch(
         <el-form class="resource-form" label-position="top" @submit.prevent="saveWork">
           <el-form-item label="类型" required>
             <el-select v-model="workForm.typeId" placeholder="选择类型" style="width: 100%">
-              <el-option v-for="type in allTypes" :key="type.id" :label="type.name" :value="type.id" />
+              <el-option v-for="type in visibleResourceTypes" :key="type.id" :label="type.name" :value="type.id" />
             </el-select>
           </el-form-item>
           <el-form-item label="标题" required>
@@ -2174,11 +2198,11 @@ watch(
           <el-form-item label="图标">
             <el-input v-model="typeForm.icon" maxlength="32" placeholder="📚" />
           </el-form-item>
-          <el-form-item label="主标识字段" required>
-            <el-input v-model="typeForm.identityFieldKey" maxlength="64" placeholder="isbn" />
-          </el-form-item>
-          <el-form-item label="主标识名称" required>
-            <el-input v-model="typeForm.identityFieldLabel" maxlength="128" placeholder="ISBN" />
+          <el-form-item label="主标识" required>
+            <div class="identity-field-row">
+              <el-input v-model="typeForm.identityFieldKey" maxlength="64" placeholder="字段：isbn" />
+              <el-input v-model="typeForm.identityFieldLabel" maxlength="128" placeholder="名称：ISBN" />
+            </div>
           </el-form-item>
           <el-form-item label="描述">
             <el-input v-model="typeForm.description" type="textarea" :rows="3" maxlength="255" />
@@ -2419,7 +2443,7 @@ watch(
 
     <el-dialog
       v-model="excerptPanelVisible"
-      class="excerpt-panel-dialog tu-dialog-viewport"
+      class="resource-excerpts-panel excerpt-panel-dialog tu-dialog-viewport"
       width="min(1280px, 96vw)"
       align-center
       destroy-on-close
@@ -2435,8 +2459,18 @@ watch(
           </div>
         </div>
       </template>
-      <div v-loading="excerptsLoading" class="excerpt-panel__body">
-        <div class="excerpt-list">
+      <div
+        v-loading="excerptsLoading"
+        class="excerpt-panel__body"
+        :class="{
+          'excerpt-panel__body--list': excerptPanelRoute === 'list',
+          'excerpt-panel__body--edit': excerptPanelRoute === 'edit',
+        }"
+      >
+        <div v-if="excerptPanelRoute === 'list'" class="excerpt-list">
+          <div class="excerpt-list__toolbar">
+            <el-button type="primary" @click="openExcerptCreateRoute">新增节选</el-button>
+          </div>
           <div class="excerpt-list__table-wrap">
             <el-table
               class="excerpt-table"
@@ -2476,7 +2510,7 @@ watch(
             />
           </div>
         </div>
-        <el-form class="excerpt-form resource-form" label-position="top" @submit.prevent="saveExcerpt">
+        <el-form v-else class="excerpt-form resource-form" label-position="top" @submit.prevent="saveExcerpt">
           <h3>{{ excerptForm.id ? '编辑节选' : '新增节选' }}</h3>
           <el-form-item v-if="excerptUrlPasteVisible" label="粘贴链接">
             <div class="excerpt-url-row">
@@ -2538,7 +2572,7 @@ watch(
               >
                 {{ excerptForm.id ? '保存节选' : '创建节选' }}
               </el-button>
-              <el-button @click="resetExcerptForm">取消</el-button>
+              <el-button @click="backToExcerptListRoute">取消</el-button>
             </el-space>
           </el-form-item>
         </el-form>
@@ -2781,6 +2815,13 @@ watch(
   font-size: 16px;
 }
 
+.identity-field-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  width: 100%;
+}
+
 .list-card-header {
   display: flex;
   align-items: center;
@@ -2814,6 +2855,7 @@ watch(
   display: flex;
   flex-direction: column;
   padding-top: 8px;
+  min-height: 0;
 }
 
 .excerpt-panel__header {
@@ -2834,14 +2876,20 @@ watch(
 
 .excerpt-panel__body {
   flex: 1;
+  max-height: calc(100dvh - 132px);
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 420px);
-  gap: 16px;
-  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.excerpt-panel__body--edit {
+  align-items: center;
+  overflow-y: auto;
 }
 
 .excerpt-list {
+  flex: 1;
   min-width: 0;
   min-height: 0;
   display: flex;
@@ -2849,9 +2897,16 @@ watch(
   gap: 8px;
 }
 
+.excerpt-list__toolbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
 .excerpt-list__table-wrap {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .excerpt-list__pagination {
@@ -2860,9 +2915,42 @@ watch(
 }
 
 .excerpt-form {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: 100%;
   min-height: 0;
+  padding: 14px 14px 0;
   overflow-y: auto;
   align-content: start;
+  background: #f8fafc;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+}
+
+.excerpt-form h3 {
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+.excerpt-form :deep(.el-form-item) {
+  margin-bottom: 14px;
+}
+
+.excerpt-form :deep(.el-form-item:last-child) {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  margin: 2px -14px 0;
+  padding: 12px 14px 14px;
+  background: #f8fafc;
+  border-top: 1px solid #e4e7ec;
+  box-shadow: 0 -8px 14px rgba(248, 250, 252, 0.9);
+}
+
+.excerpt-form :deep(.el-form-item:last-child .el-form-item__content) {
+  justify-content: flex-end;
 }
 
 .excerpt-url-row {
@@ -3024,8 +3112,31 @@ watch(
 
   .resource-layout,
   .object-model-layout,
-  .reference-layout,
+  .reference-layout {
+    grid-template-columns: 1fr;
+  }
+
   .excerpt-panel__body {
+    max-height: calc(100dvh - 120px);
+    overflow-y: auto;
+  }
+
+  .excerpt-list {
+    min-height: 260px;
+  }
+
+  .excerpt-form {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .excerpt-form :deep(.el-form-item:last-child) {
+    position: static;
+    margin: 2px -14px 0;
+    box-shadow: none;
+  }
+
+  .identity-field-row {
     grid-template-columns: 1fr;
   }
 }

@@ -49,6 +49,7 @@ interface ImportMarkdownFileOptions {
 
 const LOCAL_FILE_SAVE_DELAY = 800;
 const UNSUPPORTED_SAVE_MESSAGE = 'Current browser can import the file, but it cannot auto-save changes back to the original local file.';
+const UNTITLED_PAGE_TITLE = '未命名页面';
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const kbList = ref<KnowledgeBase[]>([]);
@@ -56,7 +57,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const pageTree = ref<PageItem[]>([]);
   const currentPageId = ref<string | null>(null);
   const pageContent = ref<PageContent | null>(null);
-  const currentPageTitleOverride = ref('');
+  const currentPageTitleOverride = ref<string | null>(null);
   const loading = ref(false);
   const localFileBindings = ref<Record<string, LocalFileBinding>>({});
   const registryStore = useBlockRegistryStore();
@@ -70,7 +71,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const currentPageTitle = computed(() => {
     const pageId = currentPageId.value;
     if (!pageId) return '';
-    return currentPageTitleOverride.value || findPageTitle(pageId);
+    return (currentPageTitleOverride.value ?? findPageTitle(pageId)).trim() || UNTITLED_PAGE_TITLE;
   });
 
   function clearBindingTimer(binding: LocalFileBinding | undefined) {
@@ -92,7 +93,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function resetWorkspaceState() {
     currentKbId.value = null;
     currentPageId.value = null;
-    currentPageTitleOverride.value = '';
+    currentPageTitleOverride.value = null;
     pageTree.value = [];
     pageContent.value = null;
     blockSyncManager.setPageId(null);
@@ -123,7 +124,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function selectKb(kbId: string) {
     currentKbId.value = kbId;
     currentPageId.value = null;
-    currentPageTitleOverride.value = '';
+    currentPageTitleOverride.value = null;
     blockSyncManager.setPageId(null);
     pageContent.value = null;
     registryStore.clear();
@@ -134,7 +135,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   async function selectPage(pageId: string) {
     currentPageId.value = pageId;
-    currentPageTitleOverride.value = '';
+    currentPageTitleOverride.value = null;
     blockSyncManager.setPageId(pageId);
     loading.value = true;
     try {
@@ -150,14 +151,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function findPageTitle(pageId: string): string {
     const walk = (nodes: PageItem[]): string | undefined => {
       for (const n of nodes) {
-        if (n.id === pageId) return n.title?.trim() || undefined;
+        if (n.id === pageId) return n.title ?? '';
         if (n.children?.length) {
           const found = walk(n.children);
-          if (found) return found;
+          if (found !== undefined) return found;
         }
       }
     };
-    return walk(pageTree.value) ?? pageId;
+    return walk(pageTree.value) ?? UNTITLED_PAGE_TITLE;
   }
 
   function extractTitleFromContent(content: string): string {
@@ -420,7 +421,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (currentPageId.value === id) {
       currentPageId.value = null;
-      currentPageTitleOverride.value = '';
+      currentPageTitleOverride.value = null;
       blockSyncManager.setPageId(null);
       pageContent.value = null;
     }

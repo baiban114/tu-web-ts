@@ -202,15 +202,6 @@ const initialState: MockState = {
       identityFieldKey: 'isbn',
       identityFieldLabel: 'ISBN',
     },
-    {
-      id: 'rt-web-link',
-      code: 'web-link',
-      name: '网络链接',
-      icon: 'link',
-      description: '外部网络链接，支持节选片段管理',
-      identityFieldKey: 'sourceUrl',
-      identityFieldLabel: '源 URL',
-    },
   ],
   resourceWorks: [
     {
@@ -222,16 +213,6 @@ const initialState: MockState = {
       description: '用于验证外部资源插入和图书节选。',
       clusterKey: '978-7-0000-0000-1',
       titleSource: 'manual',
-    },
-    {
-      id: 'rw-link-demo',
-      typeId: 'rt-web-link',
-      typeName: '网络链接',
-      title: '示例文档站',
-      subtitle: 'Mock 网络链接',
-      description: '用于验证网络链接节选。',
-      clusterKey: 'example.com|id|demo',
-      titleSource: 'auto',
     },
   ],
   resourceItems: [
@@ -251,23 +232,6 @@ const initialState: MockState = {
       titleSource: 'manual',
       workIdSource: 'manual',
       variantKind: 'edition',
-    },
-    {
-      id: 'ri-link-demo',
-      typeId: 'rt-web-link',
-      typeName: '网络链接',
-      identityFieldKey: 'sourceUrl',
-      identityFieldLabel: '源 URL',
-      workId: 'rw-link-demo',
-      workTitle: '示例文档站',
-      title: '示例文档站',
-      identityValue: 'https://example.com/docs/demo',
-      sourceUrl: 'https://example.com/docs/demo',
-      edition: undefined,
-      note: 'Mock 网络链接资源',
-      titleSource: 'auto',
-      workIdSource: 'auto',
-      variantKind: undefined,
     },
   ],
   urlClusterRules: [...BUILTIN_URL_CLUSTER_RULES],
@@ -295,16 +259,6 @@ const initialState: MockState = {
       locator: 'p. 12',
       excerptText: '好的笔记系统应当让来源、节选和自己的思考保持清晰关系。',
       note: 'Mock 默认节选',
-      sortOrder: 0,
-    },
-    {
-      id: 're-link-demo-1',
-      resourceItemId: 'ri-link-demo',
-      resourceItemTitle: '示例文档站',
-      title: '入门段落',
-      locator: '#getting-started',
-      excerptText: '网络链接也可以保存节选，用于引用网页中的关键段落。',
-      note: 'Mock 网络链接节选',
       sortOrder: 0,
     },
   ],
@@ -739,6 +693,23 @@ function resolveWebLinkWork(typeId: string, pageUrl: string, title: string): Res
   return work;
 }
 
+function ensureWebLinkResourceTypeMock(): ResourceType {
+  let type = state.resourceTypes.find((entry) => entry.code === 'web-link');
+  if (type) return type;
+
+  type = {
+    id: 'rt-web-link',
+    code: 'web-link',
+    name: '网络链接',
+    icon: 'link',
+    description: '由插入链接功能自动登记的外部网络链接',
+    identityFieldKey: 'sourceUrl',
+    identityFieldLabel: '源 URL',
+  };
+  state.resourceTypes.push(type);
+  return type;
+}
+
 export function registerResourceUrlFromPasteMock(
   url: string,
   options: { label?: string; excerptText?: string } = {},
@@ -746,8 +717,7 @@ export function registerResourceUrlFromPasteMock(
   const parsed = parseExternalUrl(url);
   if (!parsed) throw new Error('invalid resource URL');
 
-  const linkType = state.resourceTypes.find((type) => type.code === 'web-link')
-    ?? (() => { throw new Error('web-link resource type missing'); })();
+  const linkType = ensureWebLinkResourceTypeMock();
 
   let item = state.resourceItems.find(
     (entry) => entry.typeId === linkType.id && (entry.identityValue === parsed.baseUrl || entry.identityValue === parsed.href),

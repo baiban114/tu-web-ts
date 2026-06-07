@@ -280,6 +280,7 @@ const localContent = ref('')
 const localEmbeds = ref<EmbeddedObject[]>([])
 const localAnnotations = ref<TextAnnotation[]>([])
 const pageTitleDraft = ref('')
+const pageTitleEditing = ref(false)
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const showResourcePicker = ref(false)
@@ -460,9 +461,31 @@ watch(
 
 watch(
   () => props.pageTitle,
-  (val) => { pageTitleDraft.value = val },
+  (val) => {
+    if (pageTitleEditing.value) return
+    pageTitleDraft.value = displayPageTitle(val)
+  },
   { immediate: true },
 )
+
+function onPageTitleFocus() {
+  pageTitleEditing.value = true
+}
+
+function onPageTitleBlur() {
+  pageTitleEditing.value = false
+  if (!pageTitleDraft.value.trim()) {
+    pageTitleDraft.value = '未命名页面'
+    emit('page-title-change', pageTitleDraft.value)
+    return
+  }
+  pageTitleDraft.value = displayPageTitle(props.pageTitle)
+}
+
+function displayPageTitle(title: string) {
+  const value = title.trim()
+  return value && !/^p-[\w-]+$/.test(value) ? value : '未命名页面'
+}
 
 // --- Toast ---
 const showToast = (message: string) => {
@@ -1544,7 +1567,9 @@ onBeforeUnmount(() => {
         type="text"
         aria-label="页面标题"
         placeholder="未命名页面"
+        @focus="onPageTitleFocus"
         @input="emit('page-title-change', pageTitleDraft)"
+        @blur="onPageTitleBlur"
         @keydown.enter="focusEditorFromStart"
       />
       <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>

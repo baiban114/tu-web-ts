@@ -3,6 +3,7 @@ import { computed, reactive, ref, watch } from 'vue'
 import { ElDialog, ElEmpty, ElInput, ElScrollbar } from 'element-plus'
 import {
   createResourceExcerpt,
+  createResourceItem,
   listResourceExcerpts,
   listResourceChapters,
   listResourceItems,
@@ -44,6 +45,7 @@ const emit = defineEmits<{
 
 const loading = ref(false)
 const excerptLoading = ref(false)
+const creatingResource = ref(false)
 const error = ref('')
 const keyword = ref('')
 const types = ref<ResourceType[]>([])
@@ -51,7 +53,17 @@ const items = ref<ResourceItem[]>([])
 const excerpts = ref<ResourceExcerpt[]>([])
 const chapters = ref<ResourceChapter[]>([])
 const selectedItemId = ref('')
+const createResourceVisible = ref(false)
 const EXCERPT_EDITOR_BLOCK_ID = 'resource-picker-excerpt-editor'
+
+const resourceForm = reactive({
+  typeId: '',
+  title: '',
+  identityValue: '',
+  sourceUrl: '',
+  edition: '',
+  note: '',
+})
 
 const excerptForm = reactive({
   title: '',
@@ -62,6 +74,10 @@ const excerptForm = reactive({
 })
 
 const typeById = computed(() => new Map(types.value.map((type) => [type.id, type])))
+const creatableTypes = computed(() => types.value.filter((type) => (
+  type.code !== 'web-link'
+)))
+const resourceFormType = computed(() => typeById.value.get(resourceForm.typeId) || null)
 const selectedItem = computed(() => items.value.find((item) => item.id === selectedItemId.value) || null)
 const selectedItemType = computed(() => selectedItem.value ? typeById.value.get(selectedItem.value.typeId) : null)
 const selectedSupportsExcerpts = computed(() => supportsResourceExcerpts(selectedItemType.value?.code))
@@ -97,9 +113,7 @@ const excerptEditorBlocks = computed<Block[]>(() => [{
 
 const filteredItems = computed(() => {
   const q = keyword.value.trim().toLowerCase()
-  const sourceItems = isMarkExcerptMode.value
-    ? items.value.filter((item) => supportsResourceExcerpts(typeById.value.get(item.typeId)?.code))
-    : items.value
+  const sourceItems = items.value
   if (!q) return sourceItems
   return sourceItems.filter((item) => [
     item.title,
@@ -118,6 +132,15 @@ const resetExcerptForm = () => {
   excerptForm.note = ''
 }
 
+const resetResourceForm = () => {
+  resourceForm.typeId = creatableTypes.value[0]?.id || ''
+  resourceForm.title = ''
+  resourceForm.identityValue = ''
+  resourceForm.sourceUrl = ''
+  resourceForm.edition = ''
+  resourceForm.note = ''
+}
+
 const handleExcerptEditorUpdate = (blocks: Block[]) => {
   const richTextBlock = blocks.find((block) => block.type === 'richtext' || block.type === 'richText')
   excerptForm.excerptText = richTextBlock?.content ?? ''
@@ -133,13 +156,12 @@ const loadResources = async () => {
     ])
     types.value = nextTypes.items
     items.value = nextItems.items
-    const nextTypeById = new Map(nextTypes.items.map((type) => [type.id, type]))
-    const firstAvailableItem = isMarkExcerptMode.value
-      ? nextItems.items.find((item) => supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
-      : nextItems.items[0]
+    if (!resourceForm.typeId || !nextTypes.items.some((type) => type.id === resourceForm.typeId && type.code !== 'web-link')) {
+      resourceForm.typeId = nextTypes.items.find((type) => type.code !== 'web-link')?.id || ''
+    }
+    const firstAvailableItem = nextItems.items[0]
     const selectedStillUsable = nextItems.items.some((item) => (
       item.id === selectedItemId.value
-      && (!isMarkExcerptMode.value || supportsResourceExcerpts(nextTypeById.get(item.typeId)?.code))
     ))
     if (!selectedItemId.value || !selectedStillUsable) {
       selectedItemId.value = firstAvailableItem?.id || ''
@@ -148,6 +170,43 @@ const loadResources = async () => {
     error.value = err instanceof Error ? err.message : '加载外部资源失败'
   } finally {
     loading.value = false
+  }
+}
+
+const openCreateResource = () => {
+  createResourceVisible.value = true
+  resetResourceForm()
+}
+
+const cancelCreateResource = () => {
+  createResourceVisible.value = false
+  resetResourceForm()
+}
+
+const createAndSelectResource = async () => {
+  if (!resourceForm.typeId || !resourceForm.title.trim()) return
+  creatingResource.value = true
+  error.value = ''
+  try {
+    const item = await createResourceItem({
+      typeId: resourceForm.typeId,
+      title: resourceForm.title.trim(),
+      identityValue: resourceForm.identityValue.trim() || undefined,
+      sourceUrl: resourceForm.sourceUrl.trim() || undefined,
+      edition: resourceForm.edition.trim() || undefined,
+      note: resourceForm.note.trim() || undefined,
+      titleSource: 'manual',
+      workIdSource: 'auto',
+    })
+    items.value = [item, ...items.value.filter((entry) => entry.id !== item.id)]
+    keyword.value = ''
+    selectedItemId.value = item.id
+    createResourceVisible.value = false
+    resetResourceForm()
+  } catch (err) {
+    error.value = err instanceof Error ? err.message : '创建资源实体失败'
+  } finally {
+    creatingResource.value = false
   }
 }
 
@@ -246,7 +305,9 @@ const createAndInsertExcerpt = async () => {
 watch(() => props.visible, (visible) => {
   if (!visible) return
   keyword.value = ''
+  createResourceVisible.value = false
   resetExcerptForm()
+  resetResourceForm()
   void loadResources()
 })
 
@@ -262,7 +323,7 @@ watch(selectedItemId, () => {
 <template>
   <el-dialog
     :model-value="visible"
-    :title="isMarkExcerptMode ? '标记为外部资源节选' : '插入外部资源'"
+    title="选择外部资源"
     width="760px"
     @update:model-value="emit('update:visible', $event)"
   >
@@ -271,7 +332,10 @@ watch(selectedItemId, () => {
       <p v-if="error" class="resource-picker__error">{{ error }}</p>
       <div class="resource-picker__layout">
         <section class="resource-picker__list">
-          <div class="resource-picker__section-title">{{ isMarkExcerptMode ? '可节选资源' : '资源实体' }}</div>
+          <div class="resource-picker__list-header">
+            <div class="resource-picker__section-title">资源实体</div>
+            <button type="button" class="resource-picker__secondary" @click="openCreateResource">新增实体</button>
+          </div>
           <el-scrollbar height="360px">
             <button
               v-for="item in filteredItems"
@@ -286,14 +350,55 @@ watch(selectedItemId, () => {
             </button>
             <el-empty
               v-if="!loading && filteredItems.length === 0"
-              :description="isMarkExcerptMode ? '没有可标记节选的资源（图书/网络链接）' : '没有找到外部资源'"
+              description="没有找到外部资源"
               :image-size="64"
             />
           </el-scrollbar>
         </section>
 
         <section class="resource-picker__detail">
-          <template v-if="selectedItem">
+          <form v-if="createResourceVisible" class="resource-picker__create-form" @submit.prevent="createAndSelectResource">
+            <div class="resource-picker__section-title">新增资源实体</div>
+            <label>
+              类型
+              <select v-model="resourceForm.typeId" required>
+                <option v-for="type in creatableTypes" :key="type.id" :value="type.id">
+                  {{ type.name }}
+                </option>
+              </select>
+            </label>
+            <label>
+              标题
+              <input v-model.trim="resourceForm.title" required maxlength="255" placeholder="资源标题" />
+            </label>
+            <label>
+              {{ resourceFormType?.identityFieldLabel || '唯一标识' }}
+              <input
+                v-model.trim="resourceForm.identityValue"
+                maxlength="512"
+                :placeholder="resourceFormType?.identityFieldKey || 'identity'"
+              />
+            </label>
+            <label>
+              来源 URL
+              <input v-model.trim="resourceForm.sourceUrl" maxlength="1024" placeholder="https://..." />
+            </label>
+            <label>
+              版本/ edition
+              <input v-model.trim="resourceForm.edition" maxlength="128" placeholder="可选" />
+            </label>
+            <label>
+              备注
+              <textarea v-model.trim="resourceForm.note" rows="3" maxlength="1024" placeholder="可选" />
+            </label>
+            <div class="resource-picker__create-actions">
+              <button type="button" @click="cancelCreateResource">取消</button>
+              <button type="submit" :disabled="creatingResource || !resourceForm.typeId || !resourceForm.title.trim()">
+                {{ creatingResource ? '创建中...' : '创建并选中' }}
+              </button>
+            </div>
+          </form>
+          <template v-else-if="selectedItem">
             <div class="resource-picker__section-title">插入</div>
             <h3>{{ selectedItem.title }}</h3>
             <p>{{ selectedItem.typeName }} · {{ selectedItem.workTitle || '未归类' }}</p>
@@ -356,6 +461,9 @@ watch(selectedItemId, () => {
                 </button>
               </form>
             </div>
+            <p v-else-if="isMarkExcerptMode" class="resource-picker__empty">
+              当前资源类型暂不支持创建节选，请选择支持节选的资源实体。
+            </p>
           </template>
           <el-empty v-else description="请选择外部资源" :image-size="64" />
         </section>
@@ -389,6 +497,18 @@ watch(selectedItemId, () => {
   color: #64748b;
   font-size: 12px;
   font-weight: 700;
+}
+
+.resource-picker__list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.resource-picker__list-header .resource-picker__section-title {
+  margin-bottom: 0;
 }
 
 .resource-picker__item,
@@ -432,6 +552,7 @@ watch(selectedItemId, () => {
 }
 
 .resource-picker__primary,
+.resource-picker__create-actions button[type='submit'],
 .resource-picker__form button {
   border: 1px solid #1677ff;
   border-radius: 6px;
@@ -439,6 +560,21 @@ watch(selectedItemId, () => {
   background: #1677ff;
   color: #fff;
   cursor: pointer;
+}
+
+.resource-picker__secondary,
+.resource-picker__create-actions button[type='button'] {
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: #fff;
+  color: #334155;
+  cursor: pointer;
+}
+
+.resource-picker__secondary {
+  flex-shrink: 0;
+  font-size: 12px;
 }
 
 .resource-picker__primary {
@@ -466,12 +602,43 @@ watch(selectedItemId, () => {
   margin-top: 8px;
 }
 
+.resource-picker__create-form {
+  display: grid;
+  gap: 10px;
+}
+
+.resource-picker__create-form label {
+  display: grid;
+  gap: 5px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.resource-picker__create-form input,
+.resource-picker__create-form select,
+.resource-picker__create-form textarea,
 .resource-picker__form input,
 .resource-picker__form textarea {
   border: 1px solid #cbd5e1;
   border-radius: 6px;
   padding: 8px 10px;
   font: inherit;
+}
+
+.resource-picker__create-form input,
+.resource-picker__create-form select,
+.resource-picker__create-form textarea {
+  color: #1f2937;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.resource-picker__create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
 }
 
 .resource-picker__rich-editor {
@@ -525,6 +692,7 @@ watch(selectedItemId, () => {
   padding-left: 18px;
 }
 
+.resource-picker__create-actions button:disabled,
 .resource-picker__form button:disabled {
   cursor: not-allowed;
   opacity: 0.6;

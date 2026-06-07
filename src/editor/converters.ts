@@ -448,10 +448,24 @@ function parseMarkdown(markdown: string): JSONContent[] {
 
     const innerLines = para.split('\n')
     let currentLines: string[] = []
+    let currentQuoteLines: string[] = []
+
+    const flushCurrentQuote = () => {
+      if (currentQuoteLines.length === 0) return
+      nodes.push({
+        type: 'blockquote',
+        content: [{
+          type: 'paragraph',
+          content: parseInlineMarkdown(currentQuoteLines.join('\n')),
+        }],
+      })
+      currentQuoteLines = []
+    }
 
     for (const line of innerLines) {
       const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
       if (headingMatch) {
+        flushCurrentQuote()
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
@@ -465,6 +479,7 @@ function parseMarkdown(markdown: string): JSONContent[] {
           content: parseInlineMarkdown(headingMatch[2]),
         })
       } else if (line.startsWith('- [ ] ') || line.startsWith('- [x] ')) {
+        flushCurrentQuote()
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
@@ -484,6 +499,7 @@ function parseMarkdown(markdown: string): JSONContent[] {
           content: [{ type: 'paragraph', content: parseInlineMarkdown(text) }],
         })
       } else if (line.startsWith('- ') || line.startsWith('* ')) {
+        flushCurrentQuote()
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
@@ -500,6 +516,7 @@ function parseMarkdown(markdown: string): JSONContent[] {
           content: [{ type: 'paragraph', content: parseInlineMarkdown(line.replace(/^[-*] /, '')) }],
         })
       } else if (/^\d+\.\s/.test(line)) {
+        flushCurrentQuote()
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
@@ -523,13 +540,12 @@ function parseMarkdown(markdown: string): JSONContent[] {
           })
           currentLines = []
         }
-        nodes.push({
-          type: 'blockquote',
-          content: [{ type: 'paragraph', content: parseInlineMarkdown(line.slice(2)) }],
-        })
+        currentQuoteLines.push(line.slice(2))
       } else if (line.startsWith('```')) {
+        flushCurrentQuote()
         currentLines.push(line)
       } else if (line.startsWith('---')) {
+        flushCurrentQuote()
         if (currentLines.length > 0) {
           nodes.push({
             type: 'paragraph',
@@ -539,9 +555,12 @@ function parseMarkdown(markdown: string): JSONContent[] {
         }
         nodes.push({ type: 'horizontalRule' })
       } else {
+        flushCurrentQuote()
         currentLines.push(line)
       }
     }
+
+    flushCurrentQuote()
 
     if (currentLines.length > 0) {
       const text = currentLines.join('\n')
@@ -562,6 +581,13 @@ export function parseInlineMarkdown(text: string): JSONContent[] {
   let remaining = text
 
   while (remaining.length > 0) {
+    const escapedCharMatch = remaining.match(/^\\([\\*`[\]()~_!#>\-+.])/)
+    if (escapedCharMatch) {
+      parts.push({ type: 'text', text: escapedCharMatch[1] })
+      remaining = remaining.slice(escapedCharMatch[0].length)
+      continue
+    }
+
     const boldMatch = remaining.match(/^\*\*(.+?)\*\*/)
     if (boldMatch) {
       parts.push({ type: 'text', text: boldMatch[1], marks: [{ type: 'bold' }] })
@@ -601,16 +627,21 @@ export function parseInlineMarkdown(text: string): JSONContent[] {
       continue
     }
 
-    const nlIndex = remaining.indexOf('\n')
-    if (nlIndex >= 0) {
-      const segment = remaining.slice(0, nlIndex)
-      if (segment) parts.push({ type: 'hardBreak' })
-      parts.push({ type: 'text', text: segment })
-      remaining = remaining.slice(nlIndex + 1)
-    } else {
-      if (remaining) parts.push({ type: 'text', text: remaining })
-      remaining = ''
+    if (remaining.startsWith('\n')) {
+      parts.push({ type: 'hardBreak' })
+      remaining = remaining.slice(1)
+      continue
     }
+
+    const nextSpecialIndex = remaining.search(/[\\*`[!\n]/)
+    if (nextSpecialIndex > 0) {
+      parts.push({ type: 'text', text: remaining.slice(0, nextSpecialIndex) })
+      remaining = remaining.slice(nextSpecialIndex)
+      continue
+    }
+
+    parts.push({ type: 'text', text: remaining[0] })
+    remaining = remaining.slice(1)
   }
 
   return parts
@@ -634,7 +665,12 @@ function nodeToMarkdown(node: JSONContent): string {
     case 'orderedList':
       return (node.content || []).map((item, i) => (i + 1) + '. ' + contentToMarkdown(item.content || [])).join('\n')
     case 'blockquote':
-      return (node.content || []).map((c) => '> ' + contentToMarkdown(c.content || [])).join('\n')
+      return (node.content || [])
+        .map((c) => contentToMarkdown(c.content || [])
+          .split('\n')
+          .map((line) => '> ' + line)
+          .join('\n'))
+        .join('\n')
     case 'horizontalRule':
       return '---'
     case 'image':
@@ -649,7 +685,7 @@ function nodeToMarkdown(node: JSONContent): string {
 function contentToMarkdown(content: JSONContent[]): string {
   return content.map((c) => {
     if (c.type === 'text') {
-      let text = c.text || ''
+      let text = escapeMarkdownText(c.text || '')
       if (c.marks) {
         for (const mark of c.marks) {
           if (mark.type === 'bold') text = '**' + text + '**'
@@ -662,8 +698,12 @@ function contentToMarkdown(content: JSONContent[]): string {
       }
       return text
     }
-    if (c.type === 'hardBreak') return ''
+    if (c.type === 'hardBreak') return '\n'
     if (c.type === 'paragraph') return contentToMarkdown(c.content || [])
     return ''
   }).join('')
+}
+
+function escapeMarkdownText(text: string): string {
+  return text.replace(/(^|[^\\])([*`[\]()~_!#>])/g, '$1\\$2')
 }

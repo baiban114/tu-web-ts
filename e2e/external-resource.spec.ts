@@ -44,6 +44,7 @@ test('manages book excerpts on the resources page', async ({ page }) => {
   const panel = await openBookExcerptPanel(page)
   await expect(panel.getByText('关于结构化笔记')).toBeVisible()
 
+  await panel.getByRole('button', { name: '新增节选' }).click()
   await panel.getByLabel('标题').fill('第二个片段')
   await panel.getByLabel('页码/定位').fill('第 2 章')
   await panel.getByLabel('节选正文').fill('第二段用于验证一本书可以保存多个节选。')
