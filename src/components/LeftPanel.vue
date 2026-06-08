@@ -12,6 +12,7 @@ import {
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
 import AuthPanel from './AuthPanel.vue';
+import GlobalSearchBox from './GlobalSearchBox.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
 import RoadmapImportButton from './RoadmapImportButton.vue';
 
@@ -172,6 +173,10 @@ function collapseAllTree() {
   <div class="left-panel" @click="onDocumentClick">
     <AuthPanel />
 
+    <div class="search-section">
+      <GlobalSearchBox />
+    </div>
+
     <div class="section">
       <div class="section-header">
         <span class="section-title">知识库</span>
@@ -331,6 +336,11 @@ function collapseAllTree() {
   background: #f7f8fa;
   overflow: hidden;
   user-select: none;
+}
+
+.search-section {
+  padding: 8px 12px;
+  flex-shrink: 0;
 }
 
 .section {

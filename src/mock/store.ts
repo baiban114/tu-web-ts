@@ -1550,3 +1550,85 @@ export function listReferencesMock(params: ListReferencesParams = {}): ListRefer
 
   return { items, total, page, pageSize };
 }
+
+function collectPageSearchText(pageId: string): string {
+  const pc = state.contents[pageId];
+  if (!pc) return '';
+  const parts = [pc.content || ''];
+  for (const embed of pc.embeds || []) {
+    if (embed.title) parts.push(embed.title);
+  }
+  return parts.join('\n');
+}
+
+function buildSearchSnippet(text: string, query: string, maxLen = 120): string {
+  const normalized = text.replace(/\n/g, ' ').trim();
+  if (!normalized) return '';
+  const lower = normalized.toLowerCase();
+  const needle = query.toLowerCase();
+  const idx = lower.indexOf(needle);
+  if (idx < 0) {
+    return normalized.length <= maxLen ? normalized : `${normalized.slice(0, maxLen)}…`;
+  }
+  const start = Math.max(0, idx - 40);
+  const end = Math.min(normalized.length, idx + query.length + 40);
+  let snippet = normalized.slice(start, end);
+  if (start > 0) snippet = `…${snippet}`;
+  if (end < normalized.length) snippet = `${snippet}…`;
+  return snippet;
+}
+
+export function searchPagesMock(
+  q: string,
+  limit = 20,
+): {
+  hits: Array<{
+    kbId: string;
+    kbName: string;
+    pageId: string;
+    pageTitle: string;
+    title: string;
+    snippet: string;
+  }>;
+  enabled: boolean;
+  message: string | null;
+} {
+  const trimmed = q.trim();
+  if (trimmed.length < 2) {
+    return { hits: [], enabled: true, message: null };
+  }
+
+  const needle = trimmed.toLowerCase();
+  const hits: Array<{
+    kbId: string;
+    kbName: string;
+    pageId: string;
+    pageTitle: string;
+    title: string;
+    snippet: string;
+  }> = [];
+
+  for (const kb of state.knowledgeBases) {
+    for (const page of state.pages.filter((item) => item.kbId === kb.id)) {
+      const body = collectPageSearchText(page.id);
+      const titleMatch = page.title.toLowerCase().includes(needle);
+      const bodyMatch = body.toLowerCase().includes(needle);
+      if (!titleMatch && !bodyMatch) continue;
+
+      hits.push({
+        kbId: kb.id,
+        kbName: kb.name,
+        pageId: page.id,
+        pageTitle: page.title,
+        title: page.title,
+        snippet: buildSearchSnippet(bodyMatch ? body : page.title, trimmed),
+      });
+    }
+  }
+
+  return {
+    hits: hits.slice(0, limit),
+    enabled: true,
+    message: null,
+  };
+}

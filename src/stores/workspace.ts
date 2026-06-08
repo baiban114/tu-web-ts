@@ -20,6 +20,7 @@ import type { Block, GraphData, PageContent, PageItem } from '@/api/types';
 import type { ImportRoadmapPayload } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
+import { flushPageIndex } from '@/api/pageIndex';
 import {
   deriveMarkdownPageTitle,
   parseMarkdownToPageContent,
@@ -121,7 +122,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return nodes[0];
   }
 
+  async function flushCurrentPageIndexBestEffort() {
+    const pageId = currentPageId.value;
+    if (!pageId) return;
+    try {
+      await flushPageIndex(pageId);
+    } catch (error) {
+      console.warn('Failed to flush page index', error);
+    }
+  }
+
   async function selectKb(kbId: string) {
+    await flushCurrentPageIndexBestEffort();
     currentKbId.value = kbId;
     currentPageId.value = null;
     currentPageTitleOverride.value = null;
@@ -134,6 +146,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   async function selectPage(pageId: string) {
+    if (currentPageId.value && currentPageId.value !== pageId) {
+      await flushCurrentPageIndexBestEffort();
+    }
     currentPageId.value = pageId;
     currentPageTitleOverride.value = null;
     blockSyncManager.setPageId(pageId);
