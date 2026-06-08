@@ -10,34 +10,11 @@ import { getPageContent } from '@/api/page'
 import type { Block, PageContent } from '@/api/types'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import { useWorkspaceStore } from '@/stores/workspace'
-
-/** Find the minimum heading level in markdown content (# = 1, ## = 2, etc.). */
-function minHeadingLevelInBlocks(blocks: Block[]): number {
-  let min = Infinity
-  for (const block of blocks) {
-    if (block.type !== 'richtext' && block.type !== 'richText') continue
-    if (!block.content) continue
-    const lines = block.content.split('\n')
-    for (const line of lines) {
-      const m = line.match(/^(#{1,6})\s+/)
-      if (m) min = Math.min(min, m[1].length)
-    }
-    if (block.children) {
-      const childMin = minHeadingLevelInBlocks(block.children)
-      if (childMin < min) min = childMin
-    }
-  }
-  return min
-}
-
-/** Shift heading levels in markdown content by `offset` (positive = deeper). */
-function shiftContentHeadings(content: string, offset: number): string {
-  if (offset === 0) return content
-  return content.replace(/^(#{1,6})(?=\s)/gm, (match) => {
-    const newLevel = Math.min(6, match.length + offset)
-    return '#'.repeat(newLevel)
-  })
-}
+import {
+  applyRefContentHeadingShift,
+  clampHeadingLevel,
+  findParentHeadingLevel,
+} from '@/utils/toc/headings'
 
 interface CompoundBadge {
   annotationId: string
@@ -69,12 +46,7 @@ const referencedBlock = computed(() => refType.value === 'block' ? registryStore
 /** Compute effective heading offset and apply it to the given blocks. */
 function withShiftedHeadings(blocks: Block[]): Block[] {
   const parentLevel = referencedContentParentLevel.value
-  if (parentLevel === 0) return blocks
-  const minChild = minHeadingLevelInBlocks(blocks)
-  if (!isFinite(minChild)) return blocks
-  const offset = Math.max(0, parentLevel + 1 - minChild)
-  if (offset === 0) return blocks
-  return shiftBlocksHeadings(blocks, offset)
+  return applyRefContentHeadingShift(blocks, parentLevel)
 }
 
 const shiftedPageBlocks = computed(() => withShiftedHeadings(pageBlocks.value))
@@ -90,37 +62,8 @@ const parentHeadingLevel = computed(() => {
   if (!editor) return 0
   const pos = typeof props.getPos === 'function' ? props.getPos() : null
   if (pos == null) return 0
-  let nearestPos = -1
-  let nearestLevel = 0
-  editor.state.doc.descendants((node, nodePos) => {
-    if (node.type.name === 'heading' && nodePos < pos && nodePos > nearestPos) {
-      nearestPos = nodePos
-      nearestLevel = node.attrs?.level || 1
-    }
-    return true
-  })
-  return nearestLevel
+  return findParentHeadingLevel(editor.state.doc, pos)
 })
-
-/** Adjust heading levels in a single block (rich text blocks only). */
-function shiftBlockHeadings(block: Block, offset: number): Block {
-  if (offset === 0) return block
-  if (block.type !== 'richtext' && block.type !== 'richText') return block
-  if (!block.content) return block
-  return { ...block, content: shiftContentHeadings(block.content, offset) }
-}
-
-/** Adjust heading levels in an array of blocks (recurses into children). */
-function shiftBlocksHeadings(blocks: Block[], offset: number): Block[] {
-  if (offset === 0) return blocks
-  return blocks.map((b) => {
-    const shifted = shiftBlockHeadings(b, offset)
-    if (shifted.children) {
-      return { ...shifted, children: shiftBlocksHeadings(shifted.children, offset) }
-    }
-    return shifted
-  })
-}
 
 const pageTitle = computed(() => {
   const find = (items: Array<{ id: string; title: string; children?: any[] }>): string | null => {
@@ -138,8 +81,8 @@ const tocSettings = computed(() => (props.node.attrs.metadata as any)?.tocSettin
 const headingLevel = computed(() => {
   if (tocSettings.value?.hideTitle) return 0
   const explicitLevel = Number(props.node.attrs.headingLevel || tocSettings.value?.titleLevel || 0)
-  if (explicitLevel > 0) return Math.min(6, Math.max(1, explicitLevel))
-  return Math.min(6, Math.max(1, parentHeadingLevel.value + 1))
+  if (explicitLevel > 0) return clampHeadingLevel(explicitLevel)
+  return clampHeadingLevel(parentHeadingLevel.value + 1)
 })
 const headingText = computed(() => {
   if (tocSettings.value?.hideTitle) return ''
@@ -152,6 +95,12 @@ const referencedContentParentLevel = computed(() => {
 })
 
 const isRichTextBlock = (block: Block): boolean => block.type === 'richtext' || block.type === 'richText'
+
+const getExternalResourceExcerptBlocks = (block: Block): Block[] | null => {
+  const excerptText = block.externalResource?.snapshot?.excerptText?.trim()
+  if (block.type !== 'externalResource' || !excerptText) return null
+  return [{ id: block.id, type: 'richtext', content: excerptText }]
+}
 
 const renderFallbackText = (block: Block): string => {
   if (block.type === 'x6') return block.title?.trim() || '画板'
@@ -278,6 +227,12 @@ onMounted(() => {
           <ReferencedBlockRenderer
             v-else-if="block.type === 'container'"
             :block="block"
+            :editable="false"
+            class="ref-page-content__block"
+          />
+          <TuEditor
+            v-else-if="getExternalResourceExcerptBlocks(block)"
+            :blocks="getExternalResourceExcerptBlocks(block)!"
             :editable="false"
             class="ref-page-content__block"
           />

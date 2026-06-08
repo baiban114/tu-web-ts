@@ -8,7 +8,8 @@ import {
   type ResourceExcerpt,
   type ResourceItem,
 } from '@/api/externalResource'
-import type { ExternalResourceEmbedData, ExternalResourceSnapshot } from '@/api/types'
+import type { ExternalResourceEmbedData, ExternalResourceSnapshot, Block } from '@/api/types'
+import TuEditor from '@/components/TuEditor.vue'
 
 interface CompoundBadge {
   annotationId: string
@@ -50,6 +51,12 @@ const excerptNote = computed(() => latestExcerpt.value?.note || snapshot.value.e
 const isExcerpt = computed(() => data.value.mode === 'excerpt' || Boolean(data.value.resourceExcerptId))
 const usingSnapshot = computed(() => Boolean(loadError.value || (!latestItem.value && snapshot.value.resourceTitle)))
 const headingText = computed(() => props.node.attrs.title || (isExcerpt.value ? excerptTitle.value : resourceTitle.value))
+
+const excerptEditorBlocks = computed<Block[]>(() => [{
+  id: blockId.value || 'external-resource-excerpt',
+  type: 'richtext',
+  content: excerptText.value,
+}])
 
 const loadResource = async () => {
   if (!data.value.resourceItemId) return
@@ -114,7 +121,12 @@ onMounted(() => {
         </p>
         <p v-if="isExcerpt && chapterTitle" class="external-resource-card__locator">章节：{{ chapterTitle }}</p>
         <p v-if="isExcerpt && excerptLocator" class="external-resource-card__locator">{{ excerptLocator }}</p>
-        <blockquote v-if="isExcerpt && excerptText">{{ excerptText }}</blockquote>
+        <TuEditor
+          v-if="isExcerpt && excerptText.trim()"
+          :blocks="excerptEditorBlocks"
+          :editable="false"
+          class="external-resource-card__excerpt-editor"
+        />
         <p v-if="isExcerpt && excerptNote" class="external-resource-card__note">{{ excerptNote }}</p>
         <a v-if="sourceUrl" :href="sourceUrl" target="_blank" rel="noreferrer">{{ sourceUrl }}</a>
         <p v-if="loading" class="external-resource-card__status">正在加载最新资源...</p>
@@ -178,13 +190,8 @@ onMounted(() => {
   font-size: 13px;
 }
 
-.external-resource-card blockquote {
-  margin: 0;
-  border-left: 3px solid #38bdf8;
-  padding: 8px 10px;
-  background: #f8fafc;
-  color: #334155;
-  white-space: pre-wrap;
+.external-resource-card__excerpt-editor :deep(.tu-editor-content) {
+  padding: 0 !important;
 }
 
 .external-resource-card a {

@@ -114,9 +114,24 @@ function isEmbedNode(node: JSONContent): boolean {
   return ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'refBlock', 'spacerBlock', 'externalResourceBlock'].includes(node.type || '')
 }
 
-function getHeadingLevel(embed: EmbeddedObject | undefined): number {
-  const ts = (embed?.metadata as any)?.tocSettings
+function getHeadingLevel(embed: EmbeddedObject | undefined, nodeAttrs?: Record<string, unknown>): number {
+  const fromAttrs = Number(nodeAttrs?.headingLevel ?? 0)
+  if (fromAttrs > 0) return fromAttrs
+  const ts = (embed?.metadata as { tocSettings?: { titleLevel?: number } } | undefined)?.tocSettings
+    ?? (nodeAttrs?.metadata as { tocSettings?: { titleLevel?: number } } | undefined)?.tocSettings
   return ts?.titleLevel ?? 0
+}
+
+function embedMetadataFromNode(node: JSONContent): Record<string, unknown> | undefined {
+  const metadata = { ...(node.attrs?.metadata || {}) } as Record<string, unknown>
+  const headingLevel = getHeadingLevel(undefined, node.attrs)
+  const prev = (metadata.tocSettings as Record<string, unknown>) || {}
+  metadata.tocSettings = {
+    ...prev,
+    titleLevel: headingLevel,
+    hideTitle: Boolean(prev.hideTitle),
+  }
+  return metadata
 }
 
 function embedToTipTapNode(embed: EmbeddedObject | undefined, embedId: string, embedType: string): JSONContent | null {
@@ -238,7 +253,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
         graphData: node.attrs?.graphData || { nodes: [], edges: [] },
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     case 'timelineBlock':
       return {
@@ -248,7 +263,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
         timelineData: node.attrs?.timelineData || [],
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     case 'refBlock':
       return {
@@ -259,7 +274,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         refType: node.attrs?.refType || 'block',
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     case 'tableBlock':
       return {
@@ -269,7 +284,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
         tableData: node.attrs?.tableData || { headers: [], rows: [] },
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     case 'multiTableBlock':
       return {
@@ -279,7 +294,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         width: node.attrs?.width ?? undefined,
         height: node.attrs?.height ?? undefined,
         multiTableData: node.attrs?.multiTableData || { fields: [], records: [], views: [] },
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     case 'spacerBlock':
       return {
@@ -288,7 +303,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
         title: node.attrs?.title || '',
         spacerHeight: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
         height: node.attrs?.height ?? node.attrs?.spacerHeight ?? 40,
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     case 'externalResourceBlock':
       return {
@@ -303,7 +318,7 @@ function tipTapNodeToEmbed(node: JSONContent): EmbeddedObject | null {
           mode: 'resource',
           snapshot: { resourceTitle: '' },
         },
-        metadata: node.attrs?.metadata,
+        metadata: embedMetadataFromNode(node),
       }
     default:
       return null

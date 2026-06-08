@@ -246,7 +246,20 @@ toggle: (node: TreeNode, expanded: boolean) => void
 - **不替换** `el-tree`。
 - 可选：`pagesToTreeNodes` + `toMarkdownOutline` / `toFlatWithPath` 用于导出、调试工具。
 
-### 9.3 TOC
+### 9.3 TOC（页面侧栏目录）
+
+采集逻辑见 [`utils/toc/headings.ts`](../src/utils/toc/headings.ts)，由 [`TuEditorPage.vue`](../src/components/TuEditorPage.vue) 渲染。
+
+**纳入目录：**
+
+- 主文档 Tiptap `heading` 节点（渲染为 `h1`–`h6`）
+- 引用块（`refBlock`）外层标题（ResizableBlockWrapper 渲染的 h 标题；`metadata.tocSettings.hideTitle` 时省略外层）
+- 引用内容中富文本来源的 ATX 标题（`richtext` 块 `#` …、`externalResource` 节选 `excerptText`；经层级偏移后与 TuEditor 渲染一致）
+- 外部资源块（`externalResourceBlock`）：设置了 `headingLevel` 时的外层标题，以及节选正文中 `#` 标题（节选以只读 TuEditor 渲染，目录可精确跳转）；可通过 nodeView 悬浮栏「目录等级」设置外层标题级别
+
+**不纳入：** 画板、表格、时间轴、分割块等非富文本 nodeView；引用页内嵌套 `ref` embed（v1）；nodeView 仅作视觉展示的 `headingLevel` 标题（未作为外层 group 采集时）。
+
+**目录等级设置：** 点击引用块或外部资源块，在悬浮操作栏选择「目录等级」，可设置外层标题为自动 / H1–H6；引用块还可勾选「不在目录显示外层标题」。设置写入 `metadata.tocSettings` 与 `headingLevel` 并持久化。
 
 - v2：`tocToTreeNodes` 复用 `TreeListPanel` 或仅复用 `serialize` 导出大纲。
 

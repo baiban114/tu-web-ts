@@ -3,6 +3,7 @@ import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick } 
 import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import { pageContentToTipTap, tipTapToPageContent } from '@/editor/converters'
 import TuEditor from './TuEditor.vue'
+import TocTreeList from './TocTreeList.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
@@ -19,123 +20,20 @@ import { registerExternalUrlFromPaste } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import {
+  applyRefContentHeadingShift,
+  buildHeadingTree,
+  computeRefWrapperLevel,
+  extractRichTextHeadingsFromBlocks,
+  findParentHeadingLevel,
+  type FlatTocEntry,
+  type TocTreeItem,
+} from '@/utils/toc/headings'
 
 type LinkDisplayMode = 'link' | 'image'
 
-interface TocItem {
-  id: string
-  blockId: string
-  level: number
-  text: string
-  pos: number
-  sourceType: 'local' | 'ref-group' | 'ref-child' | 'x6' | 'table' | 'multiTable' | 'timeline' | 'spacer' | 'externalResource'
-  children?: TocItem[]
-  refId?: string
-  targetText?: string
-}
-
-const NODEVIEW_TYPE_LABELS: Record<string, string> = {
-  x6: '画板',
-  table: '表格',
-  multiTable: '多维表格',
-  timeline: '时间轴',
-  spacer: '分割',
-  externalResource: '外部资源',
-}
-
-const nodeViewLabel = (type: string): string => NODEVIEW_TYPE_LABELS[type] || type
-
-interface TocSettings {
-  titleLevel: number | null
-  hideTitle: boolean
-  minContentLevel: number
-}
-
-const getTocSettings = (embedId: string): TocSettings | null => {
-  const embed = localEmbeds.value.find(e => e.id === embedId)
-  return (embed?.metadata as any)?.tocSettings ?? null
-}
-
-const setTocSettings = (embedId: string, settings: TocSettings) => {
-  const embed = localEmbeds.value.find(e => e.id === embedId)
-  if (!embed) return
-  embed.metadata = { ...(embed.metadata || {}), tocSettings: settings }
-  localEmbeds.value = [...localEmbeds.value]
-  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
-}
-
-const tocSettingsPopup = reactive({
-  visible: false,
-  embedId: '',
-  sourceType: '',
-  top: 0,
-  left: 0,
-})
-
-const tocSettingsDraft = reactive<TocSettings>({
-  titleLevel: null,
-  hideTitle: false,
-  minContentLevel: 1,
-})
-
-const openTocSettings = (embedId: string, event: MouseEvent, sourceType?: string) => {
-  if (!event || !embedId) return
-  const settings = getTocSettings(embedId)
-  tocSettingsDraft.titleLevel = settings?.titleLevel ?? null
-  tocSettingsDraft.hideTitle = settings?.hideTitle ?? false
-  tocSettingsDraft.minContentLevel = settings?.minContentLevel ?? 1
-  tocSettingsPopup.embedId = embedId
-  tocSettingsPopup.sourceType = sourceType || ''
-  tocSettingsPopup.top = event.clientY - 8
-  const estimatedWidth = 240
-  const desiredLeft = event.clientX + 10
-  tocSettingsPopup.left = Math.min(desiredLeft, window.innerWidth - estimatedWidth - 12)
-  tocSettingsPopup.visible = true
-}
-
-const saveTocSettings = () => {
-  if (tocSettingsPopup.embedId) {
-    const nextSettings = { ...tocSettingsDraft }
-    try {
-      setTocSettings(tocSettingsPopup.embedId, nextSettings)
-    } catch {
-      console.warn('Failed to save TOC settings')
-    }
-    // Keep ProseMirror attrs in sync so the next conversion does not drop tocSettings.
-    const editor = tuEditorRef.value?.editor
-    if (editor) {
-      const tr = editor.state.tr
-      editor.state.doc.descendants((node, pos) => {
-        if (node.attrs?.blockId === tocSettingsPopup.embedId) {
-          const headingLevel = nextSettings.titleLevel ?? 0
-          const metadata = { ...(node.attrs.metadata || {}), tocSettings: nextSettings }
-          tr.setNodeMarkup(pos, undefined, { ...node.attrs, headingLevel, metadata })
-          return false
-        }
-        return true
-      })
-      if (tr.steps.length > 0) editor.view.dispatch(tr)
-    }
-  }
-  tocSettingsPopup.visible = false
-}
-
-const closeTocSettings = () => {
-  tocSettingsPopup.visible = false
-}
-
-const handleSettingsDocClick = (e: MouseEvent) => {
-  const popover = document.querySelector('.toc-settings-popover')
-  if (!popover || !popover.contains(e.target as Node)) {
-    closeTocSettings()
-  }
-}
-watch(() => tocSettingsPopup.visible, (visible, wasVisible) => {
-  if (visible && !wasVisible) nextTick(() => document.addEventListener('click', handleSettingsDocClick))
-  else if (!visible && wasVisible) document.removeEventListener('click', handleSettingsDocClick)
-})
-
-// --- NodeView floating toolbar ---
+type TocItem = TocTreeItem
 const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock']
 
 const nodeViewToolbar = reactive({
@@ -146,9 +44,23 @@ const nodeViewToolbar = reactive({
   canAddNote: false,
 })
 
+const EMBED_TOC_SOURCE_TYPES = new Set(['refBlock', 'externalResourceBlock'])
+
+const tocSettingsPopover = reactive({
+  visible: false,
+  top: 0,
+  left: 0,
+})
+
+const tocSettingsForm = reactive({
+  titleLevel: 0,
+  hideTitle: false,
+})
+
 const hideNodeViewToolbar = () => {
   nodeViewToolbar.visible = false
   nodeViewToolbar.canAddNote = false
+  tocSettingsPopover.visible = false
 }
 
 const getNodeViewToolbarAnchor = (): FloatingAnchorRect | null => {
@@ -186,16 +98,89 @@ const duplicateSelectedNodeView = () => {
   hideNodeViewToolbar()
 }
 
-const openNodeViewToolbarSettings = (event: MouseEvent) => {
-  openTocSettings(nodeViewToolbar.blockId, event, nodeViewToolbar.sourceType)
-  hideNodeViewToolbar()
-}
-
 const navigateToReferencedPage = async () => {
   if (nodeViewToolbar.refId) {
     hideNodeViewToolbar()
     await workspaceStore.selectPage(nodeViewToolbar.refId)
   }
+}
+
+const findEmbedNodeByBlockId = (blockId: string): { pos: number; node: ProseMirrorNode } | null => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || !blockId) return null
+  let found: { pos: number; node: ProseMirrorNode } | null = null
+  editor.state.doc.descendants((node, pos) => {
+    if (node.attrs?.blockId === blockId && EMBED_TOC_SOURCE_TYPES.has(node.type.name)) {
+      found = { pos, node }
+      return false
+    }
+    return true
+  })
+  return found
+}
+
+const supportsEmbedTocSettings = (sourceType: string) => EMBED_TOC_SOURCE_TYPES.has(sourceType)
+
+const readEmbedTocSettings = (blockId: string) => {
+  const found = findEmbedNodeByBlockId(blockId)
+  if (!found) return { titleLevel: 0, hideTitle: false }
+  const metadata = (found.node.attrs?.metadata || {}) as { tocSettings?: { titleLevel?: number; hideTitle?: boolean } }
+  const tocSettings = metadata.tocSettings || {}
+  return {
+    titleLevel: Number(found.node.attrs?.headingLevel ?? tocSettings.titleLevel ?? 0),
+    hideTitle: Boolean(tocSettings.hideTitle),
+  }
+}
+
+const openTocSettingsPopover = () => {
+  if (!EMBED_TOC_SOURCE_TYPES.has(nodeViewToolbar.sourceType)) return
+  const settings = readEmbedTocSettings(nodeViewToolbar.blockId)
+  tocSettingsForm.titleLevel = settings.titleLevel
+  tocSettingsForm.hideTitle = settings.hideTitle
+  tocSettingsPopover.visible = true
+  nextTick(() => {
+    const toolbar = document.querySelector('.nodeview-toolbar')
+    const rect = toolbar?.getBoundingClientRect()
+    if (rect) {
+      tocSettingsPopover.top = rect.bottom + 8
+      tocSettingsPopover.left = rect.left
+    }
+  })
+}
+
+const closeTocSettingsPopover = () => {
+  tocSettingsPopover.visible = false
+}
+
+const applyTocSettings = () => {
+  const editor = tuEditorRef.value?.editor
+  const blockId = nodeViewToolbar.blockId
+  if (!editor || !blockId) return
+
+  const found = findEmbedNodeByBlockId(blockId)
+  if (!found) return
+
+  const existingMetadata = { ...(found.node.attrs?.metadata as Record<string, unknown> || {}) }
+  const hideTitle = nodeViewToolbar.sourceType === 'refBlock' && tocSettingsForm.hideTitle
+  const titleLevel = hideTitle ? 0 : tocSettingsForm.titleLevel
+
+  editor.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    tr.setNodeMarkup(found!.pos, undefined, {
+      ...found!.node.attrs,
+      headingLevel: titleLevel,
+      metadata: {
+        ...existingMetadata,
+        tocSettings: {
+          titleLevel,
+          hideTitle,
+        },
+      },
+    })
+    return true
+  }).run()
+
+  closeTocSettingsPopover()
 }
 
 const handleBlockClick = (blockId: string, event: MouseEvent) => {
@@ -234,11 +219,11 @@ const handleBlockClick = (blockId: string, event: MouseEvent) => {
 
 const handleToolbarDocClick = (e: MouseEvent) => {
   const toolbar = document.querySelector('.nodeview-toolbar')
-  if (!toolbar || !toolbar.contains(e.target as Node)) {
-    // Don't close if clicking on another nodeView — capture mousedown repositions it
-    if ((e.target as HTMLElement).closest('[data-block-id]')) return
-    hideNodeViewToolbar()
-  }
+  const tocPopover = document.querySelector('.toc-settings-popover')
+  if (toolbar?.contains(e.target as Node)) return
+  if (tocPopover?.contains(e.target as Node)) return
+  if ((e.target as HTMLElement).closest('[data-block-id]')) return
+  hideNodeViewToolbar()
 }
 const handleToolbarKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Escape') hideNodeViewToolbar()
@@ -725,260 +710,185 @@ function findPageTitle(pageId: string): string {
   return walk(workspaceStore.pageTree) ?? pageId
 }
 
-/** Extract heading-like structures from a list of blocks (richtext markdown content).
- *  Used to surface headings from referenced pages/blocks in the current page TOC. */
-function extractHeadingsFromBlocks(blocks: Block[]): Array<{ text: string; level: number; blockId: string }> {
-  const result: Array<{ text: string; level: number; blockId: string }> = []
-  const seen = new Set<string>()
-  const walk = (list: Block[]) => {
-    for (const block of list) {
-      if (block.type === 'richtext' || block.type === 'richText') {
-        const content = (block.content || '').replace(/\r\n/g, '\n')
-        const lines = content.split('\n')
-        for (const line of lines) {
-          const match = line.match(/^(#{1,6})\s+(.+)$/)
-          if (match) {
-            const level = match[1].length
-            let text = match[2].trim()
-            // Strip trailing # characters (common in ATX headings like "## Title ##")
-            text = text.replace(/\s*#+\s*$/, '').trim()
-            // Strip inline markdown formatting for clean display
-            text = text.replace(/\*\*(.+?)\*\*/g, '$1')
-            text = text.replace(/\*(.+?)\*/g, '$1')
-            text = text.replace(/`(.+?)`/g, '$1')
-            text = text.replace(/\[(.+?)\]\(.+?\)/g, '$1')
-            const key = `${block.id}:${text}`
-            if (text && !seen.has(key)) {
-              seen.add(key)
-              result.push({ text, level, blockId: block.id })
-            }
-          }
-        }
-      }
-      if (block.children) walk(block.children)
-    }
+function appendEmbedTocEntries(
+  flat: FlatTocEntry[],
+  options: {
+    blockId: string
+    pos: number
+    wrapperLevel: number
+    groupTitle: string
+    contentBlocks: Block[]
+    contentParentLevel: number
+    refId?: string
+    includeGroup: boolean
+  },
+) {
+  const {
+    blockId,
+    pos,
+    wrapperLevel,
+    groupTitle,
+    contentBlocks,
+    contentParentLevel,
+    refId,
+    includeGroup,
+  } = options
+
+  if (includeGroup && groupTitle && wrapperLevel > 0) {
+    flat.push({
+      id: `ref-group-${blockId}`,
+      blockId,
+      level: wrapperLevel,
+      text: groupTitle,
+      pos,
+      sortIndex: 0,
+      sourceType: 'ref-group',
+      refId,
+    })
   }
-  walk(blocks)
-  return result
+
+  const shiftedBlocks = applyRefContentHeadingShift(contentBlocks, contentParentLevel)
+  const contentHeadings = extractRichTextHeadingsFromBlocks(shiftedBlocks)
+  contentHeadings.forEach((heading, index) => {
+    flat.push({
+      id: `ref-child-${blockId}-${index}`,
+      blockId,
+      level: heading.level,
+      text: heading.text,
+      pos,
+      sortIndex: index + 1,
+      sourceType: 'ref-child',
+      refId,
+      targetText: heading.text,
+    })
+  })
 }
 
-const clampHeadingLevel = (level: number): number => Math.min(6, Math.max(1, level))
-
-const getRefAutoTitleLevel = (items: TocItem[], refPos: number): number => {
-  let nearestPos = -1
-  let nearestLevel = 0
-  for (const item of items) {
-    if (item.sourceType !== 'local') continue
-    if (item.pos >= refPos || item.pos <= nearestPos) continue
-    nearestPos = item.pos
-    nearestLevel = item.level
-  }
-  return clampHeadingLevel(nearestLevel + 1)
-}
-
-const normalizeChildHeadingLevel = (childLevel: number, minChildLevel: number, parentLevel: number): number => {
-  return clampHeadingLevel(parentLevel + 1 + Math.max(0, childLevel - minChildLevel))
-}
-
-/**
- * Tree-structured TOC items. Top-level entries are:
- * - local headings (sourceType === 'local')
- * - ref-group entries with explicit titleLevel (sourceType === 'ref-group', level > 0)
- * - standalone ref-child headings (sourceType === 'ref-child', when hideTitle=true)
- * - any item with explicit titleLevel (level > 0: ref-group, x6, table, timeline, spacer)
- * Remaining local nodeViews are grouped only under the nearest preceding local heading.
- */
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return []
 
-  // Build lookup maps from localBlocks
   const blockTitleMap = new Map<string, string>()
   const refMetaMap = new Map<string, { refId: string; refType: string }>()
-  const tocSettingsMap = new Map<string, TocSettings>()
   for (const block of localBlocks.value) {
-    if (block.id) {
-      if (block.title) blockTitleMap.set(block.id, block.title)
-      if (block.type === 'ref' && block.refId) {
-        refMetaMap.set(block.id, { refId: block.refId, refType: block.refType ?? 'block' })
-      }
-      if (block.metadata?.tocSettings) {
-        tocSettingsMap.set(block.id, block.metadata.tocSettings as TocSettings)
-      }
+    if (!block.id) continue
+    if (block.title) blockTitleMap.set(block.id, block.title)
+    if (block.type === 'ref' && block.refId) {
+      refMetaMap.set(block.id, { refId: block.refId, refType: block.refType ?? 'block' })
     }
   }
 
-  // Collect all items from the editor doc
-  const allItems: TocItem[] = []
-  editor.state.doc.descendants((node, pos) => {
+  const flat: FlatTocEntry[] = []
+  const doc = editor.state.doc
+
+  doc.descendants((node, pos) => {
     const typeName = node.type.name
 
     if (typeName === 'heading') {
       const text = node.textContent.trim()
       if (text) {
-        allItems.push({
+        flat.push({
           id: `h-${pos}`,
           blockId: node.attrs?.blockId || `heading-${pos}`,
           level: node.attrs?.level || 1,
           text,
           pos,
+          sortIndex: 0,
           sourceType: 'local',
         })
       }
       return true
     }
 
-    const blockId: string = node.attrs?.blockId || ''
-    if (!blockId) return true
-
-    if (typeName === 'x6Block') {
-      const nvSettings = tocSettingsMap.get(blockId)
-      const title = node.attrs?.title || blockTitleMap.get(blockId) || '画板'
-      allItems.push({
-        id: `x6-${blockId}`,
-        blockId,
-        level: nvSettings?.titleLevel ?? 0,
-        text: nvSettings?.hideTitle ? '' : title,
-        pos,
-        sourceType: 'x6',
-      })
-    } else if (typeName === 'tableBlock' || typeName === 'multiTableBlock') {
-      const nvSettings = tocSettingsMap.get(blockId)
-      const isMultiTable = typeName === 'multiTableBlock'
-      const title = node.attrs?.title || blockTitleMap.get(blockId) || (isMultiTable ? '多维表格' : '表格')
-      allItems.push({
-        id: `${isMultiTable ? 'multiTable' : 'table'}-${blockId}`,
-        blockId,
-        level: nvSettings?.titleLevel ?? 0,
-        text: nvSettings?.hideTitle ? '' : title,
-        pos,
-        sourceType: isMultiTable ? 'multiTable' : 'table',
-      })
-    } else if (typeName === 'timelineBlock') {
-      const nvSettings = tocSettingsMap.get(blockId)
-      const title = node.attrs?.title || blockTitleMap.get(blockId) || '时间轴'
-      allItems.push({
-        id: `tl-${blockId}`,
-        blockId,
-        level: nvSettings?.titleLevel ?? 0,
-        text: nvSettings?.hideTitle ? '' : title,
-        pos,
-        sourceType: 'timeline',
-      })
-    } else if (typeName === 'spacerBlock') {
-      const nvSettings = tocSettingsMap.get(blockId)
-      allItems.push({
-        id: `sp-${blockId}`,
-        blockId,
-        level: nvSettings?.titleLevel ?? 0,
-        text: nvSettings?.hideTitle ? '' : '分割空白',
-        pos,
-        sourceType: 'spacer',
-      })
-    } else if (typeName === 'externalResourceBlock') {
-      const nvSettings = tocSettingsMap.get(blockId)
-      const externalResource = node.attrs?.externalResource
-      const snapshot = externalResource?.snapshot || {}
-      const title = node.attrs?.title
-        || snapshot.excerptTitle
-        || snapshot.resourceTitle
-        || blockTitleMap.get(blockId)
-        || '外部资源'
-      allItems.push({
-        id: `er-${blockId}`,
-        blockId,
-        level: nvSettings?.titleLevel ?? 0,
-        text: nvSettings?.hideTitle ? '' : title,
-        pos,
-        sourceType: 'externalResource',
-      })
-    } else if (typeName === 'refBlock') {
+    if (typeName === 'refBlock') {
+      const blockId: string = node.attrs?.blockId || ''
       const refId: string = node.attrs?.refId || refMetaMap.get(blockId)?.refId || ''
       const refType: string = node.attrs?.refType || refMetaMap.get(blockId)?.refType || 'block'
-      if (!refId) return true
+      if (!blockId || !refId) return true
 
       let refBlocks: Block[] = []
       if (refType === 'page') {
         refBlocks = registryStore.getPageBlocks(refId)
-      } else if (refType === 'block') {
+      } else {
         const refBlock = registryStore.getBlock(refId)
         if (refBlock) refBlocks = [refBlock]
       }
 
-      const headings = extractHeadingsFromBlocks(refBlocks)
+      const tocSettings = (node.attrs?.metadata as Record<string, unknown> | undefined)?.tocSettings as
+        | { hideTitle?: boolean }
+        | undefined
+      const hideTitle = Boolean(tocSettings?.hideTitle)
+      const wrapperLevel = hideTitle ? 0 : computeRefWrapperLevel(node.attrs, doc, pos)
+      const contentParentLevel = hideTitle
+        ? findParentHeadingLevel(doc, pos)
+        : wrapperLevel > 0
+          ? wrapperLevel
+          : findParentHeadingLevel(doc, pos)
 
-      let groupTitle: string
-      if (refType === 'page') {
-        groupTitle = findPageTitle(refId) || refId
-      } else {
-        const meta = registryStore.getMeta(refId)
-        groupTitle = meta?.pageTitle || blockTitleMap.get(blockId) || '引用'
-      }
-
-      const tocSettings = tocSettingsMap.get(blockId)
-      const minLevel = tocSettings?.minContentLevel ?? 1
-      const filteredHeadings = headings.filter(h => h.level >= minLevel)
-      const refLevel = tocSettings?.titleLevel ?? getRefAutoTitleLevel(allItems, pos)
-      const minChildLevel = filteredHeadings.reduce((min, h) => Math.min(min, h.level), Infinity)
-      const children: TocItem[] = filteredHeadings.map((h, i) => ({
-        id: `ref-child-${blockId}-${i}`,
-        blockId,
-        refId,
-        level: Number.isFinite(minChildLevel) ? normalizeChildHeadingLevel(h.level, minChildLevel, refLevel) : h.level,
-        text: h.text,
-        pos,
-        sourceType: 'ref-child',
-        targetText: h.text,
-      }))
-
-      if (tocSettings?.hideTitle) {
-        // Flatten children directly as standalone heading entries
-        for (const child of children) {
-          allItems.push(child)
+      let groupTitle = ''
+      if (!hideTitle) {
+        if (refType === 'page') {
+          groupTitle = findPageTitle(refId) || refId
+        } else {
+          const meta = registryStore.getMeta(refId)
+          groupTitle = meta?.pageTitle || blockTitleMap.get(blockId) || node.attrs?.title || '引用'
         }
-      } else {
-        const displayTitle = groupTitle
-
-        allItems.push({
-          id: `ref-group-${blockId}`,
-          blockId,
-          level: refLevel,
-          text: displayTitle,
-          pos,
-          sourceType: 'ref-group',
-          refId,
-          children: children.length > 0 ? children : undefined,
-        })
       }
+
+      appendEmbedTocEntries(flat, {
+        blockId,
+        pos,
+        wrapperLevel,
+        groupTitle,
+        contentBlocks: refBlocks,
+        contentParentLevel,
+        refId,
+        includeGroup: !hideTitle,
+      })
+      return true
+    }
+
+    if (typeName === 'externalResourceBlock') {
+      const blockId: string = node.attrs?.blockId || ''
+      if (!blockId) return true
+
+      const embedData = node.attrs?.externalResource as ExternalResourceEmbedData | undefined
+      const snapshot = embedData?.snapshot
+      const isExcerpt = embedData?.mode === 'excerpt' || Boolean(embedData?.resourceExcerptId)
+      const excerptText = snapshot?.excerptText?.trim() || ''
+      const attrsHeadingLevel = Number(
+        node.attrs?.headingLevel
+        || (node.attrs?.metadata as { tocSettings?: { titleLevel?: number } } | undefined)?.tocSettings?.titleLevel
+        || 0,
+      )
+      const wrapperLevel = attrsHeadingLevel > 0 ? attrsHeadingLevel : 0
+      const contentParentLevel = attrsHeadingLevel > 0
+        ? attrsHeadingLevel
+        : findParentHeadingLevel(doc, pos)
+      const groupTitle = String(
+        node.attrs?.title || (isExcerpt ? snapshot?.excerptTitle : snapshot?.resourceTitle) || '',
+      )
+      const contentBlocks: Block[] = excerptText
+        ? [{ id: blockId, type: 'richtext', content: excerptText }]
+        : []
+
+      appendEmbedTocEntries(flat, {
+        blockId,
+        pos,
+        wrapperLevel,
+        groupTitle,
+        contentBlocks,
+        contentParentLevel,
+        includeGroup: attrsHeadingLevel > 0,
+      })
+      return true
     }
 
     return true
   })
 
-  if (allItems.length === 0) return []
-
-  // Sort by document position
-  allItems.sort((a, b) => a.pos - b.pos)
-
-  // Group items into heading hierarchy
-  const treeItems: TocItem[] = []
-  let currentLocalHeading: TocItem | null = null
-
-  for (const item of allItems) {
-    if (item.sourceType === 'local' || item.sourceType === 'ref-child' || item.level > 0) {
-      if (item.sourceType === 'local') currentLocalHeading = item
-      treeItems.push(item)
-    } else {
-      if (currentLocalHeading) {
-        if (!currentLocalHeading.children) currentLocalHeading.children = []
-        currentLocalHeading.children.push(item)
-      } else {
-        treeItems.push(item)
-      }
-    }
-  }
-
-  return treeItems
+  if (flat.length === 0) return []
+  return buildHeadingTree(flat)
 })
 
 /** Total flat heading count counting group children. */
@@ -1011,12 +921,15 @@ const scrollElementIntoEditorView = (el: HTMLElement) => {
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
-const findHeadingElementInRefBlock = (blockId: string, headingText?: string): HTMLElement | null => {
+const findHeadingInEmbedBlock = (blockId: string, headingText?: string): HTMLElement | null => {
   if (!headingText) return null
   const editorDom = tuEditorRef.value?.editor?.view.dom
-  const refRoot = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
-  if (!refRoot) return null
-  const headings = refRoot.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')
+  const embedRoot = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  if (!embedRoot) return null
+  const contentRoot = embedRoot.querySelector<HTMLElement>(
+    '.ref-page-content, .ref-block-card__content, .external-resource-card',
+  ) ?? embedRoot
+  const headings = contentRoot.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')
   for (const heading of headings) {
     if (heading.textContent?.trim() === headingText.trim()) return heading
   }
@@ -1025,7 +938,7 @@ const findHeadingElementInRefBlock = (blockId: string, headingText?: string): HT
 
 const findTocTargetElement = (item: TocItem): HTMLElement | null => {
   if (item.sourceType === 'ref-child') {
-    return findHeadingElementInRefBlock(item.blockId, item.targetText || item.text)
+    return findHeadingInEmbedBlock(item.blockId, item.targetText || item.text)
   }
 
   const editor = tuEditorRef.value?.editor
@@ -1629,169 +1542,13 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div v-show="tocExpanded" class="page-toc__list">
-            <template v-for="item in tocItems" :key="item.id">
-              <!-- Local heading with optional ref-group children -->
-              <div v-if="item.sourceType === 'local'" class="page-toc__local-group">
-                <button
-                  type="button"
-                  class="page-toc__item"
-                  :class="{
-                    'page-toc__item--active': highlightedBlockId === item.blockId,
-                    [`page-toc__item--level-${item.level}`]: true,
-                  }"
-                  @click="handleTocItemClick(item)"
-                >
-                  <span class="page-toc__bullet">H{{ item.level }}</span>
-                  <span class="page-toc__text">{{ item.text }}</span>
-                </button>
-                <!-- Children nested under this heading -->
-                <div v-if="item.children?.length && isTocItemExpanded(item)" class="page-toc__local-children">
-                  <template v-for="child in item.children" :key="child.id">
-                    <!-- Ref-group child -->
-                    <div v-if="child.sourceType === 'ref-group'" class="page-toc__group">
-                      <button
-                        type="button"
-                        :class="[
-                          'page-toc__item',
-                          child.level > 0 ? `page-toc__item--level-${child.level}` : 'page-toc__item--ref',
-                          { 'page-toc__item--active': highlightedBlockId === child.blockId },
-                        ]"
-                        @click="toggleTocItem(child); handleTocItemClick(child)"
-                      >
-                        <span v-if="child.level > 0" class="page-toc__bullet">H{{ child.level }}</span>
-                        <span v-else class="page-toc__bullet page-toc__bullet--group">
-                          {{ isTocItemExpanded(child) ? '▼' : '▶' }}
-                        </span>
-                        <span v-if="child.text" class="page-toc__text">{{ child.text }}</span>
-                        <span class="page-toc__group-count">{{ child.children?.length }}</span>
-                        <span
-                          class="page-toc__settings-trigger"
-                          title="目录设置"
-                          @click.stop="openTocSettings(child.blockId, $event, 'ref-group')"
-                        >⚙</span>
-                      </button>
-                      <div v-if="child.children?.length && isTocItemExpanded(child)" class="page-toc__children">
-                        <button
-                          v-for="grandchild in child.children"
-                          :key="grandchild.id"
-                          type="button"
-                          class="page-toc__item"
-                          :class="{
-                            'page-toc__item--active': highlightedBlockId === grandchild.blockId,
-                            [`page-toc__item--level-${grandchild.level}`]: true,
-                          }"
-                          @click="handleTocItemClick(grandchild)"
-                        >
-                          <span class="page-toc__bullet">H{{ grandchild.level }}</span>
-                          <span class="page-toc__text">{{ grandchild.text }}</span>
-                        </button>
-                      </div>
-                    </div>
-                    <!-- NodeView child -->
-                    <button
-                      v-else
-                      type="button"
-                      :class="[
-                        'page-toc__item',
-                        child.level > 0 ? `page-toc__item--level-${child.level}` : 'page-toc__item--nodeview',
-                        { 'page-toc__item--active': highlightedBlockId === child.blockId },
-                      ]"
-                      @click="handleTocItemClick(child)"
-                    >
-                      <span v-if="child.level > 0" class="page-toc__bullet">H{{ child.level }}</span>
-                      <span v-else class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(child.sourceType) }}</span>
-                      <span class="page-toc__text">{{ child.text }}</span>
-                      <span
-                        class="page-toc__settings-trigger"
-                        title="目录设置"
-                        @click.stop="openTocSettings(child.blockId, $event, child.sourceType)"
-                      >⚙</span>
-                    </button>
-                  </template>
-                </div>
-              </div>
-
-              <!-- Top-level ref-group (before any local heading) -->
-              <div v-else-if="item.sourceType === 'ref-group'" class="page-toc__group">
-                <button
-                  type="button"
-                  :class="[
-                    'page-toc__item',
-                    item.level > 0 ? `page-toc__item--level-${item.level}` : 'page-toc__item--ref',
-                    { 'page-toc__item--active': highlightedBlockId === item.blockId },
-                  ]"
-                  @click="toggleTocItem(item); handleTocItemClick(item)"
-                >
-                  <span v-if="item.level > 0" class="page-toc__bullet">H{{ item.level }}</span>
-                  <span v-else class="page-toc__bullet page-toc__bullet--group">
-                    {{ isTocItemExpanded(item) ? '▼' : '▶' }}
-                  </span>
-                  <span v-if="item.text" class="page-toc__text">{{ item.text }}</span>
-                  <span class="page-toc__group-count">{{ item.children?.length }}</span>
-                  <span
-                    class="page-toc__settings-trigger"
-                    title="目录设置"
-                    @click.stop="openTocSettings(item.blockId, $event, 'ref-group')"
-                  >⚙</span>
-                </button>
-                <div v-if="item.children?.length && isTocItemExpanded(item)" class="page-toc__children">
-                  <button
-                    v-for="child in item.children"
-                    :key="child.id"
-                    type="button"
-                    class="page-toc__item"
-                    :class="{
-                      'page-toc__item--active': highlightedBlockId === child.blockId,
-                      [`page-toc__item--level-${child.level}`]: true,
-                    }"
-                    @click="handleTocItemClick(child)"
-                  >
-                    <span class="page-toc__bullet">H{{ child.level }}</span>
-                    <span class="page-toc__text">{{ child.text }}</span>
-                  </button>
-                </div>
-              </div>
-              <!-- Standalone ref-child (hideTitle) -->
-              <div v-else-if="item.sourceType === 'ref-child'" class="page-toc__inline-ref-child">
-                <button
-                  type="button"
-                  class="page-toc__item"
-                  :class="{
-                    'page-toc__item--active': highlightedBlockId === item.blockId,
-                    [`page-toc__item--level-${item.level}`]: true,
-                  }"
-                  @click="handleTocItemClick(item)"
-                >
-                  <span class="page-toc__bullet">H{{ item.level }}</span>
-                  <span class="page-toc__text">{{ item.text }}</span>
-                  <span
-                    class="page-toc__settings-trigger"
-                    title="目录设置"
-                    @click.stop="openTocSettings(item.blockId, $event, 'ref-group')"
-                  >⚙</span>
-                </button>
-              </div>
-              <!-- Top-level nodeView (before any local heading) -->
-              <button
-                v-else-if="['x6', 'table', 'multiTable', 'timeline', 'spacer', 'externalResource'].includes(item.sourceType)"
-                type="button"
-                :class="[
-                  'page-toc__item',
-                  item.level > 0 ? `page-toc__item--level-${item.level}` : 'page-toc__item--nodeview',
-                  { 'page-toc__item--active': highlightedBlockId === item.blockId },
-                ]"
-                @click="handleTocItemClick(item)"
-              >
-                <span v-if="item.level > 0" class="page-toc__bullet">H{{ item.level }}</span>
-                <span v-else class="page-toc__bullet page-toc__bullet--nodeview">{{ nodeViewLabel(item.sourceType) }}</span>
-                <span class="page-toc__text">{{ item.text }}</span>
-                <span
-                  class="page-toc__settings-trigger"
-                  title="目录设置"
-                  @click.stop="openTocSettings(item.blockId, $event, item.sourceType)"
-                >⚙</span>
-              </button>
-            </template>
+            <TocTreeList
+              :items="tocItems"
+              :highlighted-block-id="highlightedBlockId"
+              :is-expanded="isTocItemExpanded"
+              @click="handleTocItemClick"
+              @toggle="toggleTocItem"
+            />
           </div>
         </div>
       </aside>
@@ -1822,7 +1579,11 @@ onBeforeUnmount(() => {
         >添加笔记</button>
         <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
         <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
-        <button class="nodeview-toolbar__btn" @click="openNodeViewToolbarSettings">目录设置</button>
+        <button
+          v-if="supportsEmbedTocSettings(nodeViewToolbar.sourceType)"
+          class="nodeview-toolbar__btn"
+          @click="openTocSettingsPopover"
+        >目录等级</button>
         <button
           v-if="nodeViewToolbar.sourceType === 'refBlock' && nodeViewToolbar.refId"
           class="nodeview-toolbar__btn"
@@ -1830,49 +1591,41 @@ onBeforeUnmount(() => {
         >跳转原页面</button>
       </div>
 
-      <!-- TOC settings popover -->
       <div
-        v-if="tocSettingsPopup.visible"
+        v-if="tocSettingsPopover.visible"
         class="toc-settings-popover"
-        :style="{ top: tocSettingsPopup.top + 'px', left: tocSettingsPopup.left + 'px' }"
+        :style="{ top: tocSettingsPopover.top + 'px', left: tocSettingsPopover.left + 'px' }"
         @mousedown.stop
         @click.stop
-        @keydown.esc="closeTocSettings"
       >
         <div class="toc-settings-popover__field">
-          <label class="toc-settings-popover__label">标题级别</label>
-          <select v-model.number="tocSettingsDraft.titleLevel" class="toc-settings-popover__select">
-            <option :value="null">自动</option>
-            <option :value="1">H1</option>
-            <option :value="2">H2</option>
-            <option :value="3">H3</option>
-            <option :value="4">H4</option>
-            <option :value="5">H5</option>
-            <option :value="6">H6</option>
+          <label class="toc-settings-popover__label">目录标题等级</label>
+          <select
+            v-model.number="tocSettingsForm.titleLevel"
+            class="toc-settings-popover__select"
+            :disabled="nodeViewToolbar.sourceType === 'refBlock' && tocSettingsForm.hideTitle"
+          >
+            <option :value="0">自动（跟随上文）</option>
+            <option v-for="level in 6" :key="level" :value="level">H{{ level }}</option>
           </select>
         </div>
-        <div class="toc-settings-popover__field">
-          <label class="toc-settings-popover__checkbox-label">
-            <input type="checkbox" v-model="tocSettingsDraft.hideTitle" />
-            隐藏标题
-          </label>
-        </div>
-        <div v-if="tocSettingsPopup.sourceType === 'ref-group'" class="toc-settings-popover__field">
-          <label class="toc-settings-popover__label">内容最小标题</label>
-          <select v-model.number="tocSettingsDraft.minContentLevel" class="toc-settings-popover__select">
-            <option :value="1">H1</option>
-            <option :value="2">H2</option>
-            <option :value="3">H3</option>
-            <option :value="4">H4</option>
-            <option :value="5">H5</option>
-            <option :value="6">H6</option>
-          </select>
-        </div>
+        <label
+          v-if="nodeViewToolbar.sourceType === 'refBlock'"
+          class="toc-settings-popover__checkbox-label"
+        >
+          <input v-model="tocSettingsForm.hideTitle" type="checkbox" />
+          不在目录显示外层标题
+        </label>
         <div class="toc-settings-popover__actions">
-          <button class="toc-settings-popover__btn" @click="saveTocSettings">保存</button>
-          <button class="toc-settings-popover__btn toc-settings-popover__btn--cancel" @click="closeTocSettings">取消</button>
+          <button type="button" class="toc-settings-popover__btn toc-settings-popover__btn--cancel" @click="closeTocSettingsPopover">
+            取消
+          </button>
+          <button type="button" class="toc-settings-popover__btn" @click="applyTocSettings">
+            确定
+          </button>
         </div>
       </div>
+
     </div>
 
     <!-- 选中文本工具栏 -->
@@ -2182,7 +1935,7 @@ onBeforeUnmount(() => {
   overflow: auto;
 }
 
-.page-toc__item {
+.page-toc :deep(.page-toc__item) {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -2197,17 +1950,17 @@ onBeforeUnmount(() => {
   transition: background 0.2s ease, color 0.2s ease, transform 0.2s ease;
 }
 
-.page-toc__item:hover {
+.page-toc :deep(.page-toc__item:hover) {
   background: rgba(22, 119, 255, 0.08);
   color: #0958d9;
 }
 
-.page-toc__item--active {
+.page-toc :deep(.page-toc__item--active) {
   background: rgba(22, 119, 255, 0.12);
   color: #0958d9;
 }
 
-.page-toc__bullet {
+.page-toc :deep(.page-toc__bullet) {
   flex: 0 0 auto;
   min-width: 26px;
   padding-top: 1px;
@@ -2216,23 +1969,25 @@ onBeforeUnmount(() => {
   color: #1677ff;
 }
 
-/* --- Ref group: top-level entry --- */
-.page-toc__item--ref {
+.page-toc :deep(.page-toc__item--ref) {
   background: rgba(139, 92, 246, 0.06);
 }
-.page-toc__item--ref:hover {
+
+.page-toc :deep(.page-toc__item--ref:hover) {
   background: rgba(139, 92, 246, 0.12);
 }
-.page-toc__item--ref.page-toc__item--active {
+
+.page-toc :deep(.page-toc__item--ref.page-toc__item--active) {
   background: rgba(139, 92, 246, 0.14);
 }
-.page-toc__bullet--group {
+
+.page-toc :deep(.page-toc__bullet--group) {
   color: #7c3aed !important;
   font-size: 10px !important;
   min-width: 20px !important;
 }
 
-.page-toc__group-count {
+.page-toc :deep(.page-toc__group-count) {
   flex: 0 0 auto;
   min-width: 18px;
   padding: 0 5px;
@@ -2244,33 +1999,36 @@ onBeforeUnmount(() => {
   text-align: center;
 }
 
-/* --- Ref-child items inside ref-group (purple heading) --- */
-.page-toc__children .page-toc__item:hover {
+.page-toc :deep(.page-toc__children .page-toc__item:hover) {
   background: rgba(139, 92, 246, 0.08);
 }
-.page-toc__children .page-toc__item--active {
+
+.page-toc :deep(.page-toc__children .page-toc__item--active) {
   background: rgba(139, 92, 246, 0.14);
 }
-.page-toc__children .page-toc__bullet,
-.page-toc__inline-ref-child .page-toc__bullet {
+
+.page-toc :deep(.page-toc__children .page-toc__bullet),
+.page-toc :deep(.page-toc__inline-ref-child .page-toc__bullet) {
   color: #8b5cf6;
 }
 
-/* --- Ref children: collapsed/expanded below group --- */
-.page-toc__local-children {
+.page-toc :deep(.page-toc__local-children) {
   display: flex;
   flex-direction: column;
   margin-left: 16px;
   padding-left: 8px;
   border-left: 1px solid #e5e7eb;
 }
-.page-toc__local-children .page-toc__group {
+
+.page-toc :deep(.page-toc__local-children .page-toc__group) {
   margin-top: 2px;
 }
-.page-toc__local-children .page-toc__group:last-child {
+
+.page-toc :deep(.page-toc__local-children .page-toc__group:last-child) {
   margin-bottom: 4px;
 }
-.page-toc__children {
+
+.page-toc :deep(.page-toc__children) {
   display: flex;
   flex-direction: column;
   margin: 2px 0 4px 14px;
@@ -2278,23 +2036,7 @@ onBeforeUnmount(() => {
   border-left: 1px solid #e5e7eb;
 }
 
-
-.page-toc__item--nodeview {
-  padding: 6px 10px 6px 14px;
-}
-.page-toc__item--nodeview:hover {
-  background: rgba(22, 119, 255, 0.08);
-}
-.page-toc__bullet--nodeview {
-  flex: 0 0 auto;
-  min-width: 34px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #1677ff;
-  letter-spacing: 0.04em;
-}
-
-.page-toc__text {
+.page-toc :deep(.page-toc__text) {
   flex: 1;
   min-width: 0;
   font-size: 13px;
@@ -2302,55 +2044,24 @@ onBeforeUnmount(() => {
   word-break: break-word;
 }
 
-.page-toc__item--level-2 {
+.page-toc :deep(.page-toc__item--level-2) {
   padding-left: 18px;
 }
 
-.page-toc__item--level-3 {
+.page-toc :deep(.page-toc__item--level-3) {
   padding-left: 28px;
 }
 
-.page-toc__item--level-4 {
+.page-toc :deep(.page-toc__item--level-4) {
   padding-left: 38px;
 }
 
-.page-toc__item--level-5 {
+.page-toc :deep(.page-toc__item--level-5) {
   padding-left: 48px;
 }
 
-.page-toc__item--level-6 {
+.page-toc :deep(.page-toc__item--level-6) {
   padding-left: 58px;
-}
-
-.page-toc__settings-trigger {
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: #9ca3af;
-  font-size: 13px;
-  cursor: pointer;
-  line-height: 1;
-  padding: 0;
-  opacity: 0;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
-}
-.page-toc__item--ref:hover .page-toc__settings-trigger,
-.page-toc__item--ref:focus-within .page-toc__settings-trigger,
-.page-toc__item--nodeview:hover .page-toc__settings-trigger,
-.page-toc__item--nodeview:focus-within .page-toc__settings-trigger,
-.page-toc__inline-ref-child:hover .page-toc__settings-trigger,
-.page-toc__inline-ref-child:focus-within .page-toc__settings-trigger {
-  opacity: 1;
-}
-.page-toc__settings-trigger:hover {
-  background: rgba(0, 0, 0, 0.06);
-  color: #4b5563;
 }
 
 .toc-settings-popover {

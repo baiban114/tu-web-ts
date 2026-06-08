@@ -40,11 +40,23 @@ const isRichTextBlock = (block: Block | undefined): boolean => {
   return Boolean(block && (block.type === 'richtext' || block.type === 'richText'));
 };
 
+const getExternalResourceExcerptBlocks = (block: Block): Block[] | null => {
+  const excerptText = block.externalResource?.snapshot?.excerptText?.trim();
+  if (block.type !== 'externalResource' || !excerptText) return null;
+  return [{ id: block.id, type: 'richtext', content: excerptText }];
+};
+
 const renderFallbackText = (block: Block): string => {
   if (block.type === 'x6') return block.title?.trim() || '画板';
   if (block.type === 'table') return block.title?.trim() || '表格';
   if (block.type === 'multiTable') return block.title?.trim() || '多维表格';
   if (block.type === 'line') return block.title?.trim() || '时间轴';
+  if (block.type === 'externalResource') {
+    return block.externalResource?.snapshot?.excerptTitle
+      || block.externalResource?.snapshot?.resourceTitle
+      || block.title?.trim()
+      || '外部资源';
+  }
   if (block.type === 'container') return block.title?.trim() || '组合单元';
   return block.content ?? '';
 };
@@ -202,6 +214,13 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
       :timelineData="block.timelineData"
       class="block-content board-content"
     />
+    <TuEditor
+      v-else-if="getExternalResourceExcerptBlocks(block)"
+      :key="`ref-external-resource-${block.id}`"
+      :blocks="getExternalResourceExcerptBlocks(block)!"
+      :editable="editable"
+      class="block-content referenced-excerpt-editor"
+    />
     <div
       v-else-if="block.type === 'container'"
       :key="`ref-container-${block.id}`"
@@ -259,6 +278,10 @@ const startChildResize = (event: MouseEvent, childIndex: number, edge: ResizeEdg
   flex-direction: column;
   gap: 10px;
   min-width: 0;
+}
+
+.referenced-excerpt-editor :deep(.tu-editor-content) {
+  padding: 0 !important;
 }
 
 .referenced-container {
