@@ -516,10 +516,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     };
   }
 
-  async function removePage(id: string) {
+  async function removePage(id: string, options?: { refreshTree?: boolean }) {
     await deletePage(id);
     clearLocalFileBinding(id);
-    if (currentKbId.value) {
+    if (options?.refreshTree !== false && currentKbId.value) {
       pageTree.value = await getPageTree(currentKbId.value);
     }
     if (currentPageId.value === id) {
@@ -527,6 +527,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       currentPageTitleOverride.value = null;
       blockSyncManager.setPageId(null);
       pageContent.value = null;
+    }
+  }
+
+  async function removePages(ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    for (const id of uniqueIds) {
+      await removePage(id, { refreshTree: false });
+    }
+    if (currentKbId.value) {
+      pageTree.value = await getPageTree(currentKbId.value);
     }
   }
 
@@ -587,6 +597,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     importRoadmapJson,
     syncKnowledgeRoadmapToSource,
     removePage,
+    removePages,
     reorderPage,
     renameCurrentPage,
     promoteEmbedToPage,

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, nextTick, computed } from 'vue';
+import { ref, nextTick, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import {
   ElScrollbar,
   ElTree,
@@ -23,10 +23,222 @@ import RoadmapImportButton from './RoadmapImportButton.vue';
 const store = useWorkspaceStore();
 
 const treeRef = ref<InstanceType<typeof ElTree>>()
+const pageTreeFocusRef = ref<HTMLElement | null>(null)
 const allTreeExpanded = ref(false)
+
+const selectedPageIds = ref<Set<string>>(new Set())
+const selectionAnchorId = ref<string | null>(null)
 
 const showAddKbDialog = ref(false);
 const newKbName = ref('');
+const renamingId = ref<string | null>(null);
+const renameValue = ref('');
+const renameInputRef = ref<InstanceType<typeof ElInput> | null>(null);
+
+function findPageInTree(nodes: PageItem[], pageId: string): PageItem | null {
+  for (const node of nodes) {
+    if (node.id === pageId) return node;
+    if (node.children?.length) {
+      const found = findPageInTree(node.children, pageId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function findPageById(pageId: string): PageItem | null {
+  return findPageInTree(store.pageTree, pageId);
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+}
+
+function isPageSelected(pageId: string): boolean {
+  return selectedPageIds.value.has(pageId);
+}
+
+function setSingleSelection(pageId: string) {
+  selectedPageIds.value = new Set([pageId]);
+  selectionAnchorId.value = pageId;
+}
+
+function togglePageSelection(pageId: string) {
+  const next = new Set(selectedPageIds.value);
+  if (next.has(pageId)) {
+    next.delete(pageId);
+  } else {
+    next.add(pageId);
+  }
+  selectedPageIds.value = next;
+}
+
+function getVisiblePageOrder(): PageItem[] {
+  const tree = treeRef.value;
+  if (!tree) return [];
+
+  const result: PageItem[] = [];
+  const visit = (node: { data: PageItem; expanded: boolean; childNodes: Array<{ data: PageItem; expanded: boolean; childNodes: unknown[] }> }) => {
+    result.push(node.data);
+    if (node.expanded) {
+      node.childNodes.forEach((child) => visit(child as typeof node));
+    }
+  };
+
+  tree.store.root.childNodes.forEach((node) => visit(node as Parameters<typeof visit>[0]));
+  return result;
+}
+
+function selectVisibleRange(fromId: string, toId: string) {
+  const order = getVisiblePageOrder();
+  const fromIdx = order.findIndex((page) => page.id === fromId);
+  const toIdx = order.findIndex((page) => page.id === toId);
+  if (fromIdx < 0 || toIdx < 0) return;
+
+  const [start, end] = fromIdx <= toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+  const next = new Set(selectedPageIds.value);
+  for (let i = start; i <= end; i += 1) {
+    next.add(order[i].id);
+  }
+  selectedPageIds.value = next;
+}
+
+function isDescendantOf(pageId: string, ancestorId: string): boolean {
+  let parentId = findPageById(pageId)?.parentId ?? null;
+  while (parentId) {
+    if (parentId === ancestorId) return true;
+    parentId = findPageById(parentId)?.parentId ?? null;
+  }
+  return false;
+}
+
+function getTopLevelSelectedIds(ids: Set<string>): string[] {
+  return [...ids].filter((id) => (
+    ![...ids].some((other) => other !== id && isDescendantOf(id, other))
+  ));
+}
+
+function getPagesToDelete(): PageItem[] {
+  const ids = selectedPageIds.value.size > 0
+    ? selectedPageIds.value
+    : store.currentPageId
+      ? new Set([store.currentPageId])
+      : new Set<string>();
+
+  return getTopLevelSelectedIds(ids)
+    .map((id) => findPageById(id))
+    .filter((page): page is PageItem => page != null);
+}
+
+function focusPageTree() {
+  pageTreeFocusRef.value?.focus();
+}
+
+function buildDeleteConfirmMessage(pages: PageItem[]): string {
+  if (pages.length === 1) {
+    return `确认删除“${pages[0].title}”及其所有子页面？`;
+  }
+  return `确认删除选中的 ${pages.length} 个页面及其所有子页面？`;
+}
+
+async function confirmPageDelete(pages: PageItem[]): Promise<boolean> {
+  let keyHandler: ((event: KeyboardEvent) => void) | null = null;
+
+  const confirmPromise = ElMessageBox.confirm(
+    buildDeleteConfirmMessage(pages),
+    '删除确认',
+    {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      distinguishCancelAndClose: true,
+    },
+  );
+
+  await nextTick();
+  keyHandler = (event: KeyboardEvent) => {
+    if (event.key !== 'Delete') return;
+    if (isTypingTarget(event.target)) return;
+    const messageBox = document.querySelector('.el-message-box');
+    if (!messageBox) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const confirmBtn = messageBox.querySelector('.el-message-box__btns .el-button--primary') as HTMLButtonElement | null;
+    confirmBtn?.click();
+  };
+  document.addEventListener('keydown', keyHandler, true);
+
+  try {
+    await confirmPromise;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (keyHandler) {
+      document.removeEventListener('keydown', keyHandler, true);
+    }
+  }
+}
+
+async function deleteSelectedPages(pages: PageItem[]) {
+  if (pages.length === 0) return;
+  const confirmed = await confirmPageDelete(pages);
+  if (!confirmed) return;
+
+  for (let i = 0; i < pages.length; i += 1) {
+    await store.removePage(pages[i].id, { refreshTree: i === pages.length - 1 });
+  }
+  selectedPageIds.value = new Set();
+  selectionAnchorId.value = null;
+  ElMessage.success(pages.length === 1 ? '已删除' : `已删除 ${pages.length} 个页面`);
+}
+
+function shouldHandlePageDeleteKey(event: KeyboardEvent): boolean {
+  if (event.key !== 'Delete') return false;
+  if (isTypingTarget(event.target)) return false;
+  if (renamingId.value) return false;
+  if (showAddKbDialog.value) return false;
+  if (document.querySelector('.el-message-box')) return false;
+
+  const inLeftPanel = (event.target as HTMLElement | null)?.closest('.left-panel');
+  if (selectedPageIds.value.size <= 1 && !inLeftPanel) return false;
+
+  return getPagesToDelete().length > 0;
+}
+
+function handlePageDeleteKeydown(event: KeyboardEvent) {
+  if (!shouldHandlePageDeleteKey(event)) return;
+  event.preventDefault();
+  void deleteSelectedPages(getPagesToDelete());
+}
+
+watch(
+  () => store.currentPageId,
+  (pageId) => {
+    if (selectedPageIds.value.size <= 1) {
+      selectedPageIds.value = pageId ? new Set([pageId]) : new Set();
+      if (pageId) selectionAnchorId.value = pageId;
+    }
+  },
+);
+
+watch(
+  () => store.currentKbId,
+  () => {
+    selectedPageIds.value = new Set();
+    selectionAnchorId.value = null;
+  },
+);
+
+onMounted(() => {
+  document.addEventListener('keydown', handlePageDeleteKeydown, true);
+});
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handlePageDeleteKeydown, true);
+});
 
 async function onSelectKb(kbId: string) {
   if (store.currentKbId === kbId) return;
@@ -60,6 +272,8 @@ async function onDeleteKb(id: string, name: string) {
   }
 }
 
+const selectedPageCount = computed(() => selectedPageIds.value.size);
+
 const treeProps = {
   label: 'title',
   children: 'children',
@@ -70,15 +284,42 @@ const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageItem | n
 function onNodeContextMenu(event: Event, data: unknown) {
   (event as MouseEvent).preventDefault();
   const e = event as MouseEvent;
-  contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node: data as PageItem };
+  const node = data as PageItem;
+  if (!isPageSelected(node.id) && !(e.ctrlKey || e.metaKey || e.shiftKey)) {
+    setSingleSelection(node.id);
+    void store.selectPage(node.id);
+  }
+  contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node };
 }
 
 function closeContextMenu() {
   contextMenu.value.visible = false;
 }
 
-function onNodeClick(data: PageItem) {
-  store.selectPage(data.id);
+function onNodeClick(data: PageItem, _node: unknown, _instance: unknown, event: MouseEvent) {
+  const multi = event.ctrlKey || event.metaKey;
+  const range = event.shiftKey;
+
+  if (range) {
+    const anchor = selectionAnchorId.value ?? store.currentPageId ?? data.id;
+    selectionAnchorId.value = anchor;
+    selectVisibleRange(anchor, data.id);
+    void store.selectPage(data.id);
+    focusPageTree();
+    return;
+  }
+
+  if (multi) {
+    togglePageSelection(data.id);
+    selectionAnchorId.value = data.id;
+    void store.selectPage(data.id);
+    focusPageTree();
+    return;
+  }
+
+  setSingleSelection(data.id);
+  void store.selectPage(data.id);
+  focusPageTree();
 }
 
 async function onCreateChild(parentId: string, pageType: PageType = 'document') {
@@ -109,26 +350,17 @@ function onCreateRootCommand(command: string | number | object) {
 
 async function onDeletePage(node: PageItem) {
   closeContextMenu();
-  try {
-    await ElMessageBox.confirm(
-      `确认删除“${node.title}”及其所有子页面？`,
-      '删除确认',
-      {
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-      },
-    );
-    await store.removePage(node.id);
-    ElMessage.success('已删除');
-  } catch {
-    // ignore cancel
+  if (selectedPageIds.value.size > 1 && isPageSelected(node.id)) {
+    await deleteSelectedPages(getPagesToDelete());
+    return;
   }
+  await deleteSelectedPages([node]);
 }
 
-const renamingId = ref<string | null>(null);
-const renameValue = ref('');
-const renameInputRef = ref<InstanceType<typeof ElInput> | null>(null);
+async function onDeleteSelectedPages() {
+  closeContextMenu();
+  await deleteSelectedPages(getPagesToDelete());
+}
 
 function onStartRename(node: PageItem) {
   closeContextMenu();
@@ -280,6 +512,11 @@ function collapseAllTree() {
         </div>
       </div>
 
+      <div
+        ref="pageTreeFocusRef"
+        class="page-tree-scroll-host"
+        tabindex="-1"
+      >
       <el-scrollbar class="page-tree-scroll">
         <el-tree
           ref="treeRef"
@@ -297,7 +534,10 @@ function collapseAllTree() {
           class="page-tree"
         >
           <template #default="{ node, data }">
-            <span class="tree-node">
+            <span
+              class="tree-node"
+              :class="{ 'tree-node--selected': isPageSelected(data.id) }"
+            >
               <span
                 class="node-icon"
                 aria-hidden="true"
@@ -349,6 +589,7 @@ function collapseAllTree() {
           请先选择知识库
         </div>
       </el-scrollbar>
+      </div>
     </div>
 
     <Teleport to="body">
@@ -371,8 +612,11 @@ function collapseAllTree() {
           重命名
         </div>
         <div class="context-menu-divider" />
-        <div class="context-menu-item context-menu-item--danger" @click="onDeletePage(contextMenu.node!)">
-          删除
+        <div
+          class="context-menu-item context-menu-item--danger"
+          @click="selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? onDeleteSelectedPages() : onDeletePage(contextMenu.node!)"
+        >
+          {{ selectedPageCount > 1 && contextMenu.node && isPageSelected(contextMenu.node.id) ? `删除 ${selectedPageCount} 个页面` : '删除' }}
         </div>
       </div>
     </Teleport>
@@ -513,6 +757,19 @@ function collapseAllTree() {
   flex-shrink: 0;
 }
 
+.page-tree-scroll-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.page-tree-scroll-host:focus-visible {
+  box-shadow: inset 0 0 0 2px rgba(22, 119, 255, 0.25);
+  border-radius: 6px;
+}
+
 .page-tree-scroll {
   flex: 1;
   padding: 0 4px 8px;
@@ -534,6 +791,15 @@ function collapseAllTree() {
 
 .page-tree :deep(.el-tree-node.is-current > .el-tree-node__content) {
   background: #e6f4ff;
+  color: #1677ff;
+}
+
+.page-tree :deep(.el-tree-node__content:has(.tree-node--selected)) {
+  background: #d6eaff;
+}
+
+.page-tree :deep(.el-tree-node.is-current > .el-tree-node__content:has(.tree-node--selected)) {
+  background: #bae0ff;
   color: #1677ff;
 }
 
