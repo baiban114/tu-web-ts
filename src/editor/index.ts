@@ -4,6 +4,9 @@ export { AnnotationDecorations, annotationDecorationsKey } from './extensions/An
 export { SelectionDecorations, selectionDecorationsKey } from './extensions/SelectionDecorations'
 
 export { ParagraphNode } from './extensions/ParagraphNode'
+export { HeadingNode } from './extensions/HeadingNode'
+export { HeadingSourceDecorations, headingSourceDecorationsKey } from './extensions/HeadingSourceDecorations'
+export { HeadingSectionFold, headingSectionFoldKey } from './extensions/HeadingSectionFold'
 export { X6BlockNode } from './extensions/X6BlockNode'
 export { TimelineBlockNode } from './extensions/TimelineBlockNode'
 export { RefBlockNode } from './extensions/RefBlockNode'

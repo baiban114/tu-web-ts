@@ -187,6 +187,14 @@ export interface ExternalResourceEmbedData {
   snapshot: ExternalResourceSnapshot;
 }
 
+/** 标题节点绑定的外部资源节选（持久化于 heading attrs + markdown 注释） */
+export interface HeadingSourceBinding {
+  resourceItemId: string;
+  resourceExcerptId: string;
+  snapshot: Pick<ExternalResourceSnapshot,
+    'resourceTitle' | 'resourceTypeName' | 'excerptTitle' | 'excerptLocator'>;
+}
+
 /**
  * 嵌入对象 — 非文本类型的内容，在 markdown content 中用占位符标记位置。
  * 占位符格式: <!--tu:embed id="..." type="..."-->

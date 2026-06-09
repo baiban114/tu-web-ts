@@ -106,6 +106,22 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Resource',
   },
   {
+    id: 'heading-source-binding',
+    module: '外部资源',
+    name: '标题标记来源',
+    description: '在 Markdown 标题上绑定 ResourceExcerpt，持久化于文档注释，编辑器与目录可识别并跳转资源页。',
+    status: 'testing',
+    owner: 'Resource',
+  },
+  {
+    id: 'heading-section-fold',
+    module: '富文本',
+    name: '标题节折叠',
+    description: '正文标题左侧 ▶/▼ 折叠/展开该标题下至同级标题前的内容；仅隐藏视图，折叠状态持久化为 tu:heading-fold 注释。',
+    status: 'testing',
+    owner: 'Editor',
+  },
+  {
     id: 'local-file-sync',
     module: '存储',
     name: '本地文件绑定保存',

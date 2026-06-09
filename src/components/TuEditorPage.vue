@@ -1,6 +1,7 @@
 ﻿<script setup lang="ts">
-import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
-import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
+import { useRouter } from 'vue-router'
+import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import { pageContentToTipTap, tipTapToPageContent } from '@/editor/converters'
 import TuEditor from './TuEditor.vue'
 import TocTreeList from './TocTreeList.vue'
@@ -22,14 +23,10 @@ import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import {
-  applyRefContentHeadingShift,
   buildHeadingTree,
-  computeRefWrapperLevel,
-  extractRichTextHeadingsFromBlocks,
-  findParentHeadingLevel,
-  type FlatTocEntry,
   type TocTreeItem,
 } from '@/utils/toc/headings'
+import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 
 type LinkDisplayMode = 'link' | 'image'
 
@@ -242,6 +239,7 @@ watch(() => nodeViewToolbar.visible, (visible, wasVisible) => {
 })
 
 const workspaceStore = useWorkspaceStore()
+const router = useRouter()
 const registryStore = useBlockRegistryStore()
 
 interface Props {
@@ -269,7 +267,7 @@ const pageTitleEditing = ref(false)
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const showResourcePicker = ref(false)
-const resourcePickerMode = ref<'insert' | 'markExcerpt'>('insert')
+const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource'>('insert')
 const pendingResourceExcerptText = ref('')
 const pendingResourceExcerptTitle = ref('')
 const highlightedBlockId = ref<string | null>(null)
@@ -318,13 +316,46 @@ const selectionTo = ref(0)
 const selectionSpannedBlockIds = ref<string[]>([])
 const selectionSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let selectionToolbarTimer: ReturnType<typeof setTimeout> | null = null
+const selectionStateVersion = ref(0)
+
+const isSelectionInHeading = computed(() => {
+  selectionStateVersion.value
+  return tuEditorRef.value?.isSelectionInHeading?.() ?? false
+})
+
+const headingSourceBindingAtSelection = computed(() => {
+  selectionStateVersion.value
+  return tuEditorRef.value?.getHeadingSourceBindingAtSelection?.() ?? null
+})
 
 const canAddNoteFromSelection = computed(() => {
   return hasSelection.value && (selectedText.value.trim().length > 0 || selectionSpannedBlockIds.value.length > 0)
 })
 
 const canMarkResourceExcerptFromSelection = computed(() => {
-  return hasSelection.value && selectedText.value.trim().length > 0
+  return hasSelection.value && selectedText.value.trim().length > 0 && !isSelectionInHeading.value
+})
+
+const canMarkHeadingSourceFromSelection = computed(() => {
+  return hasSelection.value && isSelectionInHeading.value
+})
+
+const canClearHeadingSourceFromSelection = computed(() => {
+  return hasSelection.value && isSelectionInHeading.value && Boolean(headingSourceBindingAtSelection.value)
+})
+
+const canShowSelectionToolbar = computed(() => (
+  canAddNoteFromSelection.value
+  || canMarkResourceExcerptFromSelection.value
+  || canMarkHeadingSourceFromSelection.value
+  || canClearHeadingSourceFromSelection.value
+))
+
+const tocContextMenu = ref<{ visible: boolean; top: number; left: number; item: TocItem | null }>({
+  visible: false,
+  top: 0,
+  left: 0,
+  item: null,
 })
 
 const clearSelectionToolbarTimer = () => {
@@ -549,12 +580,13 @@ const handleSelectionChange = (
   selectionBlockId.value = selBlockId ?? ''
   selectionSpannedBlockIds.value = selSpannedBlockIds ?? []
   selectionSpannedBlockMetadata.value = selSpannedBlockMetadata ?? []
+  selectionStateVersion.value += 1
 
   if (selHasSelection && tuEditorRef.value) {
     updateSelectionToolbarPosition()
     selectionToolbarTimer = setTimeout(() => {
       selectionToolbarTimer = null
-      selectionToolbarVisible.value = canAddNoteFromSelection.value
+      selectionToolbarVisible.value = canShowSelectionToolbar.value
       updateSelectionToolbarPosition()
     }, 120)
   } else {
@@ -649,6 +681,98 @@ const handleResourceExcerptCreated = (payload: { excerpt: { title: string } }) =
   showToast(`已创建外部资源节选：${payload.excerpt.title}`)
 }
 
+const navigateToHeadingSource = (binding: HeadingSourceBinding) => {
+  void router.push({
+    path: '/resources',
+    query: {
+      tab: 'items',
+      itemId: binding.resourceItemId,
+      excerptId: binding.resourceExcerptId,
+    },
+  })
+}
+
+const handleHeadingSourceClick = (binding: HeadingSourceBinding) => {
+  navigateToHeadingSource(binding)
+}
+
+const handleMarkHeadingSourceFromSelection = () => {
+  if (!canMarkHeadingSourceFromSelection.value) return
+  const headingText = tuEditorRef.value?.getHeadingTextAtSelection?.() || selectedText.value.trim()
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = headingText
+  resourcePickerMode.value = 'bindSource'
+  showResourcePicker.value = true
+  hideSelectionToolbar()
+}
+
+const handleClearHeadingSourceFromSelection = () => {
+  if (!canClearHeadingSourceFromSelection.value) return
+  tuEditorRef.value?.clearHeadingSourceBinding?.()
+  tuEditorRef.value?.flushContentChange?.()
+  hideSelectionToolbar()
+  showToast('已解除标题来源')
+}
+
+const handleBindHeadingSource = (payload: { binding: HeadingSourceBinding }) => {
+  tuEditorRef.value?.applyHeadingSourceBinding?.(payload.binding)
+  tuEditorRef.value?.flushContentChange?.()
+  showResourcePicker.value = false
+  resourcePickerMode.value = 'insert'
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = ''
+  showToast(`已标记标题来源：${payload.binding.snapshot.excerptTitle || payload.binding.snapshot.resourceTitle || '外部资源'}`)
+}
+
+const focusHeadingAtTocItem = (item: TocItem) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const from = Math.max(1, Math.min(item.pos + 1, editor.state.doc.content.size - 1))
+  editor.commands.setTextSelection({ from, to: from })
+}
+
+const closeTocContextMenu = () => {
+  tocContextMenu.value.visible = false
+  tocContextMenu.value.item = null
+}
+
+const handleTocContextMenu = (item: TocItem, event: MouseEvent) => {
+  if (item.sourceType !== 'local') return
+  event.preventDefault()
+  tocContextMenu.value = {
+    visible: true,
+    top: event.clientY,
+    left: event.clientX,
+    item,
+  }
+}
+
+const handleTocMarkSource = () => {
+  const item = tocContextMenu.value.item
+  if (!item) return
+  focusHeadingAtTocItem(item)
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = item.text
+  resourcePickerMode.value = 'bindSource'
+  showResourcePicker.value = true
+  closeTocContextMenu()
+}
+
+const handleTocClearSource = () => {
+  const item = tocContextMenu.value.item
+  if (!item?.sourceBinding) return
+  focusHeadingAtTocItem(item)
+  tuEditorRef.value?.clearHeadingSourceBinding?.()
+  tuEditorRef.value?.flushContentChange?.()
+  closeTocContextMenu()
+  showToast('已解除标题来源')
+}
+
+const handleTocSourceClick = (item: TocItem) => {
+  if (!item.sourceBinding) return
+  navigateToHeadingSource(item.sourceBinding)
+}
+
 const handleResourcePickerVisibleChange = (visible: boolean) => {
   showResourcePicker.value = visible
   if (!visible) {
@@ -710,183 +834,21 @@ function findPageTitle(pageId: string): string {
   return walk(workspaceStore.pageTree) ?? pageId
 }
 
-function appendEmbedTocEntries(
-  flat: FlatTocEntry[],
-  options: {
-    blockId: string
-    pos: number
-    wrapperLevel: number
-    groupTitle: string
-    contentBlocks: Block[]
-    contentParentLevel: number
-    refId?: string
-    includeGroup: boolean
-  },
-) {
-  const {
-    blockId,
-    pos,
-    wrapperLevel,
-    groupTitle,
-    contentBlocks,
-    contentParentLevel,
-    refId,
-    includeGroup,
-  } = options
+const tocCollectContext = computed<TocCollectContext>(() => ({
+  blocks: localBlocks.value,
+  getPageBlocks: (pageId: string) => registryStore.getPageBlocks(pageId),
+  getBlock: (id: string) => registryStore.getBlock(id),
+  getBlockMeta: (id: string) => registryStore.getMeta(id),
+  getPageTitle: findPageTitle,
+}))
 
-  if (includeGroup && groupTitle && wrapperLevel > 0) {
-    flat.push({
-      id: `ref-group-${blockId}`,
-      blockId,
-      level: wrapperLevel,
-      text: groupTitle,
-      pos,
-      sortIndex: 0,
-      sourceType: 'ref-group',
-      refId,
-    })
-  }
-
-  const shiftedBlocks = applyRefContentHeadingShift(contentBlocks, contentParentLevel)
-  const contentHeadings = extractRichTextHeadingsFromBlocks(shiftedBlocks)
-  contentHeadings.forEach((heading, index) => {
-    flat.push({
-      id: `ref-child-${blockId}-${index}`,
-      blockId,
-      level: heading.level,
-      text: heading.text,
-      pos,
-      sortIndex: index + 1,
-      sourceType: 'ref-child',
-      refId,
-      targetText: heading.text,
-    })
-  })
-}
+provide('tocCollectContext', tocCollectContext)
 
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return []
 
-  const blockTitleMap = new Map<string, string>()
-  const refMetaMap = new Map<string, { refId: string; refType: string }>()
-  for (const block of localBlocks.value) {
-    if (!block.id) continue
-    if (block.title) blockTitleMap.set(block.id, block.title)
-    if (block.type === 'ref' && block.refId) {
-      refMetaMap.set(block.id, { refId: block.refId, refType: block.refType ?? 'block' })
-    }
-  }
-
-  const flat: FlatTocEntry[] = []
-  const doc = editor.state.doc
-
-  doc.descendants((node, pos) => {
-    const typeName = node.type.name
-
-    if (typeName === 'heading') {
-      const text = node.textContent.trim()
-      if (text) {
-        flat.push({
-          id: `h-${pos}`,
-          blockId: node.attrs?.blockId || `heading-${pos}`,
-          level: node.attrs?.level || 1,
-          text,
-          pos,
-          sortIndex: 0,
-          sourceType: 'local',
-        })
-      }
-      return true
-    }
-
-    if (typeName === 'refBlock') {
-      const blockId: string = node.attrs?.blockId || ''
-      const refId: string = node.attrs?.refId || refMetaMap.get(blockId)?.refId || ''
-      const refType: string = node.attrs?.refType || refMetaMap.get(blockId)?.refType || 'block'
-      if (!blockId || !refId) return true
-
-      let refBlocks: Block[] = []
-      if (refType === 'page') {
-        refBlocks = registryStore.getPageBlocks(refId)
-      } else {
-        const refBlock = registryStore.getBlock(refId)
-        if (refBlock) refBlocks = [refBlock]
-      }
-
-      const tocSettings = (node.attrs?.metadata as Record<string, unknown> | undefined)?.tocSettings as
-        | { hideTitle?: boolean }
-        | undefined
-      const hideTitle = Boolean(tocSettings?.hideTitle)
-      const wrapperLevel = hideTitle ? 0 : computeRefWrapperLevel(node.attrs, doc, pos)
-      const contentParentLevel = hideTitle
-        ? findParentHeadingLevel(doc, pos)
-        : wrapperLevel > 0
-          ? wrapperLevel
-          : findParentHeadingLevel(doc, pos)
-
-      let groupTitle = ''
-      if (!hideTitle) {
-        if (refType === 'page') {
-          groupTitle = findPageTitle(refId) || refId
-        } else {
-          const meta = registryStore.getMeta(refId)
-          groupTitle = meta?.pageTitle || blockTitleMap.get(blockId) || node.attrs?.title || '引用'
-        }
-      }
-
-      appendEmbedTocEntries(flat, {
-        blockId,
-        pos,
-        wrapperLevel,
-        groupTitle,
-        contentBlocks: refBlocks,
-        contentParentLevel,
-        refId,
-        includeGroup: !hideTitle,
-      })
-      return true
-    }
-
-    if (typeName === 'externalResourceBlock') {
-      const blockId: string = node.attrs?.blockId || ''
-      if (!blockId) return true
-
-      const embedData = node.attrs?.externalResource as ExternalResourceEmbedData | undefined
-      const snapshot = embedData?.snapshot
-      const isExcerpt = embedData?.mode === 'excerpt' || Boolean(embedData?.resourceExcerptId)
-      const excerptText = snapshot?.excerptText?.trim() || ''
-      const attrsHeadingLevel = Number(
-        node.attrs?.headingLevel
-        || (node.attrs?.metadata as { tocSettings?: { titleLevel?: number } } | undefined)?.tocSettings?.titleLevel
-        || 0,
-      )
-      const wrapperLevel = attrsHeadingLevel > 0 ? attrsHeadingLevel : 0
-      const contentParentLevel = attrsHeadingLevel > 0
-        ? attrsHeadingLevel
-        : findParentHeadingLevel(doc, pos)
-      const groupTitle = String(
-        node.attrs?.title || (isExcerpt ? snapshot?.excerptTitle : snapshot?.resourceTitle) || '',
-      )
-      const contentBlocks: Block[] = excerptText
-        ? [{ id: blockId, type: 'richtext', content: excerptText }]
-        : []
-
-      appendEmbedTocEntries(flat, {
-        blockId,
-        pos,
-        wrapperLevel,
-        groupTitle,
-        contentBlocks,
-        contentParentLevel,
-        includeGroup: attrsHeadingLevel > 0,
-      })
-      return true
-    }
-
-    return true
-  })
-
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
   if (flat.length === 0) return []
   return buildHeadingTree(flat)
 })
@@ -1360,6 +1322,7 @@ const handleGlobalPaste = (event: ClipboardEvent) => {
 // --- Lifecycle ---
 onMounted(() => {
   document.addEventListener('paste', handleGlobalPaste, true)
+  document.addEventListener('click', closeTocContextMenu)
 
   blockSyncManager.onStatusChange((status, error) => {
     if (status === 'syncing') {
@@ -1379,6 +1342,7 @@ onBeforeUnmount(() => {
     annotationPersistTimer = null
   }
   document.removeEventListener('paste', handleGlobalPaste, true)
+  document.removeEventListener('click', closeTocContextMenu)
   blockSyncManager.destroy()
 })
 </script>
@@ -1504,6 +1468,7 @@ onBeforeUnmount(() => {
           @open-resource-picker="handleOpenResourcePicker"
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
+          @heading-source-click="handleHeadingSourceClick"
         />
 
         <!-- 文档末尾插入按钮 -->
@@ -1548,6 +1513,8 @@ onBeforeUnmount(() => {
               :is-expanded="isTocItemExpanded"
               @click="handleTocItemClick"
               @toggle="toggleTocItem"
+              @context-menu="handleTocContextMenu"
+              @source-click="handleTocSourceClick"
             />
           </div>
         </div>
@@ -1636,8 +1603,12 @@ onBeforeUnmount(() => {
       :left="selectionToolbarPosition.left"
       :z-index="selectionToolbarPosition.zIndex"
       :can-mark-resource-excerpt="canMarkResourceExcerptFromSelection"
+      :can-mark-heading-source="canMarkHeadingSourceFromSelection"
+      :can-clear-heading-source="canClearHeadingSourceFromSelection"
       @add-note="handleAddNoteFromSelection"
       @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
+      @mark-heading-source="handleMarkHeadingSourceFromSelection"
+      @clear-heading-source="handleClearHeadingSourceFromSelection"
     />
 
     <!-- 引用块选择器 -->
@@ -1656,8 +1627,25 @@ onBeforeUnmount(() => {
       :initial-excerpt-title="pendingResourceExcerptTitle"
       @select="handleResourcePickerSelect"
       @excerpt-created="handleResourceExcerptCreated"
+      @bind-source="handleBindHeadingSource"
       @update:visible="handleResourcePickerVisibleChange"
     />
+
+    <div
+      v-if="tocContextMenu.visible"
+      class="toc-context-menu"
+      :style="{ top: `${tocContextMenu.top}px`, left: `${tocContextMenu.left}px` }"
+      @mousedown.prevent
+    >
+      <button type="button" @click="handleTocMarkSource">标记来源</button>
+      <button
+        v-if="tocContextMenu.item?.sourceBinding"
+        type="button"
+        @click="handleTocClearSource"
+      >
+        解除来源
+      </button>
+    </div>
 
     <!-- 标签编辑器 -->
     <BlockMetadataTagEditor
@@ -2163,6 +2151,34 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 .nodeview-toolbar__btn:hover {
+  background: #f3f4f6;
+}
+
+.toc-context-menu {
+  position: fixed;
+  z-index: 40;
+  display: grid;
+  gap: 2px;
+  min-width: 120px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+}
+
+.toc-context-menu button {
+  border: 0;
+  background: transparent;
+  color: #374151;
+  font-size: 12px;
+  text-align: left;
+  padding: 6px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.toc-context-menu button:hover {
   background: #f3f4f6;
 }
 </style>

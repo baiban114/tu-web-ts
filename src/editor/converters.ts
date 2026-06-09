@@ -1,5 +1,15 @@
-﻿import type { Block, EmbeddedObject, PageContent } from '@/api/types'
+﻿import type { Block, EmbeddedObject, HeadingSourceBinding, PageContent } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
+import {
+  HEADING_SOURCE_COMMENT_RE,
+  parseHeadingSourceComment,
+  serializeHeadingSourceComment,
+} from '@/utils/headingSource'
+import {
+  HEADING_FOLD_COMMENT_RE,
+  parseHeadingFoldComment,
+  serializeHeadingFoldComment,
+} from '@/utils/headingSection'
 
 // ─── Embed placeholder regex ───────────────────────────────────────────────
 const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
@@ -477,7 +487,47 @@ function parseMarkdown(markdown: string): JSONContent[] {
       currentQuoteLines = []
     }
 
+    let pendingHeadingBlockId: string | undefined
+    let pendingHeadingSource: { blockId: string; binding: HeadingSourceBinding } | null = null
+    let pendingSectionCollapsed = false
+
     for (const line of innerLines) {
+      const headingFoldMatch = line.match(HEADING_FOLD_COMMENT_RE)
+      if (headingFoldMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n')),
+          })
+          currentLines = []
+        }
+        const parsedFold = parseHeadingFoldComment(headingFoldMatch[1])
+        if (parsedFold) {
+          pendingHeadingBlockId = parsedFold.blockId
+          pendingSectionCollapsed = parsedFold.sectionCollapsed
+        }
+        continue
+      }
+
+      const headingSourceMatch = line.match(HEADING_SOURCE_COMMENT_RE)
+      if (headingSourceMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n')),
+          })
+          currentLines = []
+        }
+        const parsedSource = parseHeadingSourceComment(headingSourceMatch[1])
+        if (parsedSource) {
+          pendingHeadingBlockId = pendingHeadingBlockId || parsedSource.blockId
+          pendingHeadingSource = parsedSource
+        }
+        continue
+      }
+
       const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
       if (headingMatch) {
         flushCurrentQuote()
@@ -488,9 +538,22 @@ function parseMarkdown(markdown: string): JSONContent[] {
           })
           currentLines = []
         }
+        const headingAttrs: Record<string, unknown> = { level: headingMatch[1].length }
+        if (pendingHeadingBlockId) {
+          headingAttrs.blockId = pendingHeadingBlockId
+        }
+        if (pendingSectionCollapsed) {
+          headingAttrs.sectionCollapsed = true
+        }
+        if (pendingHeadingSource) {
+          headingAttrs.sourceBinding = pendingHeadingSource.binding
+        }
+        pendingHeadingBlockId = undefined
+        pendingHeadingSource = null
+        pendingSectionCollapsed = false
         nodes.push({
           type: 'heading',
-          attrs: { level: headingMatch[1].length },
+          attrs: headingAttrs,
           content: parseInlineMarkdown(headingMatch[2]),
         })
       } else if (line.startsWith('- [ ] ') || line.startsWith('- [x] ')) {
@@ -671,8 +734,20 @@ export function tipTapNodesToMarkdown(nodes: JSONContent[]): string {
 
 function nodeToMarkdown(node: JSONContent): string {
   switch (node.type) {
-    case 'heading':
-      return '#'.repeat(node.attrs?.level || 1) + ' ' + contentToMarkdown(node.content || [])
+    case 'heading': {
+      const parts: string[] = []
+      const blockId = node.attrs?.blockId as string | undefined
+      const sectionCollapsed = Boolean(node.attrs?.sectionCollapsed)
+      const sourceBinding = node.attrs?.sourceBinding as HeadingSourceBinding | null | undefined
+      if (blockId && sectionCollapsed) {
+        parts.push(serializeHeadingFoldComment(blockId))
+      }
+      if (blockId && sourceBinding?.resourceItemId && sourceBinding.resourceExcerptId) {
+        parts.push(serializeHeadingSourceComment(blockId, sourceBinding))
+      }
+      parts.push('#'.repeat(node.attrs?.level || 1) + ' ' + contentToMarkdown(node.content || []))
+      return parts.join('\n')
+    }
     case 'paragraph':
       return contentToMarkdown(node.content || [])
     case 'bulletList':

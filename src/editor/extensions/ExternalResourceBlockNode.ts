@@ -27,6 +27,7 @@ export const ExternalResourceBlockNode = Node.create({
         },
       },
       metadata: { default: {} },
+      sectionCollapsed: { default: false },
     }
   },
 

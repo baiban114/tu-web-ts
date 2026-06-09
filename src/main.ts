@@ -1,5 +1,6 @@
 import './assets/main.css'
 import './assets/dialog-viewport.css'
+import './styles/fold-bullet.css'
 import 'element-plus/dist/index.css'
 
 import { createApp } from 'vue'

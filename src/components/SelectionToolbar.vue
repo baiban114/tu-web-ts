@@ -5,16 +5,22 @@ interface Props {
   left: number
   zIndex?: number
   canMarkResourceExcerpt?: boolean
+  canMarkHeadingSource?: boolean
+  canClearHeadingSource?: boolean
 }
 
 withDefaults(defineProps<Props>(), {
   zIndex: 20,
   canMarkResourceExcerpt: true,
+  canMarkHeadingSource: false,
+  canClearHeadingSource: false,
 })
 
 const emit = defineEmits<{
   (e: 'add-note'): void
   (e: 'mark-resource-excerpt'): void
+  (e: 'mark-heading-source'): void
+  (e: 'clear-heading-source'): void
 }>()
 </script>
 
@@ -34,6 +40,24 @@ const emit = defineEmits<{
         @click="emit('add-note')"
       >
         添加笔记
+      </button>
+      <button
+        v-if="canMarkHeadingSource"
+        type="button"
+        class="selection-toolbar__btn selection-toolbar__btn--source"
+        @mousedown.prevent.stop
+        @click="emit('mark-heading-source')"
+      >
+        标记来源
+      </button>
+      <button
+        v-if="canClearHeadingSource"
+        type="button"
+        class="selection-toolbar__btn selection-toolbar__btn--clear"
+        @mousedown.prevent.stop
+        @click="emit('clear-heading-source')"
+      >
+        解除来源
       </button>
       <button
         v-if="canMarkResourceExcerpt"
@@ -83,5 +107,23 @@ const emit = defineEmits<{
 
 .selection-toolbar__btn--resource:hover {
   background: #eff6ff;
+}
+
+.selection-toolbar__btn--source {
+  border-color: #bbf7d0;
+  color: #166534;
+}
+
+.selection-toolbar__btn--source:hover {
+  background: #f0fdf4;
+}
+
+.selection-toolbar__btn--clear {
+  border-color: #fecaca;
+  color: #991b1b;
+}
+
+.selection-toolbar__btn--clear:hover {
+  background: #fef2f2;
 }
 </style>

@@ -1,5 +1,5 @@
 ﻿<script setup lang="ts">
-import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide } from 'vue'
+import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide, inject, type ComputedRef } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
 import StarterKit from '@tiptap/starter-kit'
@@ -11,7 +11,7 @@ import Underline from '@tiptap/extension-underline'
 import TextAlign from '@tiptap/extension-text-align'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
-import type { Block, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import type { Block, HeadingSourceBinding, TextAnnotation, SpannedBlockInfo } from '@/api/types'
 import {
   AnnotationDecorations,
   annotationDecorationsKey,
@@ -26,14 +26,21 @@ import {
   TableBlockNode,
   MultiTableBlockNode,
   ParagraphNode,
+  HeadingNode,
+  HeadingSourceDecorations,
+  HeadingSectionFold,
   blocksToTipTap,
   tipTapToBlocks,
 } from '@/editor'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
 import { createMindmapStarterGraphData } from '@/components/x6'
+import { createHeadingBlockId } from '@/utils/headingSource'
+import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
+import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { useWorkspaceStore } from '@/stores/workspace'
 import HoverHandle from './HoverHandle.vue'
+import HeadingSectionFoldGutter from './HeadingSectionFoldGutter.vue'
 
 interface Props {
   blocks: Block[]
@@ -60,6 +67,7 @@ const emit = defineEmits<{
   'open-block-picker': []
   'open-resource-picker': []
   'open-tag-editor': [blockId: string]
+  'heading-source-click': [binding: HeadingSourceBinding]
 }>()
 
 type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
@@ -75,6 +83,7 @@ interface InsertOption {
 const editorEl = ref<HTMLElement | null>(null)
 const hoverHandleRef = ref<InstanceType<typeof HoverHandle> | null>(null)
 const workspaceStore = useWorkspaceStore()
+const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let isInternalUpdate = false
 let skipNextContentSync = false
@@ -580,14 +589,22 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   if (handleMenuVisible.value) return
 
   const wrapperRect = editorEl.value.getBoundingClientRect()
+  const gutter = getContentScrollGutterAnchor(editorEl.value)
   const isInsideEditor = event.clientX >= wrapperRect.left
     && event.clientX <= wrapperRect.right
     && event.clientY >= wrapperRect.top
     && event.clientY <= wrapperRect.bottom
-  if (!isInsideEditor) { scheduleHideHandle(); return }
+  const isInLeftGutter = Boolean(
+    gutter
+    && event.clientX >= gutter.rect.left
+    && event.clientX < wrapperRect.left
+    && event.clientY >= wrapperRect.top
+    && event.clientY <= wrapperRect.bottom,
+  )
+  if (!isInsideEditor && !isInLeftGutter) { scheduleHideHandle(); return }
 
-  if (event.clientX < wrapperRect.left && event.clientX >= wrapperRect.left - 48 && handleVisible.value) {
-    clearHideHandle()
+  if (isInLeftGutter) {
+    if (handleVisible.value) clearHideHandle()
     return
   }
 
@@ -607,7 +624,7 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   const height = Math.max(28, lineRect.height)
 
   hoveredLineEl = domPos
-  handleFixedLeft.value = wrapperRect.left - 24
+  handleFixedLeft.value = gutter?.hoverLeft ?? (wrapperRect.left - 24)
   hoveredPos.value = pos.pos
   handleTop.value = lineRect.top
   handleHeight.value = height
@@ -766,10 +783,11 @@ const editor = useEditor({
   autofocus: false,
   extensions: [
     StarterKit.configure({
-      heading: { levels: [1, 2, 3, 4, 5, 6] },
+      heading: false,
       paragraph: false,
       codeBlock: false,
     }),
+    HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
     Image.configure({ inline: false }),
     Link.configure({ openOnClick: false }),
     Highlight.configure({ multicolor: true }),
@@ -784,6 +802,12 @@ const editor = useEditor({
       annotations: flattenedAnnotations.value,
       onAnnotationClick: (payload) => emit('annotation-click', payload),
       onAnnotationsMapped: (annotations) => emit('annotations-mapped', annotations),
+    }),
+    HeadingSourceDecorations.configure({
+      onSourceClick: (binding) => emit('heading-source-click', binding),
+    }),
+    HeadingSectionFold.configure({
+      getTocContext: () => tocCollectContext?.value ?? null,
     }),
     SelectionDecorations,
     BlockActions,
@@ -1040,6 +1064,19 @@ function duplicateBlock(blockId: string) {
   ed.chain().focus().insertContentAt(to, json).run()
 }
 
+function findHeadingAtSelection(): { pos: number; node: import('@tiptap/pm/model').Node } | null {
+  const ed = editor.value
+  if (!ed) return null
+  const { $from } = ed.state.selection
+  for (let depth = $from.depth; depth > 0; depth -= 1) {
+    const node = $from.node(depth)
+    if (node.type.name === 'heading') {
+      return { pos: $from.before(depth), node }
+    }
+  }
+  return null
+}
+
 defineExpose({
   editor,
   getSelectionAsMarkdown: () => {
@@ -1089,12 +1126,47 @@ defineExpose({
   focus: () => editor.value?.commands.focus(),
   duplicateBlock,
   flushContentChange,
+  isSelectionInHeading: () => Boolean(findHeadingAtSelection()),
+  getHeadingSourceBindingAtSelection: () => {
+    const found = findHeadingAtSelection()
+    return (found?.node.attrs.sourceBinding as HeadingSourceBinding | null) ?? null
+  },
+  getHeadingTextAtSelection: () => findHeadingAtSelection()?.node.textContent.trim() || '',
+  applyHeadingSourceBinding: (binding: HeadingSourceBinding) => {
+    const found = findHeadingAtSelection()
+    const ed = editor.value
+    if (!found || !ed) return false
+    const blockId = found.node.attrs.blockId || createHeadingBlockId()
+    ed.chain().focus().command(({ tr }) => {
+      tr.setNodeMarkup(found.pos, undefined, {
+        ...found.node.attrs,
+        blockId,
+        sourceBinding: binding,
+      })
+      return true
+    }).run()
+    return true
+  },
+  clearHeadingSourceBinding: () => {
+    const found = findHeadingAtSelection()
+    const ed = editor.value
+    if (!found || !ed) return false
+    ed.chain().focus().command(({ tr }) => {
+      tr.setNodeMarkup(found.pos, undefined, {
+        ...found.node.attrs,
+        sourceBinding: null,
+      })
+      return true
+    }).run()
+    return true
+  },
 })
 </script>
 
 <template>
   <div ref="editorEl" class="tu-editor-wrapper">
     <editor-content :editor="editor" />
+    <HeadingSectionFoldGutter :editor="editor" :wrapper-el="editorEl" />
     <div
       v-if="slashMenuVisible && filteredSlashOptions.length > 0"
       class="slash-command-menu"
@@ -1171,10 +1243,48 @@ defineExpose({
   line-height: 1.3;
 }
 
+.tu-editor-wrapper :deep(.heading-section--collapsed) {
+  display: none !important;
+}
+
+.tu-editor-wrapper :deep(.heading-section--collapsed-embed .ref-page-content),
+.tu-editor-wrapper :deep(.heading-section--collapsed-embed .ref-block-card__content),
+.tu-editor-wrapper :deep(.heading-section--collapsed-embed .external-resource-card__excerpt-editor) {
+  display: none !important;
+}
+
+.tu-editor-wrapper :deep(.heading-section--embed-section-collapsed) {
+  display: none !important;
+}
+
 .tu-editor-wrapper :deep(.tu-editor-content h1) { font-size: 2em; }
 .tu-editor-wrapper :deep(.tu-editor-content h2) { font-size: 1.5em; }
 .tu-editor-wrapper :deep(.tu-editor-content h3) { font-size: 1.25em; }
 .tu-editor-wrapper :deep(.tu-editor-content h4) { font-size: 1.1em; }
+
+.tu-editor-wrapper :deep(.heading-source-badge) {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #075985;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  vertical-align: middle;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tu-editor-wrapper :deep(.heading-source-badge:hover) {
+  background: #dbeafe;
+}
 
 .tu-editor-wrapper :deep(.tu-editor-content ul),
 .tu-editor-wrapper :deep(.tu-editor-content ol) {

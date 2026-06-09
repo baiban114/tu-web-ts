@@ -21,6 +21,7 @@ export const RefBlockNode = Node.create({
       width: { default: null },
       height: { default: null },
       metadata: { default: {} },
+      sectionCollapsed: { default: false },
     }
   },
 

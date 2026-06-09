@@ -1,4 +1,4 @@
-import type { Block } from '@/api/types'
+import type { Block, HeadingSourceBinding } from '@/api/types'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 
 export type TocSourceType = 'local' | 'ref-group' | 'ref-child'
@@ -13,6 +13,7 @@ export interface FlatTocEntry {
   sourceType: TocSourceType
   refId?: string
   targetText?: string
+  sourceBinding?: HeadingSourceBinding
 }
 
 export interface TocTreeItem {
@@ -24,6 +25,7 @@ export interface TocTreeItem {
   sourceType: TocSourceType
   refId?: string
   targetText?: string
+  sourceBinding?: HeadingSourceBinding
   children?: TocTreeItem[]
 }
 
@@ -217,6 +219,7 @@ export function buildHeadingTree(flat: FlatTocEntry[]): TocTreeItem[] {
       sourceType: entry.sourceType,
       refId: entry.refId,
       targetText: entry.targetText,
+      sourceBinding: entry.sourceBinding,
     }
 
     while (stack.length > 0 && stack[stack.length - 1].level >= node.level) {

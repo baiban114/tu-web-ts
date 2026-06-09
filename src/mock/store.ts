@@ -17,6 +17,7 @@ import {
   parseExternalUrl,
 } from '@/utils/externalUrlResource';
 import { BUILTIN_URL_CLUSTER_RULES, findWorkByClusterKey, matchUrlCluster } from '@/utils/urlCluster';
+import { HEADING_SOURCE_COMMENT_RE, parseHeadingSourceComment } from '@/utils/headingSource';
 import type {
   CreateResourceExcerptPayload,
   CreateResourceChapterPayload,
@@ -1499,6 +1500,61 @@ export function listReferencesMock(params: ListReferencesParams = {}): ListRefer
           note: excerpt?.note || snapshot.excerptNote,
         },
       });
+    }
+
+    if (pc.content) {
+      HEADING_SOURCE_COMMENT_RE.lastIndex = 0;
+      let headingMatch: RegExpExecArray | null;
+      while ((headingMatch = HEADING_SOURCE_COMMENT_RE.exec(pc.content)) !== null) {
+        const parsed = parseHeadingSourceComment(headingMatch[1]);
+        if (!parsed) continue;
+        const { blockId, binding } = parsed;
+        const item = state.resourceItems.find((entry) => entry.id === binding.resourceItemId);
+        const excerpt = state.resourceExcerpts.find((entry) => entry.id === binding.resourceExcerptId);
+        const snapshot = binding.snapshot;
+        const status = item && excerpt ? 'bound' : 'broken';
+        const haystack = [
+          pageTitle,
+          'headingSource',
+          item?.title,
+          excerpt?.title,
+          snapshot.resourceTitle,
+          snapshot.excerptTitle,
+          snapshot.excerptLocator,
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (params.q && !haystack.includes(params.q.toLowerCase())) continue;
+        if (params.resourceItemId && params.resourceItemId !== binding.resourceItemId) continue;
+
+        results.push({
+          id: `mock-heading-source-${pageId}-${blockId}`,
+          category: 'external',
+          editable: false,
+          source: {
+            pageId,
+            pageTitle,
+            blockId: 'page-content',
+            blockType: 'heading',
+            sourceKind: 'headingSource',
+            sourceLocator: `content:heading:${blockId}`,
+          },
+          target: {
+            kind: 'resource_excerpt',
+            resourceItemId: binding.resourceItemId,
+            resourceItemTitle: item?.title || snapshot.resourceTitle,
+            resourceTypeName: item?.typeName || snapshot.resourceTypeName,
+            resourceExcerptId: binding.resourceExcerptId,
+            resourceExcerptTitle: excerpt?.title || snapshot.excerptTitle,
+            resourceExcerptLocator: excerpt?.locator || snapshot.excerptLocator,
+            url: item?.sourceUrl,
+          },
+          status,
+          citation: {
+            displayText: excerpt?.title || snapshot.excerptTitle || item?.title || snapshot.resourceTitle,
+            locator: excerpt?.locator || snapshot.excerptLocator,
+            note: excerpt?.note,
+          },
+        });
+      }
     }
 
     for (const ann of (pc.annotations || [])) {

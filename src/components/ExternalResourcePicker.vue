@@ -17,7 +17,8 @@ import {
 } from '@/api/externalResource'
 import { MAX_PAGE_SIZE } from '@/constants/pagination'
 import { buildTreeFromFlat } from '@/utils/tree'
-import type { Block, ExternalResourceEmbedData } from '@/api/types'
+import type { Block, ExternalResourceEmbedData, HeadingSourceBinding } from '@/api/types'
+import { bindingFromExternalResource } from '@/utils/headingSource'
 import TuEditor from './TuEditor.vue'
 
 export interface ExternalResourcePickerSelection {
@@ -30,9 +31,13 @@ export interface ExternalResourcePickerExcerptCreated {
   excerpt: ResourceExcerpt
 }
 
+export interface ExternalResourcePickerBindSourcePayload {
+  binding: HeadingSourceBinding
+}
+
 const props = defineProps<{
   visible: boolean
-  mode?: 'insert' | 'markExcerpt'
+  mode?: 'insert' | 'markExcerpt' | 'bindSource'
   initialExcerptText?: string
   initialExcerptTitle?: string
 }>()
@@ -41,6 +46,7 @@ const emit = defineEmits<{
   (e: 'update:visible', val: boolean): void
   (e: 'select', selection: ExternalResourcePickerSelection): void
   (e: 'excerpt-created', payload: ExternalResourcePickerExcerptCreated): void
+  (e: 'bind-source', payload: ExternalResourcePickerBindSourcePayload): void
 }>()
 
 const loading = ref(false)
@@ -83,6 +89,13 @@ const selectedItemType = computed(() => selectedItem.value ? typeById.value.get(
 const selectedSupportsExcerpts = computed(() => supportsResourceExcerpts(selectedItemType.value?.code))
 const selectedSupportsBookChapters = computed(() => supportsBookChapters(selectedItemType.value?.code))
 const isMarkExcerptMode = computed(() => props.mode === 'markExcerpt')
+const isBindSourceMode = computed(() => props.mode === 'bindSource')
+const isExcerptOnlyMode = computed(() => isMarkExcerptMode.value || isBindSourceMode.value)
+const dialogTitle = computed(() => {
+  if (isBindSourceMode.value) return '标记标题来源'
+  if (isMarkExcerptMode.value) return '标记外部资源节选'
+  return '插入外部资源'
+})
 const excerptLocatorPlaceholder = computed(() => (
   selectedItemType.value?.code === 'web-link'
     ? '章节锚点 / 段落位置（可选）'
@@ -262,17 +275,29 @@ const selectResource = (item: ResourceItem) => {
   emit('update:visible', false)
 }
 
+const emitBindSource = (externalResource: ExternalResourceEmbedData) => {
+  const binding = bindingFromExternalResource(externalResource)
+  if (!binding) return
+  emit('bind-source', { binding })
+  emit('update:visible', false)
+}
+
 const selectExcerpt = (excerpt: ResourceExcerpt) => {
   const item = selectedItem.value
   if (!item) return
+  const externalResource: ExternalResourceEmbedData = {
+    resourceItemId: item.id,
+    resourceExcerptId: excerpt.id,
+    mode: 'excerpt',
+    snapshot: snapshotFor(item, excerpt),
+  }
+  if (isBindSourceMode.value) {
+    emitBindSource(externalResource)
+    return
+  }
   emit('select', {
     title: excerpt.title || item.title,
-    externalResource: {
-      resourceItemId: item.id,
-      resourceExcerptId: excerpt.id,
-      mode: 'excerpt',
-      snapshot: snapshotFor(item, excerpt),
-    },
+    externalResource,
   })
   emit('update:visible', false)
 }
@@ -294,6 +319,15 @@ const createAndInsertExcerpt = async () => {
     if (isMarkExcerptMode.value) {
       emit('excerpt-created', { item, excerpt })
       emit('update:visible', false)
+      return
+    }
+    if (isBindSourceMode.value) {
+      emitBindSource({
+        resourceItemId: item.id,
+        resourceExcerptId: excerpt.id,
+        mode: 'excerpt',
+        snapshot: snapshotFor(item, excerpt),
+      })
       return
     }
     selectExcerpt(excerpt)
@@ -323,7 +357,7 @@ watch(selectedItemId, () => {
 <template>
   <el-dialog
     :model-value="visible"
-    title="选择外部资源"
+    :title="dialogTitle"
     width="760px"
     @update:model-value="emit('update:visible', $event)"
   >
@@ -399,13 +433,13 @@ watch(selectedItemId, () => {
             </div>
           </form>
           <template v-else-if="selectedItem">
-            <div class="resource-picker__section-title">插入</div>
+            <div class="resource-picker__section-title">{{ isBindSourceMode ? '绑定来源' : '插入' }}</div>
             <h3>{{ selectedItem.title }}</h3>
             <p>{{ selectedItem.typeName }} · {{ selectedItem.workTitle || '未归类' }}</p>
             <p>{{ selectedItem.identityFieldLabel }}: {{ selectedItem.identityValue || '未填写' }}</p>
             <a v-if="selectedItem.sourceUrl" :href="selectedItem.sourceUrl" target="_blank" rel="noreferrer">{{ selectedItem.sourceUrl }}</a>
             <button
-              v-if="!isMarkExcerptMode"
+              v-if="!isExcerptOnlyMode"
               type="button"
               class="resource-picker__primary"
               @click="selectResource(selectedItem)"
@@ -457,11 +491,11 @@ watch(selectedItemId, () => {
                 </div>
                 <textarea v-model.trim="excerptForm.note" placeholder="备注，可选" rows="2" maxlength="1024" />
                 <button type="submit" :disabled="!excerptForm.title.trim()">
-                  {{ isMarkExcerptMode ? '创建节选' : '创建并插入节选' }}
+                  {{ isBindSourceMode ? '创建并绑定' : isMarkExcerptMode ? '创建节选' : '创建并插入节选' }}
                 </button>
               </form>
             </div>
-            <p v-else-if="isMarkExcerptMode" class="resource-picker__empty">
+            <p v-else-if="isExcerptOnlyMode" class="resource-picker__empty">
               当前资源类型暂不支持创建节选，请选择支持节选的资源实体。
             </p>
           </template>

@@ -463,6 +463,34 @@ async function openExcerptPanel(item: ResourceItem) {
   await loadExcerpts(item.id, 0);
 }
 
+async function applyResourceDeepLink() {
+  const itemId = typeof route.query.itemId === 'string' ? route.query.itemId : '';
+  const excerptId = typeof route.query.excerptId === 'string' ? route.query.excerptId : '';
+  if (!itemId) return;
+
+  if (activeTab.value !== 'items') {
+    activeTab.value = 'items';
+  }
+  if (items.value.length === 0) {
+    await refreshItems();
+  }
+
+  const item = items.value.find((entry) => entry.id === itemId)
+    ?? itemSelectOptions.value.find((entry) => entry.id === itemId);
+  if (!item) return;
+
+  selectedTypeId.value = item.typeId;
+  selectedWorkId.value = item.workId || '';
+  await openExcerptPanel(item);
+
+  if (!excerptId) return;
+  const excerpt = excerpts.value.find((entry) => entry.id === excerptId)
+    ?? resourceTreeExcerpts.value[item.id]?.find((entry) => entry.id === excerptId);
+  if (excerpt) {
+    editExcerpt(excerpt);
+  }
+}
+
 async function openChapterPanel(item: ResourceItem) {
   if (!supportsBookChapters(typeById.value.get(item.typeId)?.code)) return;
   selectedChapterItemId.value = item.id;
@@ -1667,6 +1695,7 @@ onMounted(async () => {
   await refreshAll();
   await refreshReferences();
   await loadOrphanedAnnotations();
+  await applyResourceDeepLink();
 });
 
 watch(
@@ -1676,6 +1705,13 @@ watch(
     if (activeTab.value === 'orphaned') {
       void loadOrphanedAnnotations();
     }
+  },
+);
+
+watch(
+  () => [route.query.itemId, route.query.excerptId],
+  () => {
+    void applyResourceDeepLink();
   },
 );
 </script>

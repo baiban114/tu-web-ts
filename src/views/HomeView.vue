@@ -226,6 +226,7 @@ watch(
   display: flex;
   flex-direction: column;
   overflow-y: auto;
+  scrollbar-gutter: stable;
   padding: 0 48px 32px;
 }
 

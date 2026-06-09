@@ -1,0 +1,191 @@
+<script setup lang="ts">
+import { inject, nextTick, onBeforeUnmount, onMounted, ref, watch, type ComputedRef } from 'vue'
+import type { CSSProperties } from 'vue'
+import type { Editor } from '@tiptap/core'
+import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import { collectFlatTocEntries, collectFlatTocEntriesFromHeadingsOnly } from '@/utils/toc/collectFlatTocEntries'
+import { isEntryCollapsed, iterTocFoldSections } from '@/utils/toc/tocSections'
+import {
+  clearEmbedChildSectionCollapses,
+  findTocFoldAnchorElement,
+  syncEmbedChildSectionCollapse,
+  toggleTocEntryCollapse,
+} from '@/utils/toc/tocSectionFoldActions'
+import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
+
+interface FoldToggleLayout {
+  entryId: string
+  collapsed: boolean
+  style: CSSProperties
+}
+
+const props = defineProps<{
+  editor?: Editor | null
+  wrapperEl?: HTMLElement | null
+}>()
+
+const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
+
+const toggles = ref<FoldToggleLayout[]>([])
+
+const boundEditors = new WeakSet<Editor>()
+
+let rafId = 0
+let scrollContainer: HTMLElement | null = null
+let resizeObserver: ResizeObserver | null = null
+
+function collectFlat(doc: import('@tiptap/pm/model').Node) {
+  const ctx = tocCollectContext?.value
+  if (ctx) return collectFlatTocEntries(doc, ctx)
+  return collectFlatTocEntriesFromHeadingsOnly(doc)
+}
+
+function syncToggles() {
+  if (rafId) cancelAnimationFrame(rafId)
+  rafId = requestAnimationFrame(() => {
+    rafId = 0
+    const ed = props.editor
+    const wrapper = props.wrapperEl
+    if (!ed || ed.isDestroyed || !wrapper) {
+      toggles.value = []
+      return
+    }
+
+    const gutterAnchor = getContentScrollGutterAnchor(wrapper)
+    if (!gutterAnchor) {
+      toggles.value = []
+      return
+    }
+
+    const doc = ed.state.doc
+    const flat = collectFlat(doc)
+    const sections = iterTocFoldSections(flat, doc)
+    const next: FoldToggleLayout[] = []
+
+    clearEmbedChildSectionCollapses(ed.view.dom)
+
+    for (const section of sections) {
+      const anchor = findTocFoldAnchorElement(ed, section.entry)
+      if (!anchor) continue
+
+      const collapsed = isEntryCollapsed(section.entry, doc)
+      if (section.entry.sourceType === 'ref-child') {
+        syncEmbedChildSectionCollapse(ed.view.dom, section.entry, collapsed)
+      }
+
+      const rect = anchor.getBoundingClientRect()
+      next.push({
+        entryId: section.entry.id,
+        collapsed,
+        style: {
+          position: 'fixed',
+          left: `${gutterAnchor.foldLeft}px`,
+          top: `${rect.top + rect.height / 2}px`,
+          transform: 'translate(-50%, -50%)',
+          zIndex: 30,
+        },
+      })
+    }
+
+    toggles.value = next
+  })
+}
+
+function toggleFold(entryId: string) {
+  const ed = props.editor
+  if (!ed || ed.isDestroyed) return
+  const flat = collectFlat(ed.state.doc)
+  const entry = flat.find((item) => item.id === entryId)
+  if (!entry) return
+  toggleTocEntryCollapse(ed, entry)
+}
+
+function bindScrollContainer() {
+  const ed = props.editor
+  if (!ed || ed.isDestroyed) return
+  scrollContainer = ed.view.dom.closest('.content-scroll') as HTMLElement | null
+  scrollContainer?.addEventListener('scroll', syncToggles, { passive: true })
+}
+
+function unbindScrollContainer() {
+  scrollContainer?.removeEventListener('scroll', syncToggles)
+  scrollContainer = null
+}
+
+function bindEditor(ed: Editor) {
+  if (boundEditors.has(ed)) return
+  boundEditors.add(ed)
+  ed.on('update', syncToggles)
+  ed.on('selectionUpdate', syncToggles)
+  ed.on('transaction', syncToggles)
+  bindScrollContainer()
+  syncToggles()
+}
+
+function unbindEditor(ed: Editor) {
+  if (!boundEditors.has(ed)) return
+  boundEditors.delete(ed)
+  ed.off('update', syncToggles)
+  ed.off('selectionUpdate', syncToggles)
+  ed.off('transaction', syncToggles)
+  unbindScrollContainer()
+}
+
+watch(
+  () => props.editor,
+  (ed, prev) => {
+    if (prev && !prev.isDestroyed) unbindEditor(prev)
+    if (ed && !ed.isDestroyed) nextTick(() => bindEditor(ed))
+    else toggles.value = []
+  },
+  { immediate: true },
+)
+
+watch(
+  () => props.wrapperEl,
+  (wrapper) => {
+    resizeObserver?.disconnect()
+    resizeObserver = null
+    if (!wrapper) return
+    resizeObserver = new ResizeObserver(() => syncToggles())
+    resizeObserver.observe(wrapper)
+    syncToggles()
+  },
+  { immediate: true },
+)
+
+watch(
+  () => tocCollectContext?.value,
+  () => syncToggles(),
+  { deep: true },
+)
+
+onMounted(() => {
+  window.addEventListener('resize', syncToggles, { passive: true })
+})
+
+onBeforeUnmount(() => {
+  if (rafId) cancelAnimationFrame(rafId)
+  window.removeEventListener('resize', syncToggles)
+  resizeObserver?.disconnect()
+  const ed = props.editor
+  if (ed && !ed.isDestroyed) unbindEditor(ed)
+  unbindScrollContainer()
+})
+</script>
+
+<template>
+  <button
+    v-for="toggle in toggles"
+    :key="`${toggle.entryId}-${toggle.collapsed ? 'c' : 'e'}`"
+    type="button"
+    class="tu-fold-bullet heading-section-fold-gutter__btn"
+    :style="toggle.style"
+    :title="toggle.collapsed ? '展开本节' : '收起本节'"
+    :aria-label="toggle.collapsed ? '展开本节' : '收起本节'"
+    @mousedown.prevent
+    @click.stop="toggleFold(toggle.entryId)"
+  >
+    {{ toggle.collapsed ? '▶' : '▼' }}
+  </button>
+</template>
