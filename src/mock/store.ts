@@ -18,6 +18,7 @@ import {
 } from '@/utils/externalUrlResource';
 import { BUILTIN_URL_CLUSTER_RULES, findWorkByClusterKey, matchUrlCluster } from '@/utils/urlCluster';
 import { HEADING_SOURCE_COMMENT_RE, parseHeadingSourceComment } from '@/utils/headingSource';
+import { createInitialPageContent } from '@/utils/boardPageContent';
 import type {
   CreateResourceExcerptPayload,
   CreateResourceChapterPayload,
@@ -1313,17 +1314,27 @@ export function createPageMock(
   kbId: string,
   parentId: string | null,
   title: string,
+  pageType?: PageItem['pageType'],
 ): PageItem {
   const siblings = state.pages.filter((page) => page.kbId === kbId && page.parentId === parentId);
+  const normalizedPageType = pageType === 'mindmap'
+    ? 'mindmap'
+    : pageType === 'x6board'
+      ? 'x6board'
+      : 'document';
   const page: Omit<PageItem, 'children'> = {
     id: nextId('p'),
     kbId,
     parentId,
     title,
     order: siblings.length,
+    pageType: normalizedPageType,
   };
   state.pages.push(page);
-  state.contents[page.id] = { content: '', embeds: [], annotations: [] };
+  const initialContent = createInitialPageContent(normalizedPageType, title);
+  state.contents[page.id] = initialContent
+    ? cloneState(initialContent)
+    : { content: '', embeds: [], annotations: [] };
   persistState();
   return { ...cloneState(page), children: [] };
 }

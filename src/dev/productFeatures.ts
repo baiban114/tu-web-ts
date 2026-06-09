@@ -74,6 +74,22 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Editor',
   },
   {
+    id: 'mindmap-page',
+    module: '知识库',
+    name: '思维导图页面',
+    description: '页面树可新建 mindmap 类型页面；CanvasPage 独占画布区；文档内 embed 可升级为独立页；节点支持富文本模式。',
+    status: 'testing',
+    owner: 'Editor',
+  },
+  {
+    id: 'x6board-page',
+    module: '知识库',
+    name: '画板页面',
+    description: 'pageType=x6board 独占通用 X6 画板页；与 mindmap 共用 CanvasPage / BoardCanvasShell 架构。',
+    status: 'testing',
+    owner: 'Editor',
+  },
+  {
     id: 'link-insert',
     module: '外部资源',
     name: '插入链接',

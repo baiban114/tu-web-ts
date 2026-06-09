@@ -4,6 +4,7 @@ import { ElEmpty } from 'element-plus';
 import { useRoute, useRouter } from 'vue-router';
 import DevModePanel from '@/components/DevModePanel.vue';
 import LeftPanel from '@/components/LeftPanel.vue';
+import CanvasPage from '@/components/CanvasPage.vue';
 import TuEditorPage from '@/components/TuEditorPage.vue';
 import type { PageContent } from '@/api/types';
 import { useWorkspaceStore } from '@/stores/workspace';
@@ -33,6 +34,10 @@ const MAX_WIDTH = 480;
 let dragging = false;
 let startX = 0;
 let startWidth = 0;
+
+const canvasPageType = computed(() => (
+  store.currentPageType === 'x6board' ? 'x6board' : 'mindmap'
+));
 
 const localFileStatusText = computed(() => {
   const binding = store.currentLocalFileBinding;
@@ -123,7 +128,24 @@ watch(
           清除定位
         </button>
       </div>
-      <div v-if="store.currentPageId" class="content-scroll">
+      <div
+        v-if="store.currentPageId && store.isCanvasPage && store.pageContent"
+        :key="store.currentPageId"
+        class="content-canvas"
+      >
+        <CanvasPage
+          :page-type="canvasPageType"
+          :content="store.pageContent"
+          :page-title="store.currentPageTitle"
+          @page-title-change="onPageTitleChange"
+          @content-change="onContentChange"
+        />
+      </div>
+
+      <div
+        v-else-if="store.currentPageId && store.pageContent"
+        class="content-scroll"
+      >
         <div
           v-if="store.currentLocalFileBinding"
           class="local-file-status"
@@ -136,10 +158,9 @@ watch(
           <div class="local-file-status__message">{{ localFileStatusText }}</div>
         </div>
 
-        <!-- TipTap 编辑器 -->
         <TuEditorPage
           :key="store.currentPageId"
-          :contentList="store.pageContent!"
+          :contentList="store.pageContent"
           :page-title="store.currentPageTitle"
           :editable="true"
           @page-title-change="onPageTitleChange"
@@ -219,6 +240,14 @@ watch(
 .workspace-topbar__link--button {
   font: inherit;
   cursor: pointer;
+}
+
+.content-canvas {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .content-scroll {

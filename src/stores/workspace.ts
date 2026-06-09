@@ -16,7 +16,16 @@ import {
   movePage,
   renamePage,
 } from '@/api/page';
-import type { Block, GraphData, PageContent, PageItem } from '@/api/types';
+import type { Block, GraphData, PageContent, PageItem, PageType } from '@/api/types';
+import {
+  createInitialPageContent,
+  createPageContentFromEmbed,
+  defaultTitleForPageType,
+  inferPageTypeFromContent,
+  inferPageTypeFromEmbed,
+  normalizePageType,
+  removeEmbedFromPageContent,
+} from '@/utils/boardPageContent';
 import type { ImportRoadmapPayload } from '@/api/types';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
 import { blockSyncManager } from '@/utils/blockSyncManager';
@@ -163,17 +172,50 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  function findPageTitle(pageId: string): string {
-    const walk = (nodes: PageItem[]): string | undefined => {
-      for (const n of nodes) {
-        if (n.id === pageId) return n.title ?? '';
-        if (n.children?.length) {
-          const found = walk(n.children);
-          if (found !== undefined) return found;
-        }
+  function findPageInTree(nodes: PageItem[], pageId: string): PageItem | null {
+    for (const node of nodes) {
+      if (node.id === pageId) return node;
+      if (node.children?.length) {
+        const found = findPageInTree(node.children, pageId);
+        if (found) return found;
       }
-    };
-    return walk(pageTree.value) ?? UNTITLED_PAGE_TITLE;
+    }
+    return null;
+  }
+
+  function findPageTitle(pageId: string): string {
+    return findPageInTree(pageTree.value, pageId)?.title ?? UNTITLED_PAGE_TITLE;
+  }
+
+  const currentPageItem = computed(() => {
+    const pageId = currentPageId.value;
+    if (!pageId) return null;
+    return findPageInTree(pageTree.value, pageId);
+  });
+
+  const currentPageType = computed<PageType>(() => {
+    const fromTree = currentPageItem.value?.pageType;
+    if (fromTree === 'mindmap' || fromTree === 'x6board') return fromTree;
+    const inferred = inferPageTypeFromContent(pageContent.value);
+    if (inferred) return inferred;
+    return normalizePageType(fromTree);
+  });
+
+  const isMindmapPage = computed(() => currentPageType.value === 'mindmap');
+
+  const isX6BoardPage = computed(() => currentPageType.value === 'x6board');
+
+  const isCanvasPage = computed(() => isMindmapPage.value || isX6BoardPage.value);
+
+  function syncPrimaryEmbedTitle(content: PageContent, title: string): PageContent {
+    const primaryId = content.metadata?.primaryEmbedId;
+    const embedIndex = content.embeds.findIndex((embed) => (
+      typeof primaryId === 'string' ? embed.id === primaryId : embed.type === 'x6'
+    ));
+    if (embedIndex < 0) return content;
+    const nextEmbeds = [...content.embeds];
+    nextEmbeds[embedIndex] = { ...nextEmbeds[embedIndex], title };
+    return { ...content, embeds: nextEmbeds };
   }
 
   function extractTitleFromContent(content: string): string {
@@ -352,10 +394,56 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function addPage(parentId: string | null, title?: string) {
+  async function addPage(parentId: string | null, title?: string, pageType?: PageType) {
     if (!currentKbId.value) return;
-    await createPage(currentKbId.value, parentId, title);
+    const defaultTitle = defaultTitleForPageType(pageType);
+    const page = await createPage(currentKbId.value, parentId, title ?? defaultTitle, pageType);
+    const resolvedType = page.pageType ?? pageType ?? 'document';
+    const initialContent = createInitialPageContent(resolvedType, page.title);
+    if (initialContent) {
+      await savePageContent(page.id, initialContent);
+    }
     pageTree.value = await getPageTree(currentKbId.value);
+    await selectPage(page.id);
+  }
+
+  async function promoteEmbedToPage(sourcePageId: string, embedId: string) {
+    if (!currentKbId.value) return;
+
+    const sourcePage = findPageInTree(pageTree.value, sourcePageId);
+    if (!sourcePage) {
+      throw new Error('Source page not found.');
+    }
+
+    const sourceContent = sourcePageId === currentPageId.value && pageContent.value
+      ? pageContent.value
+      : await getPageContent(sourcePageId);
+
+    const embed = sourceContent.embeds.find((item) => item.id === embedId);
+    if (!embed || embed.type !== 'x6') {
+      throw new Error('Embed not found.');
+    }
+
+    const pageType = inferPageTypeFromEmbed(embed);
+    const pageTitle = embed.title?.trim() || defaultTitleForPageType(pageType);
+    const page = await createPage(
+      currentKbId.value,
+      sourcePage.parentId,
+      pageTitle,
+      pageType,
+    );
+    await savePageContent(page.id, createPageContentFromEmbed(embed));
+
+    const strippedContent = removeEmbedFromPageContent(sourceContent, embedId);
+    await savePageContent(sourcePageId, strippedContent);
+
+    if (sourcePageId === currentPageId.value) {
+      pageContent.value = strippedContent;
+    }
+
+    pageTree.value = await getPageTree(currentKbId.value);
+    await selectPage(page.id);
+    return page;
   }
 
   async function importMarkdownFile(file: File, options?: ImportMarkdownFileOptions) {
@@ -460,6 +548,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
     if (currentPageId.value === id) {
       currentPageTitleOverride.value = title;
+      const page = findPageInTree(pageTree.value, id);
+      if ((page?.pageType === 'mindmap' || page?.pageType === 'x6board') && pageContent.value) {
+        const nextContent = syncPrimaryEmbedTitle(pageContent.value, title);
+        if (nextContent !== pageContent.value) {
+          pageContent.value = nextContent;
+          await savePageContent(id, nextContent);
+        }
+      }
       if (pageContent.value) {
         registryStore.registerPageContent(pageContent.value, id, title);
       }
@@ -473,6 +569,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     currentPageId,
     pageContent,
     currentPageTitle,
+    currentPageType,
+    isMindmapPage,
+    isX6BoardPage,
+    isCanvasPage,
     loading,
     currentLocalFileBinding,
     loadKbList,
@@ -489,5 +589,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     removePage,
     reorderPage,
     renameCurrentPage,
+    promoteEmbedToPage,
   };
 });

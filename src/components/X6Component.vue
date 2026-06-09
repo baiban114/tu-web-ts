@@ -56,6 +56,7 @@ interface Props {
   editable?: boolean;
   width?: number;
   height?: number;
+  layoutMode?: 'fixed' | 'fill';
   blockActionsEnabled?: boolean;
   sourceLoadEnabled?: boolean;
   sourceWriteBackEnabled?: boolean;
@@ -89,6 +90,7 @@ const props = withDefaults(defineProps<Props>(), {
   editable: true,
   width: 960,
   height: 540,
+  layoutMode: 'fixed',
   blockActionsEnabled: true,
   sourceLoadEnabled: false,
   sourceWriteBackEnabled: false,
@@ -154,8 +156,16 @@ const isEditable = computed(() => props.editable !== false);
 const isTaskFlow = computed(() => isTaskFlowBlueprint(props.graphData));
 const isMindmap = computed(() => isMindmapBlueprint(props.graphData));
 const hasGraphSourceActions = computed(() => props.sourceLoadEnabled || props.sourceWriteBackEnabled);
+const isFillLayout = computed(() => props.layoutMode === 'fill')
+const isNodeEditing = computed(() => editingNodeId.value != null)
 const hasExplicitSize = computed(() => props.width != null && props.height != null)
 const editorStyle = computed(() => {
+  if (isFillLayout.value) {
+    return {
+      height: '100%',
+      minHeight: '0',
+    }
+  }
   if (hasExplicitSize.value) {
     return {
       height: `${props.height}px`,
@@ -164,6 +174,7 @@ const editorStyle = computed(() => {
   return {}
 })
 const stageStyle = computed(() => {
+  if (isFillLayout.value) return { height: '100%', minHeight: '0', flex: '1' }
   if (hasExplicitSize.value) return { height: '100%', minHeight: '0' }
   return { minHeight: `${props.height || 540}px` }
 })
@@ -1977,7 +1988,18 @@ defineExpose({
 </script>
 
 <template>
-  <div class="x6-editor" :class="{ 'x6-editor--sized': hasExplicitSize }" :style="editorStyle" @mousedown.stop="emit('active')" @click.stop @dblclick.stop>
+  <div
+    class="x6-editor"
+    :class="{
+      'x6-editor--sized': hasExplicitSize,
+      'x6-editor--fill': isFillLayout,
+      'x6-editor--node-editing': isFillLayout && isNodeEditing,
+    }"
+    :style="editorStyle"
+    @mousedown.stop="emit('active')"
+    @click.stop
+    @dblclick.stop
+  >
     <div v-if="toolbarVisible" class="x6-toolbar">
       <div class="toolbar-group">
         <button type="button" class="tool-button tool-button--icon" title="切换工具栏" @click="toolbarVisible = false">
@@ -2099,7 +2121,10 @@ defineExpose({
       <div
         ref="stageRef"
         class="x6-stage"
-        :class="{ 'x6-stage--library': inspectorTab === 'library' }"
+        :class="{
+          'x6-stage--library': inspectorTab === 'library',
+          'x6-stage--node-editing': isFillLayout && isNodeEditing,
+        }"
         :style="stageStyle"
         @dragover.capture="onMaterialDragOver"
         @drop.capture="onMaterialDrop"
@@ -2405,6 +2430,30 @@ defineExpose({
   overflow: hidden;
   background: linear-gradient(180deg, #fbfcfe 0%, #f4f7fb 100%);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.x6-editor--fill {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+}
+
+.x6-editor--fill .x6-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+.x6-editor--fill.x6-editor--node-editing {
+  overflow: visible;
+}
+
+.x6-editor--fill .x6-stage--node-editing {
+  overflow: visible;
 }
 
 .x6-toolbar {

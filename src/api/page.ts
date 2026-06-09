@@ -13,7 +13,7 @@ import {
   updateBlockGraphDataMock,
 } from '@/mock/store';
 import { request } from './http';
-import type { Block, BlockWithMeta, PageBlocks, PageContent, PageItem } from './types';
+import type { Block, BlockWithMeta, PageBlocks, PageContent, PageItem, PageType } from './types';
 
 export type { Block, BlockWithMeta, PageBlocks, PageContent, PageItem } from './types';
 
@@ -60,13 +60,14 @@ export async function createPage(
   kbId: string,
   parentId: string | null,
   title = '新页面',
+  pageType?: PageType,
 ): Promise<PageItem> {
   if (isMockDataSource()) {
-    return createPageMock(kbId, parentId, title);
+    return createPageMock(kbId, parentId, title, pageType);
   }
   return request<PageItem>('/api/pages', {
     method: 'POST',
-    body: JSON.stringify({ kbId, parentId, title }),
+    body: JSON.stringify({ kbId, parentId, title, pageType }),
   });
 }
 

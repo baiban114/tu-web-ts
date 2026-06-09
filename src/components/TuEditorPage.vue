@@ -27,6 +27,9 @@ import {
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import { isMindmapBlueprint } from '@/components/x6'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import type { GraphData } from '@/api/types'
 
 type LinkDisplayMode = 'link' | 'image'
 
@@ -39,6 +42,8 @@ const nodeViewToolbar = reactive({
   sourceType: '',
   refId: '',
   canAddNote: false,
+  canPromoteToPage: false,
+  isMindmapEmbed: false,
 })
 
 const EMBED_TOC_SOURCE_TYPES = new Set(['refBlock', 'externalResourceBlock'])
@@ -57,6 +62,8 @@ const tocSettingsForm = reactive({
 const hideNodeViewToolbar = () => {
   nodeViewToolbar.visible = false
   nodeViewToolbar.canAddNote = false
+  nodeViewToolbar.canPromoteToPage = false
+  nodeViewToolbar.isMindmapEmbed = false
   tocSettingsPopover.visible = false
 }
 
@@ -99,6 +106,30 @@ const navigateToReferencedPage = async () => {
   if (nodeViewToolbar.refId) {
     hideNodeViewToolbar()
     await workspaceStore.selectPage(nodeViewToolbar.refId)
+  }
+}
+
+const promoteSelectedEmbedToPage = async () => {
+  const pageId = workspaceStore.currentPageId
+  const blockId = nodeViewToolbar.blockId
+  if (!pageId || !blockId) return
+
+  const label = nodeViewToolbar.isMindmapEmbed ? '思维导图页' : '画板页'
+  try {
+    await ElMessageBox.confirm(
+      `将此块升级为独立${label}？升级后将从当前文档中移除该块。`,
+      '升级为独立页面',
+      {
+        confirmButtonText: '升级',
+        cancelButtonText: '取消',
+        type: 'info',
+      },
+    )
+    hideNodeViewToolbar()
+    await workspaceStore.promoteEmbedToPage(pageId, blockId)
+    ElMessage.success(`已升级为${label}`)
+  } catch {
+    // cancelled
   }
 }
 
@@ -201,6 +232,19 @@ const handleBlockClick = (blockId: string, event: MouseEvent) => {
   nodeViewToolbar.blockId = blockId
   nodeViewToolbar.sourceType = typeName
   nodeViewToolbar.refId = ''
+  nodeViewToolbar.canPromoteToPage = false
+  nodeViewToolbar.isMindmapEmbed = false
+  if (typeName === 'x6Block') {
+    editor.state.doc.descendants((node) => {
+      if (node.attrs?.blockId === blockId) {
+        const graphData = node.attrs.graphData as GraphData | undefined
+        nodeViewToolbar.canPromoteToPage = true
+        nodeViewToolbar.isMindmapEmbed = isMindmapBlueprint(graphData)
+        return false
+      }
+      return true
+    })
+  }
   if (typeName === 'refBlock') {
     editor.state.doc.descendants((node) => {
       if (node.attrs?.blockId === blockId && node.attrs?.refId) {
@@ -1539,6 +1583,11 @@ onBeforeUnmount(() => {
         @mousedown.stop
         @click.stop
       >
+        <button
+          v-if="nodeViewToolbar.canPromoteToPage"
+          class="nodeview-toolbar__btn"
+          @click="promoteSelectedEmbedToPage"
+        >{{ nodeViewToolbar.isMindmapEmbed ? '升级为思维导图页' : '升级为画板页' }}</button>
         <button
           v-if="nodeViewToolbar.canAddNote"
           class="nodeview-toolbar__btn"

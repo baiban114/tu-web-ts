@@ -273,12 +273,15 @@ export interface Block {
   [key: string]: unknown;
 }
 
+export type PageType = 'document' | 'mindmap' | 'x6board';
+
 export interface PageItem {
   id: string;
   kbId: string;
   parentId: string | null;
   title: string;
   order: number;
+  pageType?: PageType;
   children?: PageItem[];
 }
 

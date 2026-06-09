@@ -8,9 +8,13 @@ import {
   ElDialog,
   ElMessageBox,
   ElMessage,
+  ElDropdown,
+  ElDropdownMenu,
+  ElDropdownItem,
 } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
+import type { PageType } from '@/api/types';
 import AuthPanel from './AuthPanel.vue';
 import GlobalSearchBox from './GlobalSearchBox.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
@@ -77,15 +81,30 @@ function onNodeClick(data: PageItem) {
   store.selectPage(data.id);
 }
 
-async function onCreateChild(parentId: string) {
+async function onCreateChild(parentId: string, pageType: PageType = 'document') {
   closeContextMenu();
-  await store.addPage(parentId);
-  ElMessage.success('子页面已创建');
+  await store.addPage(parentId, undefined, pageType);
+  ElMessage.success(createSuccessMessage(pageType));
 }
 
-async function onCreateRootPage() {
-  await store.addPage(null);
-  ElMessage.success('页面已创建');
+async function onCreateRootPage(pageType: PageType) {
+  await store.addPage(null, undefined, pageType);
+  ElMessage.success(createSuccessMessage(pageType));
+}
+
+function createSuccessMessage(pageType: PageType): string {
+  if (pageType === 'mindmap') return '思维导图已创建';
+  if (pageType === 'x6board') return '画板已创建';
+  return '页面已创建';
+}
+
+function onCreateRootCommand(command: string | number | object) {
+  const pageType = command === 'mindmap'
+    ? 'mindmap'
+    : command === 'x6board'
+      ? 'x6board'
+      : 'document';
+  void onCreateRootPage(pageType);
 }
 
 async function onDeletePage(node: PageItem) {
@@ -236,15 +255,28 @@ function collapseAllTree() {
             {{ allTreeExpanded ? '收起' : '展开' }}
           </button>
           <MarkdownImportButton />
-          <el-button
-            link
-            size="small"
-            title="新建根页面"
+          <el-dropdown
+            trigger="click"
             :disabled="!store.currentKbId"
-            @click.stop="onCreateRootPage"
+            @command="onCreateRootCommand"
           >
-            +
-          </el-button>
+            <el-button
+              link
+              size="small"
+              title="新建页面"
+              :disabled="!store.currentKbId"
+              @click.stop
+            >
+              +
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="document">文档</el-dropdown-item>
+                <el-dropdown-item command="mindmap">思维导图</el-dropdown-item>
+                <el-dropdown-item command="x6board">画板</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
       </div>
 
@@ -266,6 +298,34 @@ function collapseAllTree() {
         >
           <template #default="{ node, data }">
             <span class="tree-node">
+              <span
+                class="node-icon"
+                aria-hidden="true"
+              >
+                <svg
+                  v-if="data.pageType === 'mindmap'"
+                  class="node-icon__mindmap"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                >
+                  <path
+                    d="M6 1.5v3.5M6 5H2.5M6 5h3.5M2.5 5v4.5M9.5 5v4.5"
+                    stroke="currentColor"
+                    stroke-width="1.2"
+                    stroke-linecap="round"
+                  />
+                </svg>
+                <svg
+                  v-else-if="data.pageType === 'x6board'"
+                  class="node-icon__x6board"
+                  viewBox="0 0 12 12"
+                  fill="none"
+                >
+                  <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1.2" />
+                  <path d="M4 8V4h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" />
+                </svg>
+                <span v-else class="node-icon__doc">📄</span>
+              </span>
               <el-input
                 v-if="renamingId === data.id"
                 ref="renameInputRef"
@@ -298,8 +358,14 @@ function collapseAllTree() {
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
         @click.stop
       >
-        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id)">
-          新建子页面
+        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'document')">
+          文档
+        </div>
+        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'mindmap')">
+          思维导图
+        </div>
+        <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'x6board')">
+          画板
         </div>
         <div class="context-menu-item" @click="onStartRename(contextMenu.node!)">
           重命名
@@ -476,6 +542,28 @@ function collapseAllTree() {
   align-items: center;
   flex: 1;
   overflow: hidden;
+  gap: 4px;
+}
+
+.node-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  line-height: 1;
+}
+
+.node-icon__doc {
+  font-size: 12px;
+}
+
+.node-icon__mindmap,
+.node-icon__x6board {
+  width: 12px;
+  height: 12px;
+  color: #6b7280;
 }
 
 .node-label {

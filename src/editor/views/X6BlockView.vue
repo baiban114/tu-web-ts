@@ -1,23 +1,11 @@
 ﻿<script setup lang="ts">
-import { computed, inject, unref, type Ref } from 'vue'
+import { computed } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
-import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
-import X6Component from '@/components/X6Component.vue'
-import { isMindmapBlueprint } from '@/components/x6'
+import X6BoardBlock from '@/components/X6BoardBlock.vue'
 
 const props = defineProps(nodeViewProps)
 
-interface CompoundBadge {
-  annotationId: string
-  color: string
-}
-
-const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]> | Ref<Record<string, CompoundBadge[]>>>('compoundAnnotationBadges', {})
-const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
-
 const blockId = computed(() => props.node.attrs.blockId || '')
-const compoundBadges = computed(() => unref(compoundAnnotationBadges)[blockId.value] || [])
-
 const headingLevel = computed(() => props.node.attrs.headingLevel || 0)
 const headingText = computed(() => props.node.attrs.title || '')
 
@@ -26,41 +14,24 @@ const graphData = computed({
   set: (val) => props.updateAttributes({ graphData: val }),
 })
 
-const blockTypeLabel = computed(() => (
-  isMindmapBlueprint(graphData.value) ? '思维导图' : 'X6 画板'
-))
-
 const onResize = (width: number | null, height: number | null) => {
   props.updateAttributes({ width, height })
-}
-
-const handleBadgeClick = (bid: string, annotationId: string, event: MouseEvent) => {
-  onCompoundBadgeClick(bid, annotationId, event)
 }
 </script>
 
 <template>
   <node-view-wrapper class="x6-block-view">
-    <ResizableBlockWrapper
+    <X6BoardBlock
+      mode="embedded"
       :selected="selected"
-      :resizable-axes="{ width: true, height: true }"
-      :min-width="200"
-      :min-height="150"
-      :block-type-label="blockTypeLabel"
+      :graph-data="graphData"
+      :width="props.node.attrs.width"
+      :height="props.node.attrs.height"
       :block-id="blockId"
-      block-type="x6"
-      :compound-badges="compoundBadges"
       :heading-level="headingLevel"
       :heading-text="headingText"
+      @graph-data-change="graphData = $event"
       @resize="onResize"
-      @compound-badge-click="handleBadgeClick"
-    >
-      <X6Component
-        :graph-data="graphData"
-        :width="props.node.attrs.width"
-        :height="props.node.attrs.height"
-        @graph-data-change="graphData = $event"
-      />
-    </ResizableBlockWrapper>
+    />
   </node-view-wrapper>
 </template>
