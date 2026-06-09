@@ -23,7 +23,43 @@ export function isTaskFlowBlueprint(data?: GraphData | null): boolean {
 }
 
 export function isMindmapBlueprint(data?: GraphData | null): boolean {
-  return readBlueprintKind(data) === MINDMAP_KIND;
+  if (readBlueprintKind(data) === MINDMAP_KIND) return true;
+  return looksLikeMindmapGraph(data);
+}
+
+function collectGraphCells(data?: GraphData | null): unknown[] {
+  if (!data) return [];
+  if (Array.isArray(data.cells) && data.cells.length > 0) return data.cells;
+  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+  const edges = Array.isArray(data.edges) ? data.edges : [];
+  return [...nodes, ...edges];
+}
+
+/** Detect mindmap graphs saved without blueprintMeta (e.g. backend round-trip). */
+export function looksLikeMindmapGraph(data?: GraphData | null): boolean {
+  const mindRoles = new Set(['root', 'topic', 'branch']);
+  return collectGraphCells(data).some((cell) => {
+    if (!cell || typeof cell !== 'object') return false;
+    const record = cell as Record<string, unknown>;
+    const nodeData = record.data as Record<string, unknown> | undefined;
+    const role = nodeData?.mindRole ?? record.mindRole;
+    return typeof role === 'string' && mindRoles.has(role);
+  });
+}
+
+/** Restore blueprintMeta when graph structure is mindmap but metadata was stripped. */
+export function ensureMindmapBlueprintMeta(data: GraphData): GraphData {
+  if (readBlueprintKind(data) === MINDMAP_KIND) return data;
+  if (!looksLikeMindmapGraph(data)) return data;
+  return {
+    ...data,
+    blueprintMeta: {
+      ...(data.blueprintMeta ?? {}),
+      kind: MINDMAP_KIND,
+      direction: data.blueprintMeta?.direction ?? 'LR',
+      anchor: data.blueprintMeta?.anchor ?? { x: 200, y: 220 },
+    },
+  };
 }
 
 export function getBlueprintRegionLabel(kind: string): string {

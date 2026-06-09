@@ -14,6 +14,7 @@ import {
 } from '@/mock/store';
 import { request } from './http';
 import type { Block, BlockWithMeta, PageBlocks, PageContent, PageItem, PageType } from './types';
+import { normalizePageContentFromApi } from '@/utils/boardPageContent';
 
 export type { Block, BlockWithMeta, PageBlocks, PageContent, PageItem } from './types';
 
@@ -34,12 +35,12 @@ export async function getPageContent(pageId: string): Promise<PageContent> {
   }
   const data = await request<PageContent>(`/api/pages/${pageId}/content`);
   // Ensure arrays are initialized
-  return {
+  return normalizePageContentFromApi({
     content: data.content || '',
     embeds: data.embeds || [],
     annotations: data.annotations || [],
     metadata: data.metadata,
-  };
+  });
 }
 
 /**

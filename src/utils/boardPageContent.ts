@@ -2,7 +2,9 @@ import type { EmbeddedObject, GraphData, PageContent, PageType } from '@/api/typ
 import {
   createMindmapStarterGraphData,
   createStarterGraphData,
+  ensureMindmapBlueprintMeta,
   isMindmapBlueprint,
+  looksLikeMindmapGraph,
 } from '@/components/x6'
 
 const EMBED_PLACEHOLDER_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
@@ -17,7 +19,37 @@ export function normalizePageType(pageType?: string): PageType {
 }
 
 export function inferPageTypeFromEmbed(embed: EmbeddedObject): 'mindmap' | 'x6board' {
-  return isMindmapBlueprint(embed.graphData) ? 'mindmap' : 'x6board'
+  if (isMindmapBlueprint(embed.graphData)) return 'mindmap'
+  if (embed.id.startsWith('mindmap-')) return 'mindmap'
+  if (embed.id.startsWith('x6board-')) return 'x6board'
+  return 'x6board'
+}
+
+function isMindmapEmbedCandidate(embed: EmbeddedObject): boolean {
+  if (embed.type !== 'x6') return false
+  return isMindmapBlueprint(embed.graphData)
+    || looksLikeMindmapGraph(embed.graphData)
+    || embed.id.startsWith('mindmap-')
+}
+
+function normalizeCanvasEmbed(embed: EmbeddedObject, pageType: PageType): EmbeddedObject {
+  if (pageType !== 'mindmap' || embed.type !== 'x6' || !embed.graphData) return embed
+  return {
+    ...embed,
+    graphData: ensureMindmapBlueprintMeta(embed.graphData),
+  }
+}
+
+/** Normalize API-loaded content: restore stripped mindmap blueprint metadata on embeds. */
+export function normalizePageContentFromApi(content: PageContent): PageContent {
+  const embeds = content.embeds.map((embed) => {
+    if (!isMindmapEmbedCandidate(embed) || !embed.graphData) return embed
+    return {
+      ...embed,
+      graphData: ensureMindmapBlueprintMeta(embed.graphData),
+    }
+  })
+  return { ...content, embeds }
 }
 
 /** Infer canvas page type from stored PageContent when tree item lacks pageType. */
@@ -98,23 +130,25 @@ export function resolvePrimaryEmbed(
     ? content.embeds.find((embed) => embed.id === primaryId)
     : undefined
 
-  if (byPrimary) {
-    if (pageType === 'mindmap' && isMindmapBlueprint(byPrimary.graphData)) return byPrimary
-    if (pageType === 'x6board' && byPrimary.type === 'x6' && !isMindmapBlueprint(byPrimary.graphData)) {
+  if (byPrimary?.type === 'x6') {
+    if (pageType === 'mindmap' && isMindmapEmbedCandidate(byPrimary)) {
+      return normalizeCanvasEmbed(byPrimary, pageType)
+    }
+    if (pageType === 'x6board') {
       return byPrimary
     }
   }
 
   if (pageType === 'mindmap') {
-    return content.embeds.find(
-      (embed) => embed.type === 'x6' && isMindmapBlueprint(embed.graphData),
-    ) ?? null
+    const embed = content.embeds.find(isMindmapEmbedCandidate)
+    return embed ? normalizeCanvasEmbed(embed, pageType) : null
   }
 
   if (pageType === 'x6board') {
-    return content.embeds.find(
-      (embed) => embed.type === 'x6' && !isMindmapBlueprint(embed.graphData),
-    ) ?? null
+    const embed = content.embeds.find(
+      (item) => item.type === 'x6' && !isMindmapEmbedCandidate(item),
+    ) ?? content.embeds.find((item) => item.type === 'x6')
+    return embed ?? null
   }
 
   return null

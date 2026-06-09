@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { EmbeddedObject } from '@/api/types'
+import type { EmbeddedObject, PageContent } from '@/api/types'
 import { isMindmapBlueprint } from '@/components/x6'
 import {
   createMindmapPageContent,
   createPageContentFromEmbed,
   createX6BoardPageContent,
   inferPageTypeFromContent,
+  normalizePageContentFromApi,
   normalizePageType,
   removeEmbedFromPageContent,
   resolvePrimaryEmbed,
@@ -74,5 +75,26 @@ describe('board page content', () => {
     expect(inferPageTypeFromContent(mindmap)).toBe('mindmap')
     expect(inferPageTypeFromContent(board)).toBe('x6board')
     expect(inferPageTypeFromContent({ content: '# doc', embeds: [], annotations: [] })).toBeNull()
+  })
+
+  it('resolves mindmap primary embed when blueprintMeta was stripped by backend', () => {
+    const strippedGraph = createMindmapPageContent('m').embeds[0].graphData!
+    delete (strippedGraph as { blueprintMeta?: unknown }).blueprintMeta
+
+    const content: PageContent = {
+      content: '',
+      embeds: [{
+        id: 'mindmap-abc',
+        type: 'x6',
+        title: '未命名思维导图',
+        graphData: strippedGraph,
+      }],
+      annotations: [],
+      metadata: { primaryEmbedId: 'mindmap-abc' },
+    }
+
+    const normalized = normalizePageContentFromApi(content)
+    expect(isMindmapBlueprint(normalized.embeds[0].graphData)).toBe(true)
+    expect(resolvePrimaryEmbed(normalized, 'mindmap')?.id).toBe('mindmap-abc')
   })
 })
