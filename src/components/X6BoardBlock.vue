@@ -2,8 +2,11 @@
 import { computed, inject, onBeforeUnmount, onMounted, ref, unref, type Ref } from 'vue'
 import BoardCanvasShell from './BoardCanvasShell.vue'
 import X6Component from './X6Component.vue'
+import BlockPicker from './BlockPicker.vue'
+import type { ReferenceTarget } from './BlockPicker.vue'
 import type { GraphData } from '@/api/types'
 import { isMindmapBlueprint } from '@/components/x6'
+import { useWorkspaceStore } from '@/stores/workspace'
 
 const props = withDefaults(
   defineProps<{
@@ -57,8 +60,12 @@ const blockTypeLabel = computed(() => (
 ))
 
 const canvasHostRef = ref<HTMLElement | null>(null)
+const x6ComponentRef = ref<InstanceType<typeof X6Component> | null>(null)
 const observedWidth = ref<number | null>(null)
 const observedHeight = ref<number | null>(null)
+const showRefBlockPicker = ref(false)
+const pendingRefInsertPosition = ref<{ x: number; y: number } | null>(null)
+const workspaceStore = useWorkspaceStore()
 let resizeObserver: ResizeObserver | null = null
 
 function updateObservedSize() {
@@ -102,6 +109,28 @@ function handleBadgeClick(bid: string, annotationId: string, event: MouseEvent) 
   onCompoundBadgeClick(bid, annotationId, event)
   emit('compound-badge-click', bid, annotationId, event)
 }
+
+function handleRequestInsertRef(position: { x: number; y: number }) {
+  pendingRefInsertPosition.value = position
+  showRefBlockPicker.value = true
+}
+
+function handleRefBlockPickerSelect(target: ReferenceTarget) {
+  x6ComponentRef.value?.insertRefBlock?.(
+    target.id,
+    target.type,
+    pendingRefInsertPosition.value ?? undefined,
+  )
+  showRefBlockPicker.value = false
+  pendingRefInsertPosition.value = null
+}
+
+function handleRefBlockPickerVisibleChange(visible: boolean) {
+  showRefBlockPicker.value = visible
+  if (!visible) {
+    pendingRefInsertPosition.value = null
+  }
+}
 </script>
 
 <template>
@@ -128,14 +157,24 @@ function handleBadgeClick(bid: string, annotationId: string, event: MouseEvent) 
       :class="{ 'x6-board-block__canvas--page': mode === 'page' }"
     >
       <X6Component
+        ref="x6ComponentRef"
         :graph-data="graphData"
         :width="effectiveWidth"
         :height="effectiveHeight"
         :layout-mode="layoutMode"
         @graph-data-change="emit('graph-data-change', $event)"
+        @request-insert-ref="handleRequestInsertRef"
       />
     </div>
   </BoardCanvasShell>
+
+  <BlockPicker
+    :visible="showRefBlockPicker"
+    :pages="workspaceStore.pageTree"
+    :current-page-id="workspaceStore.currentPageId"
+    @select="handleRefBlockPickerSelect"
+    @update:visible="handleRefBlockPickerVisibleChange"
+  />
 </template>
 
 <style scoped>

@@ -4,7 +4,10 @@ import X6NodeOverlay from './X6NodeOverlay.vue';
 import X6MaterialLibrary from './X6MaterialLibrary.vue';
 import { useMaterialLibraryStore } from '@/stores/materialLibrary';
 import { useObjectModelStore } from '@/stores/objectModel';
+import { useBlockRegistryStore } from '@/stores/blockRegistry';
+import { useWorkspaceStore } from '@/stores/workspace';
 import type { GraphData } from '@/api/types';
+import type { PageItem } from '@/api/page';
 import type { UmlClassDefinition, UmlModel } from '@/stores/objectModel';
 import { didMaterialDragMove, resetMaterialDrag } from '@/components/x6/materialDrag';
 import {
@@ -129,6 +132,8 @@ const materialLibraryStore = useMaterialLibraryStore();
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
 const toolbarVisible = ref(true);
 const inspectorVisible = ref(true);
+type CanvasInteractionMode = 'select' | 'pan';
+const canvasInteractionMode = ref<CanvasInteractionMode>('select');
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -585,6 +590,37 @@ function updateNodeOverlays() {
   updateGraphSourceRegion();
 }
 
+function suspendCanvasInteractionForEdit() {
+  graph?.disablePanning();
+  graph?.disableSelection();
+}
+
+function applyCanvasInteractionMode() {
+  if (!graph || editingNodeId.value != null || edgeInlineEditing.value) return;
+
+  if (canvasInteractionMode.value === 'pan') {
+    graph.options.panning.eventTypes = ['leftMouseDown'];
+    graph.enablePanning();
+    graph.disableSelection();
+    graph.cleanSelection();
+    refreshSelectedCellState();
+  } else {
+    graph.options.panning.eventTypes = ['rightMouseDown'];
+    graph.enablePanning();
+    graph.enableSelection();
+  }
+}
+
+function restoreCanvasInteractionAfterEdit() {
+  applyCanvasInteractionMode();
+}
+
+function setCanvasInteractionMode(mode: CanvasInteractionMode) {
+  if (canvasInteractionMode.value === mode) return;
+  canvasInteractionMode.value = mode;
+  applyCanvasInteractionMode();
+}
+
 // Handlers called by X6NodeOverlay emit events
 
 function handleNodeOverlayCommit(nodeId: string, text: string) {
@@ -595,8 +631,7 @@ function handleNodeOverlayCommit(nodeId: string, text: string) {
   }
   suppressNextNodeInternalClickId = nodeId;
   editingNodeId.value = null;
-  graph?.enablePanning();
-  graph?.enableSelection();
+  restoreCanvasInteractionAfterEdit();
   updateNodeOverlays();
   scheduleSync();
 }
@@ -612,8 +647,7 @@ function handleNodeOverlayCancel(nodeId: string) {
   suppressNextNodeInternalClickId = nodeId;
   editingNodeId.value = null;
   pendingNodeInternalClickId = null;
-  graph?.enablePanning();
-  graph?.enableSelection();
+  restoreCanvasInteractionAfterEdit();
 }
 
 function handleRichChange(nodeId: string, markdown: string) {
@@ -697,18 +731,14 @@ function commitEdgeInlineEdit() {
   }
   edgeInlineEditing.value = false;
   edgeInlineEditId.value = null;
-  graph.enablePanning();
-  graph.enableSelection();
+  restoreCanvasInteractionAfterEdit();
   scheduleSync();
 }
 
 function cancelEdgeInlineEdit() {
   edgeInlineEditing.value = false;
   edgeInlineEditId.value = null;
-  if (graph) {
-    graph.enablePanning();
-    graph.enableSelection();
-  }
+  restoreCanvasInteractionAfterEdit();
 }
 
 function handleEdgeEditKeydown(e: KeyboardEvent) {
@@ -1318,6 +1348,91 @@ function requestInsertRefBlock() {
   emit('request-insert-ref', position);
 }
 
+function findPageInTree(nodes: PageItem[], pageId: string): PageItem | null {
+  for (const node of nodes) {
+    if (node.id === pageId) return node;
+    const found = findPageInTree(node.children ?? [], pageId);
+    if (found) return found;
+  }
+  return null;
+}
+
+function buildRefPreviewLabel(refId: string, refType: 'block' | 'page'): string {
+  if (refType === 'page') {
+    const workspaceStore = useWorkspaceStore();
+    const page = findPageInTree(workspaceStore.pageTree, refId);
+    return page?.title?.trim() || '页面引用';
+  }
+
+  const meta = useBlockRegistryStore().getMeta(refId);
+  if (!meta) return '引用块';
+
+  const block = meta.block;
+  if (block.title?.trim()) return block.title.trim();
+  if (block.type === 'x6') return block.title?.trim() || '画板';
+  if (block.type === 'table') return block.title?.trim() || '表格';
+  if (block.type === 'line') return block.title?.trim() || '时间轴';
+  if (block.type === 'externalResource') {
+    return block.externalResource?.snapshot?.excerptTitle
+      || block.externalResource?.snapshot?.resourceTitle
+      || block.title?.trim()
+      || '外部资源';
+  }
+  if (block.type === 'richtext' || block.type === 'richText') {
+    const plain = (block.content ?? '')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/[#*`>\-_\[\]]/g, '')
+      .trim();
+    if (plain) return plain.length > 40 ? `${plain.slice(0, 40)}…` : plain;
+  }
+  return meta.pageTitle?.trim() || '引用块';
+}
+
+function insertRefBlock(
+  refId: string,
+  refType: 'block' | 'page',
+  position?: InsertRefRequestPayload,
+) {
+  if (!graph || !isEditable.value || !props.blockActionsEnabled) return;
+
+  const pos = position ?? getRefInsertPosition();
+  const label = buildRefPreviewLabel(refId, refType);
+  const node = graph.addNode({
+    id: createId('ref-node'),
+    shape: 'rect',
+    x: pos.x,
+    y: pos.y,
+    width: 220,
+    height: 72,
+    ports: createNodePorts(),
+    attrs: {
+      body: {
+        fill: '#f5f9ff',
+        stroke: '#1677ff',
+        strokeWidth: 1.6,
+        rx: 14,
+        ry: 14,
+      },
+      label: {
+        text: label,
+        fill: '#0958d9',
+        fontSize: 13,
+        fontWeight: 600,
+      },
+    },
+    data: {
+      refBlockId: refId,
+      refType,
+      refKind: 'block-ref',
+    },
+  });
+
+  graph.cleanSelection();
+  graph.select(node);
+  refreshSelectedCellState();
+  scheduleSync();
+}
+
 function syncFromSource() {
   emit('sync-from-source');
 }
@@ -1924,6 +2039,7 @@ function initGraph() {
   bindKeyboardShortcuts();
   bindGraphEvents();
   applyGraphData(props.graphData, true);
+  applyCanvasInteractionMode();
   updateUndoRedoState();
 }
 
@@ -1984,6 +2100,7 @@ defineExpose({
   insertMarkdownLink,
   updateInsertedLinkDisplay,
   updateInsertedImageWidth,
+  insertRefBlock,
 });
 </script>
 
@@ -2006,6 +2123,42 @@ defineExpose({
           ⊖
         </button>
       </div>
+
+      <div class="toolbar-group toolbar-group--interaction" role="group" aria-label="画布交互模式">
+        <button
+          type="button"
+          class="tool-button tool-button--icon tool-button--mode"
+          :class="{ 'tool-button--active': canvasInteractionMode === 'select' }"
+          title="选择"
+          aria-label="选择模式"
+          :aria-pressed="canvasInteractionMode === 'select'"
+          @click="setCanvasInteractionMode('select')"
+        >
+          <svg class="tool-button__mode-icon tool-button__mode-icon--pointer" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              class="tool-button__pointer-shape"
+              d="M4 2v16.2l4.35-3.8 2.72 6.1 1.93-.88-2.72-5.72H17L4 2Z"
+            />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="tool-button tool-button--icon tool-button--mode"
+          :class="{ 'tool-button--active': canvasInteractionMode === 'pan' }"
+          title="拖拽画布"
+          aria-label="拖拽模式"
+          :aria-pressed="canvasInteractionMode === 'pan'"
+          @click="setCanvasInteractionMode('pan')"
+        >
+          <svg class="tool-button__mode-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              fill="currentColor"
+              d="M9 11V6.5a1.5 1.5 0 1 1 3 0V10h1V5.5a1.5 1.5 0 1 1 3 0V10h1V7a1.5 1.5 0 1 1 3 0v6.5c0 2.2-1.5 4.5-4 5.5-2.2.9-4.5.5-6-1.2l-2.5-3.8A1.5 1.5 0 0 1 8.4 12L9 11Z"
+            />
+          </svg>
+        </button>
+      </div>
+
       <div class="toolbar-group" v-if="isTaskFlow">
         <button type="button" class="tool-button tool-button--shape" :disabled="!isEditable" @click="addNode('round')">
           <svg class="tool-button__icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="6" fill="#fff8e6" stroke="#d48806" stroke-width="1.2"/></svg>
@@ -2124,6 +2277,8 @@ defineExpose({
         :class="{
           'x6-stage--library': inspectorTab === 'library',
           'x6-stage--node-editing': isFillLayout && isNodeEditing,
+          'x6-stage--interaction-select': canvasInteractionMode === 'select',
+          'x6-stage--interaction-pan': canvasInteractionMode === 'pan',
         }"
         :style="stageStyle"
         @dragover.capture="onMaterialDragOver"
@@ -2615,6 +2770,54 @@ defineExpose({
   background: #eef2ff;
   border-color: #a5b4fc;
   color: #4338ca;
+}
+
+.toolbar-group--interaction {
+  gap: 4px;
+  padding: 2px;
+  border: 1px solid #e3e7ef;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.tool-button--mode {
+  min-width: 34px;
+  padding: 6px;
+}
+
+.tool-button__mode-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+.tool-button__mode-icon--pointer {
+  transform: translate(-1px, -1px);
+}
+
+.tool-button__pointer-shape {
+  fill: #fff;
+  stroke: #374151;
+  stroke-width: 1.15;
+  stroke-linejoin: round;
+}
+
+.tool-button--active .tool-button__pointer-shape {
+  stroke: #4338ca;
+}
+
+.x6-stage--interaction-select :deep(.x6-graph) {
+  cursor: default;
+}
+
+.x6-stage--interaction-pan :deep(.x6-graph),
+.x6-stage--interaction-pan :deep(.x6-node),
+.x6-stage--interaction-pan :deep(.x6-edge) {
+  cursor: grab !important;
+}
+
+.x6-stage--interaction-pan :deep(.x6-graph.x6-graph-panning) {
+  cursor: grabbing !important;
 }
 
 .x6-workspace {
