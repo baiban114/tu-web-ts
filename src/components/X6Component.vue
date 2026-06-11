@@ -48,6 +48,7 @@ import {
   deleteMindmapSelection,
   attachMindmapDirection,
   readMindmapDirection,
+  canConnectMindmapEdge,
   type NodePreset,
 } from '@/components/x6';
 
@@ -1839,6 +1840,11 @@ function bindGraphEvents() {
   });
 
   graph.on('edge:connected', () => {
+    if (isMindmap.value && graph) {
+      syncMindmapEdgeStyles(graph);
+      layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+      scheduleSync();
+    }
     syncTaskFlowEdgeState();
     finishUserInteraction();
   });
@@ -1929,6 +1935,20 @@ function bindGraphEvents() {
   graph.model.on('cell:removed', updateNodeOverlays);
 }
 
+function createMindmapConnectingEdge(): Edge {
+  return graph!.createEdge(createEdgeMetadata({
+    router: { name: 'normal' },
+    connector: { name: 'smooth' },
+    attrs: {
+      line: {
+        stroke: '#8c8c8c',
+        strokeWidth: 2,
+        targetMarker: { name: 'classic', size: 8 },
+      },
+    },
+  })) as Edge;
+}
+
 function initGraph() {
   if (!containerRef.value || !stageRef.value) return;
 
@@ -1969,7 +1989,7 @@ function initGraph() {
       factor: 1.1,
     },
     connecting: {
-      snap: { radius: 28 },
+      snap: isMindmap.value ? { radius: 40, anchor: 'center' } : { radius: 28 },
       allowBlank: false,
       allowLoop: false,
       allowNode: false,
@@ -1978,19 +1998,28 @@ function initGraph() {
       highlight: true,
       connectionPoint: 'boundary',
       anchor: 'center',
-      router: {
-        name: 'orth',
-      },
-      connector: {
-        name: 'rounded',
-      },
-      createEdge: () => graph?.createEdge(createEdgeMetadata()) as Edge,
+      router: isMindmap.value
+        ? { name: 'normal' }
+        : { name: 'orth' },
+      connector: isMindmap.value
+        ? { name: 'smooth' }
+        : { name: 'rounded' },
+      createEdge: () => (
+        isMindmap.value
+          ? createMindmapConnectingEdge()
+          : graph?.createEdge(createEdgeMetadata()) as Edge
+      ),
       validateMagnet: ({ magnet }) => isEditable.value && magnet.getAttribute('port-group') != null,
-      validateConnection: ({ sourceCell, targetCell, sourceMagnet, targetMagnet }) => {
+      validateConnection: ({ edge, sourceCell, targetCell, sourceMagnet, targetMagnet }) => {
         if (!isEditable.value) return false;
-        if (isMindmap.value) return false;
         if (!sourceCell || !targetCell || !sourceMagnet || !targetMagnet) return false;
         if (sourceCell.id === targetCell.id && sourceMagnet === targetMagnet) return false;
+
+        if (isMindmap.value) {
+          if (!graph?.isNode(sourceCell) || !graph?.isNode(targetCell)) return false;
+          return canConnectMindmapEdge(graph, sourceCell, targetCell, edge?.id);
+        }
+
         if (graph?.isNode(sourceCell) && graph?.isNode(targetCell) && !canCreateTaskFlowEdge(sourceCell, targetCell)) return false;
         return true;
       },
@@ -1999,11 +2028,11 @@ function initGraph() {
       nodeMovable: isEditable.value && !isMindmap.value,
       edgeMovable: isEditable.value && !isMindmap.value,
       edgeLabelMovable: isEditable.value && !isMindmap.value,
-      magnetConnectable: isEditable.value && !isMindmap.value,
-      arrowheadMovable: isEditable.value,
-      vertexMovable: isEditable.value,
-      vertexAddable: isEditable.value,
-      vertexDeletable: isEditable.value,
+      magnetConnectable: isEditable.value,
+      arrowheadMovable: isEditable.value && !isMindmap.value,
+      vertexMovable: isEditable.value && !isMindmap.value,
+      vertexAddable: isEditable.value && !isMindmap.value,
+      vertexDeletable: isEditable.value && !isMindmap.value,
     }),
   });
 

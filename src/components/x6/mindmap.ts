@@ -298,14 +298,17 @@ export function canConnectMindmapEdge(
   graph: Graph,
   sourceCell: Node,
   targetCell: Node,
+  excludeEdgeId?: string | null,
 ): boolean {
   if (sourceCell.id === targetCell.id) return false;
 
   const parentByChild = getParentIdMap(graph);
   if (parentByChild.has(targetCell.id)) return false;
 
-  const outgoing = graph.getOutgoingEdges(sourceCell) ?? [];
-  if (outgoing.length > 0) return false;
+  const incoming = (graph.getIncomingEdges(targetCell) ?? []).filter(
+    (edge) => edge.id !== excludeEdgeId,
+  );
+  if (incoming.some((edge) => edge.getSourceCellId() === sourceCell.id)) return false;
 
   let cursor: string | undefined = sourceCell.id;
   while (cursor) {
