@@ -41,7 +41,6 @@ import {
   getBlueprintRegionLabel,
   isTaskFlowBlueprint,
   isMindmapBlueprint,
-  layoutMindmapGraph,
   syncMindmapEdgeStyles,
   addMindmapChild,
   addMindmapSibling,
@@ -49,6 +48,13 @@ import {
   attachMindmapDirection,
   readMindmapDirection,
   canConnectMindmapEdge,
+  applyMindmapCollapseState,
+  toggleMindmapNodeCollapse,
+  createMindmapRefTocContext,
+  isApplyingMindmapCollapseState,
+  nodeHasMindmapExpandableChildren,
+  readMindmapNodeCollapsedForDisplay,
+  getMindmapCollapseButtonStyle,
   type NodePreset,
 } from '@/components/x6';
 
@@ -78,6 +84,10 @@ type SelectedCellState =
       height: number;
       textMode: 'plain' | 'rich';
       richContent: string;
+      isRefBlock: boolean;
+      refBlockId: string;
+      refType: 'block' | 'page';
+      refSourceLabel: string;
     }
   | {
       kind: 'edge';
@@ -130,6 +140,29 @@ const selectedCellsCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
 const objectModelStore = useObjectModelStore();
 const materialLibraryStore = useMaterialLibraryStore();
+const blockRegistryStore = useBlockRegistryStore();
+const workspaceStore = useWorkspaceStore();
+
+function resolvePageTitleForRef(pageId: string): string {
+  const find = (nodes: PageItem[]): string | null => {
+    for (const node of nodes) {
+      if (node.id === pageId) return node.title;
+      if (node.children?.length) {
+        const nested = find(node.children);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  };
+  return find(workspaceStore.pageTree)?.trim() || pageId;
+}
+
+const mindmapRefTocContext = createMindmapRefTocContext(
+  (pageId) => blockRegistryStore.getPageBlocks(pageId),
+  (blockId) => blockRegistryStore.getBlock(blockId),
+  (pageId) => resolvePageTitleForRef(pageId),
+  (blockId) => blockRegistryStore.getMeta(blockId),
+);
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
 const toolbarVisible = ref(true);
 const inspectorVisible = ref(true);
@@ -150,6 +183,16 @@ const graphSourceRegion = ref<{
   label: string;
   style: Record<string, string>;
 } | null>(null);
+
+interface MindmapCollapseButtonState {
+  nodeId: string;
+  collapsed: boolean;
+  style: Record<string, string>;
+}
+
+const mindmapCollapseHoverNodeId = ref<string | null>(null);
+const mindmapCollapseButtons = ref<MindmapCollapseButtonState[]>([]);
+let mindmapCollapseHideTimer: number | null = null;
 
 // Edge inline editing state (kept here, edge editing not split into sub-component)
 const edgeInlineEditing = ref(false);
@@ -275,7 +318,8 @@ function normalizeUmlModel(value: unknown): UmlModel {
 
 function normalizeNode(node: CellData, mindmap = false): CellData {
   const mindRole = node.data?.mindRole;
-  if (mindmap && (mindRole === 'root' || mindRole === 'topic')) {
+  const isMindmapRefBlock = mindmap && (node.data?.refKind === 'block-ref' || node.data?.refBlockId);
+  if (mindmap && (mindRole === 'root' || mindRole === 'topic' || isMindmapRefBlock)) {
     const position = getCellPosition(node);
     const nodeSize = getCellSize(node);
     const base = createMindmapNode({
@@ -285,8 +329,12 @@ function normalizeNode(node: CellData, mindmap = false): CellData {
       width: nodeSize.width,
       height: nodeSize.height,
       label: extractNodeLabel(node),
-      mindRole,
-      data: node.data,
+      mindRole: mindRole === 'root' ? 'root' : 'topic',
+      data: {
+        ...node.data,
+        ...(isMindmapRefBlock && node.data?.childrenCollapsed == null ? { childrenCollapsed: true } : {}),
+        ...(isMindmapRefBlock && !node.data?.refTocCollapsed ? { refTocCollapsed: {} } : {}),
+      },
     });
     return {
       ...base,
@@ -589,6 +637,71 @@ function updateNodeOverlays() {
     };
   });
   updateGraphSourceRegion();
+  updateMindmapCollapseOverlays();
+}
+
+function clearMindmapCollapseHideTimer() {
+  if (mindmapCollapseHideTimer !== null) {
+    window.clearTimeout(mindmapCollapseHideTimer);
+    mindmapCollapseHideTimer = null;
+  }
+}
+
+function showMindmapCollapseForNode(nodeId: string) {
+  if (!isMindmap.value) return;
+  clearMindmapCollapseHideTimer();
+  mindmapCollapseHoverNodeId.value = nodeId;
+  updateMindmapCollapseOverlays();
+}
+
+function scheduleHideMindmapCollapse() {
+  clearMindmapCollapseHideTimer();
+  mindmapCollapseHideTimer = window.setTimeout(() => {
+    mindmapCollapseHoverNodeId.value = null;
+    mindmapCollapseHideTimer = null;
+    updateMindmapCollapseOverlays();
+  }, 160);
+}
+
+function updateMindmapCollapseOverlays() {
+  const g = graph;
+  if (!g || !isMindmap.value) {
+    mindmapCollapseButtons.value = [];
+    return;
+  }
+
+  const direction = readMindmapDirection(props.graphData);
+  const candidateIds = new Set<string>();
+  if (mindmapCollapseHoverNodeId.value) {
+    candidateIds.add(mindmapCollapseHoverNodeId.value);
+  }
+  g.getSelectedCells().forEach((cell) => {
+    if (g.isNode(cell) && cell.isVisible()) {
+      candidateIds.add(cell.id);
+    }
+  });
+
+  const buttons: MindmapCollapseButtonState[] = [];
+  candidateIds.forEach((nodeId) => {
+    const node = g.getCellById(nodeId);
+    if (!node || !g.isNode(node) || !node.isVisible()) return;
+    if (!nodeHasMindmapExpandableChildren(g, node, mindmapRefTocContext)) return;
+    buttons.push({
+      nodeId,
+      collapsed: readMindmapNodeCollapsedForDisplay(g, node),
+      style: getMindmapCollapseButtonStyle(node, g, direction),
+    });
+  });
+
+  mindmapCollapseButtons.value = buttons;
+}
+
+function onMindmapCollapseButtonClick(nodeId: string) {
+  if (!graph) return;
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  handleMindmapNodeCollapse(node);
+  updateMindmapCollapseOverlays();
 }
 
 function suspendCanvasInteractionForEdit() {
@@ -792,6 +905,9 @@ function refreshSelectedCellState() {
     if (graph.isNode(cell)) {
       const size = cell.getSize();
       const nodeData = cell.getData<Record<string, any>>() ?? {};
+      const refBlockId = typeof nodeData.refBlockId === 'string' ? nodeData.refBlockId : '';
+      const refType: 'block' | 'page' = nodeData.refType === 'page' ? 'page' : 'block';
+      const isRefBlock = nodeData.refKind === 'block-ref' || Boolean(refBlockId);
       selectedCell.value = {
         kind: 'node',
         id: cell.id,
@@ -803,6 +919,10 @@ function refreshSelectedCellState() {
         height: size.height,
         textMode: nodeData.textMode ?? 'plain',
         richContent: nodeData.richContent ?? '',
+        isRefBlock,
+        refBlockId,
+        refType,
+        refSourceLabel: isRefBlock && refBlockId ? buildRefSourceLabel(refBlockId, refType) : '',
       };
     } else if (graph.isEdge(cell)) {
       const router = cell.getRouter();
@@ -1182,9 +1302,31 @@ function syncTaskFlowEdgeState() {
 }
 
 function syncMindmapGraphState() {
-  if (!graph || !isMindmap.value) return;
+  if (!graph || !isMindmap.value || isApplyingMindmapCollapseState()) return;
   syncMindmapEdgeStyles(graph);
-  layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+  applyMindmapCollapseState(
+    graph,
+    readMindmapDirection(props.graphData),
+    mindmapRefTocContext,
+  );
+  updateMindmapCollapseOverlays();
+}
+
+function handleMindmapNodeCollapse(node: Node) {
+  if (!graph || !isMindmap.value || !isEditable.value) return;
+  toggleMindmapNodeCollapse(
+    graph,
+    node,
+    readMindmapDirection(props.graphData),
+    mindmapRefTocContext,
+  );
+  refreshSelectedCellState();
+  updateMindmapCollapseOverlays();
+  if (syncTimer !== null) {
+    window.clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+  emitGraphData();
 }
 
 function deleteSelection() {
@@ -1389,6 +1531,43 @@ function buildRefPreviewLabel(refId: string, refType: 'block' | 'page'): string 
   return meta.pageTitle?.trim() || '引用块';
 }
 
+function buildRefSourceLabel(refId: string, refType: 'block' | 'page'): string {
+  if (refType === 'page') {
+    const workspaceStore = useWorkspaceStore();
+    const page = findPageInTree(workspaceStore.pageTree, refId);
+    return page?.title?.trim() || refId;
+  }
+
+  const meta = useBlockRegistryStore().getMeta(refId);
+  const blockLabel = buildRefPreviewLabel(refId, 'block');
+  if (meta?.pageTitle?.trim()) {
+    return `${meta.pageTitle.trim()} · ${blockLabel}`;
+  }
+  return blockLabel;
+}
+
+function canNavigateRefBlockSource(cell: SelectedCellState | null): boolean {
+  if (!cell || cell.kind !== 'node' || !cell.isRefBlock || !cell.refBlockId) return false;
+  if (cell.refType === 'page') return true;
+  return Boolean(useBlockRegistryStore().getMeta(cell.refBlockId)?.pageId);
+}
+
+async function navigateToRefBlockSource() {
+  const cell = selectedCell.value;
+  if (!canNavigateRefBlockSource(cell) || cell?.kind !== 'node') return;
+
+  const workspaceStore = useWorkspaceStore();
+  if (cell.refType === 'page') {
+    await workspaceStore.selectPage(cell.refBlockId);
+    return;
+  }
+
+  const pageId = useBlockRegistryStore().getMeta(cell.refBlockId)?.pageId;
+  if (pageId) {
+    await workspaceStore.selectPage(pageId);
+  }
+}
+
 function insertRefBlock(
   refId: string,
   refType: 'block' | 'page',
@@ -1398,6 +1577,33 @@ function insertRefBlock(
 
   const pos = position ?? getRefInsertPosition();
   const label = buildRefPreviewLabel(refId, refType);
+
+  if (isMindmap.value) {
+    const node = graph.addNode(createMindmapNode({
+      x: pos.x,
+      y: pos.y,
+      label,
+      mindRole: 'topic',
+      data: {
+        refBlockId: refId,
+        refType,
+        refKind: 'block-ref',
+        childrenCollapsed: true,
+        refTocCollapsed: {},
+      },
+    }));
+    graph.cleanSelection();
+    graph.select(node);
+    applyMindmapCollapseState(
+      graph,
+      readMindmapDirection(props.graphData),
+      mindmapRefTocContext,
+    );
+    refreshSelectedCellState();
+    scheduleSync();
+    return;
+  }
+
   const node = graph.addNode({
     id: createId('ref-node'),
     shape: 'rect',
@@ -1793,6 +1999,7 @@ function bindGraphEvents() {
 
   graph.on('selection:changed', () => {
     refreshSelectedCellState();
+    updateMindmapCollapseOverlays();
   });
 
   graph.on('node:mousedown', ({ node }) => {
@@ -1841,8 +2048,7 @@ function bindGraphEvents() {
 
   graph.on('edge:connected', () => {
     if (isMindmap.value && graph) {
-      syncMindmapEdgeStyles(graph);
-      layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+      syncMindmapGraphState();
       scheduleSync();
     }
     syncTaskFlowEdgeState();
@@ -1859,6 +2065,16 @@ function bindGraphEvents() {
       handleNodeOverlayCancel(editingNodeId.value);
     }
     pendingNodeInternalClickId = null;
+  });
+
+  graph.on('node:mouseenter', ({ node }) => {
+    if (!isMindmap.value) return;
+    showMindmapCollapseForNode(node.id);
+  });
+
+  graph.on('node:mouseleave', () => {
+    if (!isMindmap.value) return;
+    scheduleHideMindmapCollapse();
   });
 
   graph.on('node:click', ({ node }) => {
@@ -1926,8 +2142,14 @@ function bindGraphEvents() {
   graph.model.on('cell:removed', syncMindmapGraphState);
 
   // Update node overlays on graph transform / node changes
-  graph.on('translate', updateNodeOverlays);
-  graph.on('scale', updateNodeOverlays);
+  graph.on('translate', () => {
+    updateNodeOverlays();
+    updateMindmapCollapseOverlays();
+  });
+  graph.on('scale', () => {
+    updateNodeOverlays();
+    updateMindmapCollapseOverlays();
+  });
   graph.model.on('node:change:position', updateNodeOverlays);
   graph.model.on('node:change:size', updateNodeOverlays);
   graph.model.on('cell:change:data', updateNodeOverlays);
@@ -2089,6 +2311,7 @@ onBeforeUnmount(() => {
   if (syncTimer !== null) {
     window.clearTimeout(syncTimer);
   }
+  clearMindmapCollapseHideTimer();
   if (resizeObserver) {
     resizeObserver.disconnect();
     resizeObserver = null;
@@ -2345,6 +2568,25 @@ defineExpose({
           </div>
         </div>
 
+        <!-- Mindmap expand/collapse hover buttons -->
+        <button
+          v-for="btn in mindmapCollapseButtons"
+          :key="`collapse-${btn.nodeId}`"
+          type="button"
+          class="mindmap-collapse-btn"
+          :class="{ 'mindmap-collapse-btn--expanded': !btn.collapsed }"
+          :style="btn.style"
+          :title="btn.collapsed ? '展开子节点' : '收起子节点'"
+          :aria-label="btn.collapsed ? '展开子节点' : '收起子节点'"
+          :disabled="!isEditable"
+          @mousedown.stop
+          @click.stop="onMindmapCollapseButtonClick(btn.nodeId)"
+          @mouseenter="showMindmapCollapseForNode(btn.nodeId)"
+          @mouseleave="scheduleHideMindmapCollapse"
+        >
+          {{ btn.collapsed ? '+' : '−' }}
+        </button>
+
         <!-- Node overlays: plain text editing + rich text preview/editing -->
         <X6NodeOverlay
           v-for="overlay in nodeOverlays"
@@ -2389,6 +2631,7 @@ defineExpose({
           <span v-else-if="blockActionsEnabled">选中后可直接提取为素材</span>
           <template v-if="isMindmap">
             <span>Tab 添加子节点 · Enter 添加同级</span>
+            <span>悬浮节点显示展开/收起按钮（避开连接桩）</span>
             <span>双击节点编辑文字（支持富文本）</span>
             <span>Delete 删除分支（保留中心主题）</span>
           </template>
@@ -2470,7 +2713,38 @@ defineExpose({
           </template>
 
           <template v-else-if="selectedCell?.kind === 'node'">
-            <label class="field">
+            <div v-if="selectedCell.isRefBlock" class="field">
+              <span>源</span>
+              <div class="inspector-source-row">
+                <input
+                  type="text"
+                  class="inspector-source-row__input"
+                  :value="selectedCell.refSourceLabel"
+                  readonly
+                  tabindex="-1"
+                />
+                <button
+                  type="button"
+                  class="inspector-source-row__jump"
+                  title="点击跳转"
+                  :disabled="!canNavigateRefBlockSource(selectedCell)"
+                  @click="navigateToRefBlockSource"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path
+                      d="M14 5h5v5M10 14L19 5M19 10v9a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h9"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.8"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <label v-if="!selectedCell.isRefBlock" class="field">
               <span>文字模式</span>
               <select
                 :value="selectedCell.textMode"
@@ -2482,7 +2756,7 @@ defineExpose({
               </select>
             </label>
 
-            <template v-if="selectedCell.textMode === 'plain'">
+            <template v-if="!selectedCell.isRefBlock && selectedCell.textMode === 'plain'">
               <label class="field">
                 <span>文字</span>
                 <input
@@ -2493,7 +2767,7 @@ defineExpose({
                 />
               </label>
             </template>
-            <template v-else>
+            <template v-else-if="!selectedCell.isRefBlock">
               <p class="inspector-empty" style="font-size:12px;">双击节点可直接编辑富文本</p>
             </template>
 
@@ -3009,6 +3283,45 @@ defineExpose({
   display: none;
 }
 
+.mindmap-collapse-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid #91caff;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1677ff;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.18);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.mindmap-collapse-btn:hover:not(:disabled) {
+  background: #e6f4ff;
+  border-color: #1677ff;
+  transform: scale(1.06);
+}
+
+.mindmap-collapse-btn--expanded {
+  color: #389e0d;
+  border-color: #b7eb8f;
+  box-shadow: 0 2px 8px rgba(56, 158, 13, 0.16);
+}
+
+.mindmap-collapse-btn--expanded:hover:not(:disabled) {
+  background: #f6ffed;
+  border-color: #52c41a;
+}
+
+.mindmap-collapse-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .x6-stage-hint {
   position: absolute;
   left: 16px;
@@ -3178,6 +3491,56 @@ defineExpose({
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 10px;
+}
+
+.inspector-source-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.inspector-source-row__input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d2d8e2;
+  border-radius: 10px;
+  padding: 8px 10px;
+  font-size: 13px;
+  color: #213547;
+  background: #f8fafc;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.inspector-source-row__jump {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  border: 1px solid #d2d8e2;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #1677ff;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.inspector-source-row__jump svg {
+  width: 18px;
+  height: 18px;
+}
+
+.inspector-source-row__jump:hover:not(:disabled) {
+  background: #e6f4ff;
+  border-color: #91caff;
+}
+
+.inspector-source-row__jump:disabled {
+  color: #b8c0cc;
+  cursor: not-allowed;
+  background: #f5f7fa;
 }
 
 .field-meta {

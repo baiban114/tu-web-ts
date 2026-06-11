@@ -1,7 +1,7 @@
 import type { Block, HeadingSourceBinding } from '@/api/types'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 
-export type TocSourceType = 'local' | 'ref-group' | 'ref-child'
+export type TocSourceType = 'local' | 'ref-group' | 'ref-child' | 'ref-doc-block'
 
 export interface FlatTocEntry {
   id: string

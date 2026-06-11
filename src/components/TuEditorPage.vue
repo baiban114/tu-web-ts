@@ -897,19 +897,6 @@ const tocItems = computed<TocItem[]>(() => {
   return buildHeadingTree(flat)
 })
 
-/** Total flat heading count counting group children. */
-const tocFlatCount = computed(() => {
-  const count = (items: TocItem[]): number => {
-    let n = 0
-    for (const item of items) {
-      n += 1
-      if (item.children) n += count(item.children)
-    }
-    return n
-  }
-  return count(tocItems.value)
-})
-
 const getEditorScrollContainer = (): HTMLElement | Window => {
   const editorDom = tuEditorRef.value?.editor?.view.dom
   return editorDom?.closest('.content-scroll') as HTMLElement | null ?? window
@@ -1538,7 +1525,6 @@ onBeforeUnmount(() => {
             @click="tocExpanded = false"
           >
             <span class="page-toc__title">目录</span>
-            <span class="page-toc__meta">{{ tocFlatCount }}</span>
             <span class="page-toc__toggle">收起</span>
           </button>
           <div v-if="tocExpanded && allExpandableTocIds.length > 0" class="page-toc__actions">
@@ -1898,18 +1884,6 @@ onBeforeUnmount(() => {
   font-weight: 700;
 }
 
-.page-toc__meta {
-  flex: 0 0 auto;
-  min-width: 20px;
-  padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(22, 119, 255, 0.12);
-  color: #1677ff;
-  font-size: 11px;
-  font-weight: 700;
-  text-align: center;
-}
-
 .page-toc__toggle {
   flex: 0 0 auto;
   color: #6b7280;
@@ -2022,18 +1996,6 @@ onBeforeUnmount(() => {
   color: #7c3aed !important;
   font-size: 10px !important;
   min-width: 20px !important;
-}
-
-.page-toc :deep(.page-toc__group-count) {
-  flex: 0 0 auto;
-  min-width: 18px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(139, 92, 246, 0.10);
-  color: #7c3aed;
-  font-size: 10px;
-  font-weight: 700;
-  text-align: center;
 }
 
 .page-toc :deep(.page-toc__children .page-toc__item:hover) {

@@ -70,7 +70,6 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
         >
           来源
         </button>
-        <span v-if="item.sourceType === 'ref-group'" class="page-toc__group-count">{{ item.children.length }}</span>
       </button>
       <div
         v-if="isExpanded(item)"

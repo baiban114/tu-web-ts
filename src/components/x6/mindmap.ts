@@ -77,7 +77,10 @@ function buildTree(graph: Graph, rootId: string): MindmapTreeNode | null {
   const visit = (id: string): MindmapTreeNode => {
     const node = nodeById.get(id)!;
     const { width, height } = getNodeSize(node);
-    const childIds = childrenByParent.get(id) ?? [];
+    const childIds = (childrenByParent.get(id) ?? []).filter((childId) => {
+      const childNode = nodeById.get(childId);
+      return childNode?.isVisible() !== false;
+    });
     const children = childIds.map((childId) => visit(childId));
     const subtreeHeight = children.length
       ? children.reduce((sum, child) => sum + child.subtreeHeight + V_GAP, -V_GAP)

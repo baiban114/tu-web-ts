@@ -29,6 +29,24 @@ export function getTocSectionBoundaryPos(
   return doc.content.size
 }
 
+/** Flat TOC section ids (entry + descendants until same/higher level). Shared by editor fold and mindmap ref expand. */
+export function getRefTocSectionEntryIds(flat: FlatTocEntry[], entryId: string): string[] {
+  const entryIndex = flat.findIndex((item) => item.id === entryId)
+  if (entryIndex < 0) return [entryId]
+
+  const current = flat[entryIndex]
+  const ids = [entryId]
+  for (let j = entryIndex + 1; j < flat.length; j += 1) {
+    if (flat[j].level <= current.level) break
+    ids.push(flat[j].id)
+  }
+  return ids
+}
+
+export function isRefTocDirectoryEntry(entry: FlatTocEntry): boolean {
+  return entry.sourceType === 'ref-group' || entry.sourceType === 'ref-child'
+}
+
 function nextSameOrHigherEntryIndex(flat: FlatTocEntry[], entryIndex: number): number {
   const current = flat[entryIndex]
   for (let j = entryIndex + 1; j < flat.length; j++) {
