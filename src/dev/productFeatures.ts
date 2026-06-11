@@ -77,7 +77,7 @@ export const productFeatureCatalog: ProductFeature[] = [
     id: 'mindmap-page',
     module: '知识库',
     name: '思维导图页面',
-    description: '页面树可新建 mindmap 类型页面；CanvasPage 独占画布区；文档内 embed 可升级为独立页；节点支持富文本模式。',
+    description: '页面树可新建 mindmap 类型页面；CanvasPage 独占画布区；文档内 embed 可升级为独立页；节点支持富文本模式；节点拖拽以虚线连接预览重挂载位置。',
     status: 'testing',
     owner: 'Editor',
   },

@@ -70,7 +70,14 @@ export function createNodePorts() {
   };
 }
 
-/** 思维导图 LR 布局：子节点从右侧连出、从左侧接入 */
+export function getMindmapEdgePorts(branchSide: 'left' | 'right') {
+  if (branchSide === 'left') {
+    return { sourcePort: 'port-left', targetPort: 'port-right' } as const;
+  }
+  return { sourcePort: 'port-right', targetPort: 'port-left' } as const;
+}
+
+/** 思维导图：左右子树各用对应侧连接桩 */
 export function createMindmapPorts() {
   return {
     groups: MINDMAP_PORT_GROUPS,

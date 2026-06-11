@@ -6,8 +6,61 @@ import {
   createMindmapNode,
   type MindmapNodeRole,
 } from './graphCells';
+import { getMindmapEdgePorts } from './ports';
 
 export type MindmapDirection = 'LR' | 'RL' | 'TB' | 'BT';
+export type MindmapDropSide = 'left' | 'right';
+
+export interface MindmapDropTarget {
+  nodeId: string;
+  side: MindmapDropSide;
+}
+
+export const MINDMAP_FREE_TOPIC_ROLE = 'free' as const;
+
+export interface MindmapLayoutPreviewAttach {
+  childId: string;
+  parentId: string;
+  side: MindmapDropSide;
+  insertBeforeId?: string | null;
+}
+
+let mindmapLayoutPreviewAttach: MindmapLayoutPreviewAttach | null = null;
+let mindmapLayoutSkipNodeIds = new Set<string>();
+let mindmapDragPreviewActive = false;
+let mindmapDragSessionActive = false;
+
+export function isApplyingMindmapDragPreview(): boolean {
+  return mindmapDragPreviewActive || mindmapDragSessionActive;
+}
+
+export function setMindmapDragPreviewActive(active: boolean) {
+  mindmapDragPreviewActive = active;
+}
+
+export function setMindmapDragSession(draggedNodeId: string | null, graph?: Graph) {
+  mindmapDragSessionActive = draggedNodeId != null;
+  if (draggedNodeId && graph) {
+    mindmapLayoutSkipNodeIds = new Set(collectMindmapDescendantIds(graph, draggedNodeId));
+  } else {
+    mindmapLayoutSkipNodeIds = new Set();
+  }
+  if (!draggedNodeId) {
+    mindmapLayoutPreviewAttach = null;
+  }
+}
+
+export function getMindmapLayoutSkipNodeIds(): ReadonlySet<string> {
+  return mindmapLayoutSkipNodeIds;
+}
+
+export function setMindmapLayoutPreview(attach: MindmapLayoutPreviewAttach | null) {
+  mindmapLayoutPreviewAttach = attach;
+}
+
+export function getMindmapLayoutPreview(): MindmapLayoutPreviewAttach | null {
+  return mindmapLayoutPreviewAttach;
+}
 
 const H_GAP = 88;
 const V_GAP = 16;
@@ -18,10 +71,35 @@ const ROOT_NODE_HEIGHT = 56;
 
 interface MindmapTreeNode {
   id: string;
-  children: MindmapTreeNode[];
+  leftChildren: MindmapTreeNode[];
+  rightChildren: MindmapTreeNode[];
   width: number;
   height: number;
   subtreeHeight: number;
+}
+
+function stackHeight(children: MindmapTreeNode[]): number {
+  if (!children.length) return 0;
+  return children.reduce((sum, child) => sum + child.subtreeHeight + V_GAP, -V_GAP);
+}
+
+export function getMindmapBranchSide(graph: Graph, nodeId: string): MindmapDropSide {
+  if (mindmapLayoutPreviewAttach?.childId === nodeId) {
+    return mindmapLayoutPreviewAttach.side;
+  }
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return 'right';
+  const side = node.getData<Record<string, unknown>>()?.mindBranchSide;
+  return side === 'left' ? 'left' : 'right';
+}
+
+export function setMindmapBranchSide(graph: Graph, nodeId: string, side: MindmapDropSide) {
+  const node = graph.getCellById(nodeId);
+  if (!node || !graph.isNode(node)) return;
+  node.setData({
+    ...node.getData(),
+    mindBranchSide: side,
+  });
 }
 
 function getNodeSize(node: Node) {
@@ -34,6 +112,70 @@ function getNodeSize(node: Node) {
   };
 }
 
+function getRawChildIds(graph: Graph, parentId: string): string[] {
+  const childIds: string[] = [];
+  graph.getEdges().forEach((edge) => {
+    if (edge.getSourceCellId() !== parentId) return;
+    const target = edge.getTargetCellId();
+    if (target) childIds.push(target);
+  });
+  return childIds;
+}
+
+export function getOrderedMindmapChildIds(graph: Graph, parentId: string): string[] {
+  const parent = graph.getCellById(parentId);
+  const raw = getRawChildIds(graph, parentId);
+  if (!parent || !graph.isNode(parent)) return raw;
+
+  const order = (parent.getData<Record<string, unknown>>()?.mindChildOrder as string[] | undefined) ?? [];
+  const ordered = order.filter((id) => raw.includes(id));
+  const rest = raw.filter((id) => !ordered.includes(id));
+  return [...ordered, ...rest];
+}
+
+export function setMindmapChildOrder(graph: Graph, parentId: string, childIds: string[]) {
+  const parent = graph.getCellById(parentId);
+  if (!parent || !graph.isNode(parent)) return;
+  parent.setData({
+    ...parent.getData(),
+    mindChildOrder: childIds,
+  });
+}
+
+export function insertMindmapChildOrder(
+  graph: Graph,
+  parentId: string,
+  childId: string,
+  side: MindmapDropSide,
+  insertBeforeId?: string | null,
+) {
+  setMindmapBranchSide(graph, childId, side);
+
+  const currentOrder = getOrderedMindmapChildIds(graph, parentId).filter((id) => id !== childId);
+  let leftIds = currentOrder.filter((id) => getMindmapBranchSide(graph, id) === 'left');
+  let rightIds = currentOrder.filter((id) => getMindmapBranchSide(graph, id) !== 'left');
+
+  const targetBranch = side === 'left' ? leftIds : rightIds;
+  if (insertBeforeId && targetBranch.includes(insertBeforeId)) {
+    targetBranch.splice(targetBranch.indexOf(insertBeforeId), 0, childId);
+  } else {
+    targetBranch.push(childId);
+  }
+
+  if (side === 'left') {
+    leftIds = targetBranch;
+  } else {
+    rightIds = targetBranch;
+  }
+
+  setMindmapChildOrder(graph, parentId, [...leftIds, ...rightIds]);
+}
+
+export function removeMindmapChildFromOrder(graph: Graph, parentId: string, childId: string) {
+  const order = getOrderedMindmapChildIds(graph, parentId).filter((id) => id !== childId);
+  setMindmapChildOrder(graph, parentId, order);
+}
+
 function getParentIdMap(graph: Graph): Map<string, string> {
   const parentByChild = new Map<string, string>();
   graph.getEdges().forEach((edge) => {
@@ -44,6 +186,73 @@ function getParentIdMap(graph: Graph): Map<string, string> {
     parentByChild.set(target, source);
   });
   return parentByChild;
+}
+
+function buildChildrenByParent(graph: Graph): Map<string, string[]> {
+  const childrenByParent = new Map<string, string[]>();
+  graph.getEdges().forEach((edge) => {
+    const source = edge.getSourceCellId();
+    const target = edge.getTargetCellId();
+    if (!source || !target) return;
+    if (!childrenByParent.has(source)) childrenByParent.set(source, []);
+    childrenByParent.get(source)!.push(target);
+  });
+
+  for (const [parentId, childIds] of childrenByParent.entries()) {
+    const ordered = getOrderedMindmapChildIds(graph, parentId);
+    childrenByParent.set(parentId, ordered.filter((id) => childIds.includes(id)));
+  }
+
+  const preview = mindmapLayoutPreviewAttach;
+  if (preview) {
+    for (const [parentId, childIds] of childrenByParent.entries()) {
+      childrenByParent.set(parentId, childIds.filter((id) => id !== preview.childId));
+    }
+    const previewChildren = (childrenByParent.get(preview.parentId) ?? []).filter(
+      (id) => id !== preview.childId,
+    );
+    const leftIds = previewChildren.filter((id) => getMindmapBranchSide(graph, id) === 'left');
+    const rightIds = previewChildren.filter((id) => getMindmapBranchSide(graph, id) !== 'left');
+    const branchIds = preview.side === 'left' ? leftIds : rightIds;
+    if (preview.insertBeforeId && branchIds.includes(preview.insertBeforeId)) {
+      branchIds.splice(branchIds.indexOf(preview.insertBeforeId), 0, preview.childId);
+    } else {
+      branchIds.push(preview.childId);
+    }
+    if (preview.side === 'left') {
+      childrenByParent.set(preview.parentId, [...leftIds, ...rightIds]);
+    } else {
+      childrenByParent.set(preview.parentId, [...leftIds, ...rightIds]);
+    }
+  }
+
+  return childrenByParent;
+}
+
+export function isMindmapFreeTopic(node: Node): boolean {
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  return data.mindRole === MINDMAP_FREE_TOPIC_ROLE || data.mindFree === true;
+}
+
+export function applyMindmapTopicStyle(node: Node) {
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  const isRoot = data.mindRole === 'root';
+  const isFree = isMindmapFreeTopic(node);
+  node.attr({
+    body: {
+      fill: isRoot ? '#e6f4ff' : (isFree ? '#fffbe6' : '#f6ffed'),
+      stroke: isRoot ? '#1677ff' : (isFree ? '#d48806' : '#52c41a'),
+      strokeWidth: isRoot ? 2 : 1.6,
+      strokeDasharray: isFree ? '5 4' : '',
+      rx: isRoot ? 20 : 14,
+      ry: isRoot ? 20 : 14,
+    },
+    label: {
+      fill: isRoot ? '#003a8c' : (isFree ? '#874d00' : '#135200'),
+      fontSize: isRoot ? 15 : 14,
+      fontWeight: isRoot ? 700 : 600,
+    },
+  });
 }
 
 export function findMindmapRootId(graph: Graph): string | null {
@@ -65,14 +274,7 @@ function buildTree(graph: Graph, rootId: string): MindmapTreeNode | null {
   const rootNode = nodeById.get(rootId);
   if (!rootNode) return null;
 
-  const childrenByParent = new Map<string, string[]>();
-  graph.getEdges().forEach((edge) => {
-    const source = edge.getSourceCellId();
-    const target = edge.getTargetCellId();
-    if (!source || !target) return;
-    if (!childrenByParent.has(source)) childrenByParent.set(source, []);
-    childrenByParent.get(source)!.push(target);
-  });
+  const childrenByParent = buildChildrenByParent(graph);
 
   const visit = (id: string): MindmapTreeNode => {
     const node = nodeById.get(id)!;
@@ -81,16 +283,21 @@ function buildTree(graph: Graph, rootId: string): MindmapTreeNode | null {
       const childNode = nodeById.get(childId);
       return childNode?.isVisible() !== false;
     });
-    const children = childIds.map((childId) => visit(childId));
-    const subtreeHeight = children.length
-      ? children.reduce((sum, child) => sum + child.subtreeHeight + V_GAP, -V_GAP)
-      : height;
+    const childTrees = childIds.map((childId) => visit(childId));
+    const leftChildren = childTrees.filter((child) => getMindmapBranchSide(graph, child.id) === 'left');
+    const rightChildren = childTrees.filter((child) => getMindmapBranchSide(graph, child.id) !== 'left');
+    const subtreeHeight = Math.max(
+      height,
+      stackHeight(leftChildren),
+      stackHeight(rightChildren),
+    );
     return {
       id,
-      children,
+      leftChildren,
+      rightChildren,
       width,
       height,
-      subtreeHeight: Math.max(height, subtreeHeight),
+      subtreeHeight,
     };
   };
 
@@ -99,59 +306,146 @@ function buildTree(graph: Graph, rootId: string): MindmapTreeNode | null {
 
 function assignPositions(
   tree: MindmapTreeNode,
-  direction: MindmapDirection,
   originX: number,
   originY: number,
   positions: Map<string, { x: number; y: number }>,
 ) {
   const placeSubtree = (node: MindmapTreeNode, x: number, y: number) => {
     positions.set(node.id, { x, y });
-    if (!node.children.length) return;
 
-    let childY = y + node.subtreeHeight / 2 - (
-      node.children.reduce((sum, child) => sum + child.subtreeHeight + V_GAP, -V_GAP) / 2
-    );
-
-    node.children.forEach((child) => {
-      const childX = direction === 'LR'
-        ? x + node.width + H_GAP
-        : direction === 'RL'
-          ? x - child.width - H_GAP
-          : x;
-      const childPosY = direction === 'TB'
-        ? y + node.height + H_GAP
-        : direction === 'BT'
-          ? y - child.subtreeHeight
-          : childY;
-      placeSubtree(child, childX, childPosY);
-      if (direction === 'LR' || direction === 'RL') {
+    const layoutBranch = (children: MindmapTreeNode[], side: MindmapDropSide) => {
+      if (!children.length) return;
+      const totalHeight = stackHeight(children);
+      let childY = y + node.subtreeHeight / 2 - totalHeight / 2;
+      children.forEach((child) => {
+        const childX = side === 'left'
+          ? x - H_GAP - child.width
+          : x + node.width + H_GAP;
+        placeSubtree(child, childX, childY);
         childY += child.subtreeHeight + V_GAP;
-      }
-    });
+      });
+    };
+
+    layoutBranch(node.leftChildren, 'left');
+    layoutBranch(node.rightChildren, 'right');
   };
 
-  placeSubtree(tree, originX, originY - tree.subtreeHeight / 2 + tree.height / 2);
+  placeSubtree(tree, originX, originY);
 }
+
+export function computeMindmapLayoutPositions(graph: Graph): Map<string, { x: number; y: number }> {
+  const rootId = findMindmapRootId(graph);
+  if (!rootId) return new Map();
+
+  const tree = buildTree(graph, rootId);
+  if (!tree) return new Map();
+  const rootNode = graph.getCellById(rootId);
+  const rootPosition = rootNode && graph.isNode(rootNode)
+    ? rootNode.getPosition()
+    : { x: 360, y: 220 };
+
+  const positions = new Map<string, { x: number; y: number }>();
+  assignPositions(tree, rootPosition.x, rootPosition.y, positions);
+  return positions;
+}
+
+export function resolveMindmapInsertBeforeId(
+  graph: Graph,
+  parentId: string,
+  draggedNodeId: string,
+  branchSide: MindmapDropSide,
+  compareY: number,
+  layoutPositions: Map<string, { x: number; y: number }>,
+): string | null {
+  const siblings = getOrderedMindmapChildIds(graph, parentId)
+    .filter((id) => id !== draggedNodeId && getMindmapBranchSide(graph, id) === branchSide);
+
+  for (const siblingId of siblings) {
+    const pos = layoutPositions.get(siblingId);
+    if (!pos) continue;
+    const sibling = graph.getCellById(siblingId);
+    if (!sibling || !graph.isNode(sibling)) continue;
+    const { height } = getNodeSize(sibling);
+    if (pos.y + height / 2 > compareY) {
+      return siblingId;
+    }
+  }
+  return null;
+}
+
+export function computeMindmapInsertBeforeId(
+  graph: Graph,
+  parentId: string,
+  draggedNodeId: string,
+  branchSide: MindmapDropSide,
+  compareY: number,
+): string | null {
+  const savedPreview = mindmapLayoutPreviewAttach;
+  setMindmapLayoutPreview({
+    childId: draggedNodeId,
+    parentId,
+    side: branchSide,
+    insertBeforeId: null,
+  });
+  const layoutPositions = computeMindmapLayoutPositions(graph);
+  const insertBeforeId = resolveMindmapInsertBeforeId(
+    graph,
+    parentId,
+    draggedNodeId,
+    branchSide,
+    compareY,
+    layoutPositions,
+  );
+  setMindmapLayoutPreview(savedPreview);
+  return insertBeforeId;
+}
+
+export function syncMindmapEdgePorts(graph: Graph, silent = false) {
+  const cellOptions = silent ? { silent: true } : undefined;
+  graph.getEdges().forEach((edge) => {
+    if (edge.id === MINDMAP_DRAG_PREVIEW_EDGE_ID) return;
+    const targetId = edge.getTargetCellId();
+    const sourceId = edge.getSourceCellId();
+    if (!targetId || !sourceId) return;
+    const targetNode = graph.getCellById(targetId);
+    if (!targetNode || !graph.isNode(targetNode)) return;
+    const ports = getMindmapEdgePorts(getMindmapBranchSide(graph, targetId));
+    edge.setSource({ cell: sourceId, port: ports.sourcePort }, cellOptions);
+    edge.setTarget({ cell: targetId, port: ports.targetPort }, cellOptions);
+  });
+}
+
+export const MINDMAP_DRAG_PREVIEW_EDGE_ID = '__mindmap-drag-preview-edge__';
+export const MINDMAP_DRAG_PREVIEW_OPTION = '__mindmapDragPreview';
 
 export function layoutMindmapGraph(graph: Graph, direction: MindmapDirection = 'LR') {
   const rootId = findMindmapRootId(graph);
   if (!rootId) return;
 
-  const tree = buildTree(graph, rootId);
-  if (!tree) return;
+  const positions = computeMindmapLayoutPositions(graph);
+  if (!positions.size) return;
 
-  const positions = new Map<string, { x: number; y: number }>();
-  assignPositions(tree, direction, 80, 220, positions);
+  const previewActive = mindmapLayoutPreviewAttach != null;
+  const skipIds = previewActive ? new Set<string>() : mindmapLayoutSkipNodeIds;
 
   graph.batchUpdate(() => {
     positions.forEach((pos, id) => {
+      if (skipIds.has(id)) return;
       const node = graph.getCellById(id);
       if (node && graph.isNode(node)) {
+        if (isMindmapFreeTopic(node)) return;
         node.position(pos.x, pos.y);
       }
     });
 
+    graph.getNodes().forEach((node) => {
+      if (isMindmapFreeTopic(node)) {
+        applyMindmapTopicStyle(node);
+      }
+    });
+
     graph.getEdges().forEach((edge) => {
+      if (edge.id === MINDMAP_DRAG_PREVIEW_EDGE_ID) return;
       edge.setRouter({ name: 'normal' });
       edge.setConnector({ name: 'smooth' });
       edge.attr({
@@ -165,11 +459,14 @@ export function layoutMindmapGraph(graph: Graph, direction: MindmapDirection = '
         },
       });
     });
+
+    syncMindmapEdgePorts(graph);
   });
 }
 
 export function syncMindmapEdgeStyles(graph: Graph) {
   graph.getEdges().forEach((edge) => {
+    if (edge.id === MINDMAP_DRAG_PREVIEW_EDGE_ID) return;
     edge.setRouter({ name: 'normal' });
     edge.setConnector({ name: 'smooth' });
     edge.attr({
@@ -183,6 +480,7 @@ export function syncMindmapEdgeStyles(graph: Graph) {
       },
     });
   });
+  syncMindmapEdgePorts(graph);
 }
 
 function getSelectedMindmapNode(graph: Graph): Node | null {

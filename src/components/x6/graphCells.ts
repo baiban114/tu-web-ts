@@ -1,6 +1,6 @@
 import type { UmlClassDefinition } from '@/stores/objectModel';
 import { createId, mergeDeep, type CellData } from './cellUtils';
-import { createMindmapPorts, createNodePorts } from './ports';
+import { createMindmapPorts, createNodePorts, getMindmapEdgePorts } from './ports';
 
 export type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
 
@@ -33,12 +33,14 @@ export function createMindmapEdgeMetadata(
   sourceId: string,
   targetId: string,
   edgeId?: string,
+  branchSide: 'left' | 'right' = 'right',
 ): CellData {
+  const ports = getMindmapEdgePorts(branchSide);
   return createEdgeMetadata(
     {
       id: edgeId ?? createId('mindmap-edge'),
-      source: { cell: sourceId, port: 'port-right' },
-      target: { cell: targetId, port: 'port-left' },
+      source: { cell: sourceId, port: ports.sourcePort },
+      target: { cell: targetId, port: ports.targetPort },
     },
     {
       router: { name: 'normal' },
@@ -229,7 +231,7 @@ export function createTaskNode(options: Partial<CellData> = {}): CellData {
   });
 }
 
-export type MindmapNodeRole = 'root' | 'topic';
+export type MindmapNodeRole = 'root' | 'topic' | 'free';
 
 export function createMindmapNode(options: Partial<CellData> & { mindRole?: MindmapNodeRole } = {}): CellData {
   const mindRole = options.mindRole ?? 'topic';
@@ -265,6 +267,7 @@ export function createMindmapNode(options: Partial<CellData> & { mindRole?: Mind
       preset: 'round',
       textMode: 'plain',
       mindRole,
+      mindBranchSide: isRoot ? undefined : 'right',
       ...(options.data ?? {}),
     },
     ...options,

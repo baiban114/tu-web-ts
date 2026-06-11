@@ -4,3 +4,4 @@ export * from './graphCells';
 export * from './blueprints';
 export * from './mindmap';
 export * from './mindmapCollapse';
+export * from './mindmapDragReparent';

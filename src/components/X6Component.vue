@@ -52,9 +52,21 @@ import {
   toggleMindmapNodeCollapse,
   createMindmapRefTocContext,
   isApplyingMindmapCollapseState,
+  isApplyingMindmapDragPreview,
   nodeHasMindmapExpandableChildren,
   readMindmapNodeCollapsedForDisplay,
   getMindmapCollapseButtonStyle,
+  beginMindmapNodeDrag,
+  commitMindmapDragDrop,
+  endMindmapNodeDrag,
+  findMindmapRootId,
+  findMindmapDropTarget,
+  layoutMindmapGraph,
+  getLastMindmapDragPointer,
+  updateMindmapDragPreview,
+  collectMindmapDescendantIds,
+  MINDMAP_DRAG_PREVIEW_EDGE_ID,
+  MINDMAP_DRAG_PREVIEW_OPTION,
   type NodePreset,
 } from '@/components/x6';
 
@@ -168,6 +180,7 @@ const toolbarVisible = ref(true);
 const inspectorVisible = ref(true);
 type CanvasInteractionMode = 'select' | 'pan';
 const canvasInteractionMode = ref<CanvasInteractionMode>('select');
+let mindmapDragActiveNodeId: string | null = null;
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -503,9 +516,13 @@ function serializeGraphData(): GraphData {
   }
 
   const nodes = graph.getNodes().map((node) => node.toJSON() as CellData);
-  const edges = graph.getEdges().map((edge) => edge.toJSON() as CellData);
+  const edges = graph.getEdges()
+    .filter((edge) => edge.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID)
+    .map((edge) => edge.toJSON() as CellData);
   return {
-    cells: graph.toJSON().cells as CellData[],
+    cells: (graph.toJSON().cells as CellData[]).filter(
+      (cell) => cell.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID,
+    ),
     nodes,
     edges,
     uml: objectModelStore.model as Record<string, unknown>,
@@ -709,10 +726,20 @@ function suspendCanvasInteractionForEdit() {
   graph?.disableSelection();
 }
 
+function cancelMindmapNodeDrag() {
+  if (!graph || !mindmapDragActiveNodeId) return;
+  const draggedNode = graph.getCellById(mindmapDragActiveNodeId);
+  if (draggedNode && graph.isNode(draggedNode)) {
+    endMindmapNodeDrag(graph, readMindmapDirection(props.graphData));
+  }
+  mindmapDragActiveNodeId = null;
+}
+
 function applyCanvasInteractionMode() {
   if (!graph || editingNodeId.value != null || edgeInlineEditing.value) return;
 
   if (canvasInteractionMode.value === 'pan') {
+    cancelMindmapNodeDrag();
     graph.options.panning.eventTypes = ['leftMouseDown'];
     graph.enablePanning();
     graph.disableSelection();
@@ -943,6 +970,7 @@ function refreshSelectedCellState() {
 
 function scheduleSync() {
   if (!graph || isApplyingExternalData) return;
+  if (isApplyingMindmapDragPreview()) return;
 
   refreshSelectedCellState();
 
@@ -1303,6 +1331,7 @@ function syncTaskFlowEdgeState() {
 
 function syncMindmapGraphState() {
   if (!graph || !isMindmap.value || isApplyingMindmapCollapseState()) return;
+  if (isApplyingMindmapDragPreview()) return;
   syncMindmapEdgeStyles(graph);
   applyMindmapCollapseState(
     graph,
@@ -2017,16 +2046,70 @@ function bindGraphEvents() {
       return;
     }
 
+    if (
+      isMindmap.value
+      && canvasInteractionMode.value === 'select'
+      && graph
+    ) {
+      const rootId = findMindmapRootId(graph);
+      if (rootId && node.id !== rootId) {
+        beginMindmapNodeDrag(graph, node.id);
+        mindmapDragActiveNodeId = node.id;
+      }
+    }
+
     if (isNodeSoleSelected(node)) {
       pendingNodeInternalClickId = node.id;
     }
+  });
+
+  graph.on('node:moving', ({ node }) => {
+    if (
+      !isMindmap.value
+      || !isEditable.value
+      || canvasInteractionMode.value !== 'select'
+      || !graph
+      || mindmapDragActiveNodeId !== node.id
+    ) {
+      return;
+    }
+    const position = node.getPosition();
+    const size = node.getSize();
+    updateMindmapDragPreview(graph, node, {
+      x: position.x + size.width / 2,
+      y: position.y + size.height / 2,
+    });
   });
 
   graph.on('node:mouseup', () => {
     finishUserInteraction();
   });
 
-  graph.on('node:moved', () => {
+  graph.on('node:moved', ({ node }) => {
+    if (
+      isMindmap.value
+      && isEditable.value
+      && canvasInteractionMode.value === 'select'
+      && graph
+      && mindmapDragActiveNodeId === node.id
+    ) {
+      const direction = readMindmapDirection(props.graphData);
+      const excluded = new Set(collectMindmapDescendantIds(graph, node.id));
+      const pointer = getLastMindmapDragPointer() ?? {
+        x: node.getPosition().x + node.getSize().width / 2,
+        y: node.getPosition().y + node.getSize().height / 2,
+      };
+      const target = findMindmapDropTarget(graph, pointer, node, excluded);
+      mindmapDragActiveNodeId = null;
+      const result = commitMindmapDragDrop(graph, node, target, pointer);
+      endMindmapNodeDrag(graph, direction, { layout: result === 'unchanged' });
+      if (result !== 'unchanged') {
+        updateMindmapCollapseOverlays();
+        scheduleSync();
+      }
+      finishUserInteraction();
+      return;
+    }
     finishUserInteraction();
   });
 
@@ -2246,16 +2329,25 @@ function initGraph() {
         return true;
       },
     },
-    interacting: () => ({
-      nodeMovable: isEditable.value && !isMindmap.value,
-      edgeMovable: isEditable.value && !isMindmap.value,
-      edgeLabelMovable: isEditable.value && !isMindmap.value,
-      magnetConnectable: isEditable.value,
-      arrowheadMovable: isEditable.value && !isMindmap.value,
-      vertexMovable: isEditable.value && !isMindmap.value,
-      vertexAddable: isEditable.value && !isMindmap.value,
-      vertexDeletable: isEditable.value && !isMindmap.value,
-    }),
+    interacting: (cellView) => {
+      const cell = cellView.cell;
+      const mindmapSelectDrag = isMindmap.value
+        && isEditable.value
+        && canvasInteractionMode.value === 'select'
+        && graph?.isNode(cell)
+        && cell.getData<Record<string, unknown>>()?.mindRole !== 'root';
+      const defaultMovable = isEditable.value && !isMindmap.value;
+      return {
+        nodeMovable: mindmapSelectDrag || defaultMovable,
+        edgeMovable: defaultMovable,
+        edgeLabelMovable: defaultMovable,
+        magnetConnectable: isEditable.value,
+        arrowheadMovable: defaultMovable,
+        vertexMovable: defaultMovable,
+        vertexAddable: defaultMovable,
+        vertexDeletable: defaultMovable,
+      };
+    },
   });
 
   graph.use(
@@ -2271,7 +2363,13 @@ function initGraph() {
   );
   graph.use(new Keyboard({ enabled: isEditable.value }));
   graph.use(new Clipboard({ enabled: true, useLocalStorage: false }));
-  graph.use(new History({ enabled: true }));
+  graph.use(new History({
+    enabled: true,
+    beforeAddCommand: (_event, args) => {
+      const options = args && 'options' in args ? args.options as Record<string, unknown> | undefined : undefined;
+      return options?.[MINDMAP_DRAG_PREVIEW_OPTION] === true ? false : undefined;
+    },
+  }));
   graph.use(new Snapline({ enabled: isEditable.value }));
   graph.use(
     new Transform({

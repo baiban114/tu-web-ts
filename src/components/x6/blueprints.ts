@@ -37,7 +37,7 @@ function collectGraphCells(data?: GraphData | null): unknown[] {
 
 /** Detect mindmap graphs saved without blueprintMeta (e.g. backend round-trip). */
 export function looksLikeMindmapGraph(data?: GraphData | null): boolean {
-  const mindRoles = new Set(['root', 'topic', 'branch']);
+  const mindRoles = new Set(['root', 'topic', 'branch', 'free']);
   return collectGraphCells(data).some((cell) => {
     if (!cell || typeof cell !== 'object') return false;
     const record = cell as Record<string, unknown>;
