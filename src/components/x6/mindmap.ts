@@ -742,6 +742,9 @@ export const MINDMAP_DRAG_PREVIEW_OPTION = '__mindmapDragPreview';
 export function layoutMindmapGraph(graph: Graph, direction: MindmapDirection = 'LR') {
   void direction;
   ensureMindmapConnectorRegistered();
+  if (mindmapStructureChangeDepth > 0) {
+    setMindmapDragSession(null);
+  }
   const rootId = findMindmapRootId(graph);
   if (!rootId) return;
 

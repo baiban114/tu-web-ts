@@ -128,6 +128,52 @@ test('lays out starter branches to the right of root on create', async ({ page }
   expect(branch2Box!.x).toBeGreaterThan(rootBox!.x + rootBox!.width - 4)
 })
 
+function bboxOverlapArea(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number },
+): number {
+  const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)
+  const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)
+  if (overlapX <= 0 || overlapY <= 0) return 0
+  return overlapX * overlapY
+}
+
+test('adds sibling with Enter after click without overlapping anchor', async ({ page }) => {
+  await createMindmapFromMenu(page)
+
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  const branch1 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 1' }).first()
+  await expect(branch1).toBeVisible()
+
+  await branch1.click()
+  await page.keyboard.press('Enter')
+
+  const newSibling = page.locator('.x6-node[data-cell-id]').filter({ hasText: '同级分支' }).first()
+  await expect(newSibling).toBeVisible()
+
+  const anchorBox = await branch1.boundingBox()
+  const siblingBox = await newSibling.boundingBox()
+  expect(anchorBox).not.toBeNull()
+  expect(siblingBox).not.toBeNull()
+
+  const overlap = bboxOverlapArea(anchorBox!, siblingBox!)
+  const minArea = Math.min(anchorBox!.width * anchorBox!.height, siblingBox!.width * siblingBox!.height)
+  expect(overlap).toBeLessThan(minArea * 0.1)
+  expect(Math.abs(siblingBox!.y - anchorBox!.y)).toBeGreaterThan(anchorBox!.height * 0.25)
+
+  await page.keyboard.press('Enter')
+  const secondSibling = page.locator('.x6-node[data-cell-id]').filter({ hasText: '同级分支' }).nth(1)
+  await expect(secondSibling).toBeVisible()
+
+  const anchorBoxAfter = await branch1.boundingBox()
+  const secondBox = await secondSibling.boundingBox()
+  expect(anchorBoxAfter).not.toBeNull()
+  expect(secondBox).not.toBeNull()
+  expect(bboxOverlapArea(anchorBoxAfter!, secondBox!)).toBeLessThan(
+    Math.min(anchorBoxAfter!.width * anchorBoxAfter!.height, secondBox!.width * secondBox!.height) * 0.1,
+  )
+})
+
 test('does not delete root when only center topic is selected', async ({ page }) => {
   await createMindmapFromMenu(page)
 

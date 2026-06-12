@@ -191,6 +191,8 @@ const inspectorVisible = ref(true);
 type CanvasInteractionMode = 'select' | 'pan';
 const canvasInteractionMode = ref<CanvasInteractionMode>('select');
 let mindmapDragActiveNodeId: string | null = null;
+let mindmapDragMoved = false;
+let mindmapDragSessionStarted = false;
 
 // Node overlay state — unified for plain and rich text editing
 const editingNodeId = ref<string | null>(null);
@@ -838,6 +840,8 @@ function cancelMindmapNodeDrag() {
     endMindmapNodeDrag(graph, readMindmapDirection(props.graphData));
   }
   mindmapDragActiveNodeId = null;
+  mindmapDragMoved = false;
+  mindmapDragSessionStarted = false;
 }
 
 function applyCanvasInteractionMode() {
@@ -2294,8 +2298,9 @@ function bindGraphEvents() {
     ) {
       const rootId = findMindmapRootId(graph);
       if (rootId && node.id !== rootId) {
-        beginMindmapNodeDrag(graph, node.id);
         mindmapDragActiveNodeId = node.id;
+        mindmapDragMoved = false;
+        mindmapDragSessionStarted = false;
       }
     }
 
@@ -2314,6 +2319,11 @@ function bindGraphEvents() {
     ) {
       return;
     }
+    if (!mindmapDragSessionStarted) {
+      beginMindmapNodeDrag(graph, node.id);
+      mindmapDragSessionStarted = true;
+    }
+    mindmapDragMoved = true;
     const position = node.getPosition();
     const size = node.getSize();
     updateMindmapDragPreview(graph, node, {
@@ -2323,6 +2333,16 @@ function bindGraphEvents() {
   });
 
   graph.on('node:mouseup', () => {
+    if (
+      isMindmap.value
+      && graph
+      && mindmapDragActiveNodeId
+      && !mindmapDragMoved
+    ) {
+      endMindmapNodeDrag(graph, readMindmapDirection(props.graphData), { layout: false });
+      mindmapDragActiveNodeId = null;
+      mindmapDragSessionStarted = false;
+    }
     finishUserInteraction();
   });
 
@@ -2342,6 +2362,8 @@ function bindGraphEvents() {
       };
       const target = findMindmapDropTarget(graph, pointer, node, excluded);
       mindmapDragActiveNodeId = null;
+      mindmapDragMoved = false;
+      mindmapDragSessionStarted = false;
       const result = commitMindmapDragDrop(graph, node, target, pointer);
       endMindmapNodeDrag(graph, direction, { layout: false });
       if (result !== 'unchanged') {
