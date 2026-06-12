@@ -29,6 +29,8 @@ async function applyRouteSelection() {
 }
 
 const leftWidth = ref(240);
+const leftCollapsed = ref(false);
+const savedLeftWidth = ref(240);
 const MIN_WIDTH = 160;
 const MAX_WIDTH = 480;
 let dragging = false;
@@ -81,6 +83,16 @@ function onMouseup() {
   document.removeEventListener('mouseup', onMouseup);
 }
 
+function toggleLeftSidebar() {
+  if (leftCollapsed.value) {
+    leftCollapsed.value = false;
+    leftWidth.value = savedLeftWidth.value;
+    return;
+  }
+  savedLeftWidth.value = leftWidth.value;
+  leftCollapsed.value = true;
+}
+
 onBeforeUnmount(() => {
   document.removeEventListener('mousemove', onMousemove);
   document.removeEventListener('mouseup', onMouseup);
@@ -107,11 +119,42 @@ watch(
 
 <template>
   <div class="workspace">
-    <div class="workspace__left" :style="{ width: `${leftWidth}px` }">
-      <LeftPanel />
-    </div>
+    <div
+      class="workspace__left-column"
+      :class="{ 'workspace__left-column--collapsed': leftCollapsed }"
+    >
+      <div
+        class="workspace__left"
+        :style="{ width: leftCollapsed ? '0px' : `${leftWidth}px` }"
+      >
+        <LeftPanel />
+      </div>
 
-    <div class="workspace__resizer" @mousedown.prevent="onResizerMousedown" />
+      <div class="workspace__left-edge">
+        <button
+          type="button"
+          class="workspace__sidebar-toggle"
+          :title="leftCollapsed ? '展开边栏' : '收起边栏'"
+          :aria-label="leftCollapsed ? '展开边栏' : '收起边栏'"
+          :aria-expanded="!leftCollapsed"
+          @click="toggleLeftSidebar"
+        >
+          <svg
+            class="workspace__sidebar-toggle-icon"
+            :class="{ 'workspace__sidebar-toggle-icon--collapsed': leftCollapsed }"
+            viewBox="0 0 12 12"
+            aria-hidden="true"
+          >
+            <path d="M7.5 2 4 6l3.5 4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+        <div
+          v-show="!leftCollapsed"
+          class="workspace__resizer"
+          @mousedown.prevent="onResizerMousedown"
+        />
+      </div>
+    </div>
 
     <div class="workspace__right">
       <div class="workspace-topbar">
@@ -185,20 +228,83 @@ watch(
   background: #fff;
 }
 
+.workspace__left-column {
+  display: flex;
+  flex-shrink: 0;
+  height: 100%;
+  min-width: 0;
+}
+
+.workspace__left-column--collapsed {
+  min-width: 0;
+}
+
 .workspace__left {
   flex-shrink: 0;
   overflow: hidden;
+  background: #f7f8fa;
+  transition: width 0.2s ease;
+}
+
+.workspace__left-edge {
+  position: relative;
+  flex-shrink: 0;
+  width: 4px;
+  height: 100%;
   border-right: 1px solid #e4e4e4;
   background: #f7f8fa;
 }
 
+.workspace__left-column--collapsed .workspace__left-edge {
+  width: 0;
+}
+
+.workspace__sidebar-toggle {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  z-index: 21;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 12px;
+  height: 48px;
+  padding: 0;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #fff;
+  color: #595959;
+  cursor: pointer;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.08);
+  transform: translate(-50%, -50%);
+  transition: border-color 0.15s, color 0.15s, box-shadow 0.15s;
+}
+
+.workspace__sidebar-toggle:hover {
+  border-color: #1677ff;
+  color: #1677ff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.16);
+}
+
+.workspace__sidebar-toggle-icon {
+  width: 8px;
+  height: 8px;
+  flex-shrink: 0;
+  transition: transform 0.2s ease;
+}
+
+.workspace__sidebar-toggle-icon--collapsed {
+  transform: rotate(180deg);
+}
+
 .workspace__resizer {
-  width: 4px;
+  position: absolute;
+  inset: 0;
+  width: 100%;
   flex-shrink: 0;
   cursor: col-resize;
   background: transparent;
   transition: background 0.15s;
-  position: relative;
   z-index: 10;
 }
 
