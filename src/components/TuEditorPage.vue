@@ -1372,21 +1372,6 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   if (!notePopoverVisible.value) notePopoverAnchor.value = null
 }
 
-// --- Document tail insert ---
-const shouldShowTailInsert = computed(() => {
-  return !(localContent.value || '').trim()
-})
-
-const appendRichTextBlock = () => {
-  if (!tuEditorRef.value?.editor) return
-  const newBlock: Block = {
-    id: 'block-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
-    type: 'richtext',
-    content: '',
-  }
-  tuEditorRef.value.editor.commands.insertBlockAfter(newBlock, '')
-}
-
 // --- Paste URL detection ---
 const handleGlobalPaste = (event: ClipboardEvent) => {
   if (!props.editable) return
@@ -1563,16 +1548,6 @@ onBeforeUnmount(() => {
           @block-click="handleBlockClick"
           @heading-source-click="handleHeadingSourceClick"
         />
-
-        <!-- 文档末尾插入按钮 -->
-        <button
-          v-if="editable && shouldShowTailInsert"
-          type="button"
-          class="document-tail-insert"
-          @click.stop="appendRichTextBlock"
-        >
-          点击继续输入
-        </button>
       </div>
 
       <aside

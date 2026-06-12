@@ -68,6 +68,7 @@ import {
   findMindmapRootId,
   findMindmapDropTarget,
   layoutMindmapGraph,
+  relayoutMindmapGraphAfterDelete,
   getLastMindmapDragPointer,
   updateMindmapDragPreview,
   collectMindmapDescendantIds,
@@ -1107,6 +1108,23 @@ function reconcileSelectionHighlight() {
   });
 }
 
+/**
+ * Keep multi-select visuals aligned with rubberband selection.
+ *
+ * Transform plugin listens to `node:click` and always creates a resize widget
+ * for the clicked node. That runs after `selection:changed` (where we already
+ * call `clearTransformWidgets()`), so ctrl/⌘+click leaves corner handles on the
+ * last node only. Re-clear when the selection is not exactly one node.
+ */
+function finalizeSelectionVisualState() {
+  if (!graph) return;
+  reconcileSelectionHighlight();
+  const cells = graph.getSelectedCells();
+  if (cells.length !== 1 || !graph.isNode(cells[0])) {
+    graph.clearTransformWidgets();
+  }
+}
+
 function scheduleSync() {
   if (!graph || isApplyingExternalData) return;
   if (isApplyingMindmapDragPreview()) return;
@@ -1410,14 +1428,14 @@ function addMindmapChildNode() {
   if (!graph || !isEditable.value || !isMindmap.value) return;
   addMindmapChild(graph);
   refreshSelectedCellState();
-  scheduleSync();
+  emitGraphData();
 }
 
 function addMindmapSiblingNode() {
   if (!graph || !isEditable.value || !isMindmap.value) return;
   addMindmapSibling(graph);
   refreshSelectedCellState();
-  scheduleSync();
+  emitGraphData();
 }
 
 function relayoutMindmap() {
@@ -1494,8 +1512,9 @@ function applyMindmapGraphState() {
 }
 
 function syncMindmapGraphState() {
-  if (isApplyingExternalData) return;
-  applyMindmapGraphState();
+  if (!graph || !isMindmap.value || isApplyingExternalData) return;
+  if (isApplyingMindmapDragPreview()) return;
+  syncMindmapEdgeStyles(graph);
 }
 
 async function syncMindmapGraphStateWithOutlines() {
@@ -1583,7 +1602,10 @@ function deleteSelection() {
   refreshSelectedCellState();
 
   if (isMindmap.value) {
-    layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+    relayoutMindmapGraphAfterDelete(
+      graph,
+      readMindmapDirection(props.graphData),
+    );
     updateMindmapCollapseOverlays();
     emitGraphData();
     return;
@@ -2321,7 +2343,7 @@ function bindGraphEvents() {
       const target = findMindmapDropTarget(graph, pointer, node, excluded);
       mindmapDragActiveNodeId = null;
       const result = commitMindmapDragDrop(graph, node, target, pointer);
-      endMindmapNodeDrag(graph, direction, { layout: result === 'unchanged' });
+      endMindmapNodeDrag(graph, direction, { layout: false });
       if (result !== 'unchanged') {
         updateMindmapCollapseOverlays();
         scheduleSync();
@@ -2383,11 +2405,12 @@ function bindGraphEvents() {
     const shouldHandleInternalClick = pendingNodeInternalClickId === node.id;
     pendingNodeInternalClickId = null;
 
-    if (!shouldHandleInternalClick) {
-      return;
+    if (shouldHandleInternalClick) {
+      tryHandleNodeInternalClick(node);
     }
 
-    tryHandleNodeInternalClick(node);
+    // Runs after Transform plugin's node:click handler (registered earlier in initGraph).
+    finalizeSelectionVisualState();
   });
 
   graph.on('blank:dblclick', () => {

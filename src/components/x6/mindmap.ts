@@ -39,9 +39,10 @@ let mindmapLayoutPreviewAttach: MindmapLayoutPreviewAttach | null = null;
 let mindmapLayoutSkipNodeIds = new Set<string>();
 let mindmapDragPreviewActive = false;
 let mindmapDragSessionActive = false;
+let mindmapStructureChangeDepth = 0;
 
 export function isApplyingMindmapDragPreview(): boolean {
-  return mindmapDragPreviewActive || mindmapDragSessionActive;
+  return mindmapDragPreviewActive || mindmapDragSessionActive || mindmapStructureChangeDepth > 0;
 }
 
 export function setMindmapDragPreviewActive(active: boolean) {
@@ -99,8 +100,34 @@ export function getMindmapBranchSide(graph: Graph, nodeId: string): MindmapDropS
   }
   const node = graph.getCellById(nodeId);
   if (!node || !graph.isNode(node)) return 'right';
-  const side = node.getData<Record<string, unknown>>()?.mindBranchSide;
-  return side === 'left' ? 'left' : 'right';
+
+  const data = node.getData<Record<string, unknown>>() ?? {};
+  if (data.mindBranchSide === 'left' || data.mindBranchSide === 'right') {
+    return data.mindBranchSide;
+  }
+
+  const rootId = findMindmapRootId(graph);
+  if (!rootId || nodeId === rootId) return 'right';
+
+  const parentByChild = getParentIdMap(graph);
+  const parentId = parentByChild.get(nodeId);
+  if (parentId) {
+    const parent = graph.getCellById(parentId);
+    if (parent && graph.isNode(parent)) {
+      const nodeCenterX = node.getPosition().x + node.getSize().width / 2;
+      const parentCenterX = parent.getPosition().x + parent.getSize().width / 2;
+      return nodeCenterX < parentCenterX ? 'left' : 'right';
+    }
+  }
+
+  const root = graph.getCellById(rootId);
+  if (root && graph.isNode(root)) {
+    const nodeCenterX = node.getPosition().x + node.getSize().width / 2;
+    const rootCenterX = root.getPosition().x + root.getSize().width / 2;
+    return nodeCenterX < rootCenterX ? 'left' : 'right';
+  }
+
+  return 'right';
 }
 
 export function setMindmapBranchSide(graph: Graph, nodeId: string, side: MindmapDropSide) {
@@ -122,6 +149,15 @@ function getNodeSize(node: Node) {
   };
 }
 
+function dedupePreserveOrder(ids: string[]): string[] {
+  const seen = new Set<string>();
+  return ids.filter((id) => {
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
 function getRawChildIds(graph: Graph, parentId: string): string[] {
   const childIds: string[] = [];
   graph.getEdges().forEach((edge) => {
@@ -129,7 +165,7 @@ function getRawChildIds(graph: Graph, parentId: string): string[] {
     const target = edge.getTargetCellId();
     if (target) childIds.push(target);
   });
-  return childIds;
+  return dedupePreserveOrder(childIds);
 }
 
 export function getOrderedMindmapChildIds(graph: Graph, parentId: string): string[] {
@@ -138,17 +174,18 @@ export function getOrderedMindmapChildIds(graph: Graph, parentId: string): strin
   if (!parent || !graph.isNode(parent)) return raw;
 
   const order = (parent.getData<Record<string, unknown>>()?.mindChildOrder as string[] | undefined) ?? [];
-  const ordered = order.filter((id) => raw.includes(id));
-  const rest = raw.filter((id) => !ordered.includes(id));
-  return [...ordered, ...rest];
+  const ordered = dedupePreserveOrder(order.filter((id) => raw.includes(id)));
+  const orderedSet = new Set(ordered);
+  const rest = raw.filter((id) => !orderedSet.has(id));
+  return dedupePreserveOrder([...ordered, ...rest]);
 }
 
 export function setMindmapChildOrder(graph: Graph, parentId: string, childIds: string[]) {
   const parent = graph.getCellById(parentId);
   if (!parent || !graph.isNode(parent)) return;
-  parent.setData({
-    ...parent.getData(),
-    mindChildOrder: childIds,
+  // Shallow merge: default setData deep-merges arrays and keeps stale mindChildOrder slots.
+  parent.updateData({
+    mindChildOrder: dedupePreserveOrder(childIds),
   });
 }
 
@@ -178,12 +215,54 @@ export function insertMindmapChildOrder(
     rightIds = targetBranch;
   }
 
-  setMindmapChildOrder(graph, parentId, [...leftIds, ...rightIds]);
+  setMindmapChildOrder(graph, parentId, [...dedupePreserveOrder(leftIds), ...dedupePreserveOrder(rightIds)]);
 }
 
 export function removeMindmapChildFromOrder(graph: Graph, parentId: string, childId: string) {
   const order = getOrderedMindmapChildIds(graph, parentId).filter((id) => id !== childId);
   setMindmapChildOrder(graph, parentId, order);
+}
+
+export function getMindmapParentIdMap(graph: Graph): Map<string, string> {
+  return getParentIdMap(graph);
+}
+
+function countMindmapChildOrderGhosts(graph: Graph, parentId: string): number {
+  const parent = graph.getCellById(parentId);
+  if (!parent || !graph.isNode(parent)) return 0;
+  const raw = new Set(getRawChildIds(graph, parentId));
+  const stored = (parent.getData<Record<string, unknown>>()?.mindChildOrder as string[] | undefined) ?? [];
+  return stored.filter((id) => !raw.has(id)).length;
+}
+
+/** Persist mindChildOrder without IDs removed from the graph (deleted-node ghosts). */
+export function pruneMindmapChildOrder(graph: Graph, parentId: string): number {
+  const ghostCount = countMindmapChildOrderGhosts(graph, parentId);
+  const pruned = getOrderedMindmapChildIds(graph, parentId);
+  const parent = graph.getCellById(parentId);
+  if (!parent || !graph.isNode(parent)) return 0;
+  const stored = (parent.getData<Record<string, unknown>>()?.mindChildOrder as string[] | undefined) ?? [];
+  const raw = new Set(getRawChildIds(graph, parentId));
+  const storedLive = stored.filter((id) => raw.has(id));
+  const hasDuplicateIds = storedLive.length !== new Set(storedLive).size;
+  const unchanged = ghostCount === 0
+    && !hasDuplicateIds
+    && stored.length === pruned.length
+    && stored.every((id, index) => id === pruned[index]);
+  if (unchanged) return 0;
+  setMindmapChildOrder(graph, parentId, pruned);
+  return ghostCount + (hasDuplicateIds ? storedLive.length - new Set(storedLive).size : 0);
+}
+
+export function sanitizeMindmapChildOrders(graph: Graph): number {
+  let totalGhosts = 0;
+  graph.getNodes().forEach((node) => {
+    const stored = (node.getData<Record<string, unknown>>()?.mindChildOrder as string[] | undefined) ?? [];
+    const hasChildren = getRawChildIds(graph, node.id).length > 0;
+    if (!stored.length && !hasChildren) return;
+    totalGhosts += pruneMindmapChildOrder(graph, node.id);
+  });
+  return totalGhosts;
 }
 
 function getParentIdMap(graph: Graph): Map<string, string> {
@@ -211,8 +290,9 @@ function buildChildrenByParent(graph: Graph): Map<string, string[]> {
   });
 
   for (const [parentId, childIds] of childrenByParent.entries()) {
+    const childIdSet = new Set(childIds);
     const ordered = getOrderedMindmapChildIds(graph, parentId);
-    childrenByParent.set(parentId, ordered.filter((id) => childIds.includes(id)));
+    childrenByParent.set(parentId, ordered.filter((id) => childIdSet.has(id)));
   }
 
   const preview = mindmapLayoutPreviewAttach;
@@ -394,7 +474,7 @@ function getRawMindmapChildIdsFromCells(cells: CellData[], parentId: string): st
       childIds.push(target);
     }
   });
-  return childIds;
+  return dedupePreserveOrder(childIds);
 }
 
 function getOrderedMindmapChildIdsFromCells(
@@ -405,9 +485,10 @@ function getOrderedMindmapChildIdsFromCells(
   const raw = getRawMindmapChildIdsFromCells(cells, parentId);
   const parent = cellById.get(parentId);
   const order = (parent?.data?.mindChildOrder as string[] | undefined) ?? [];
-  const ordered = order.filter((id) => raw.includes(id));
-  const rest = raw.filter((id) => !ordered.includes(id));
-  return [...ordered, ...rest];
+  const ordered = dedupePreserveOrder(order.filter((id) => raw.includes(id)));
+  const orderedSet = new Set(ordered);
+  const rest = raw.filter((id) => !orderedSet.has(id));
+  return dedupePreserveOrder([...ordered, ...rest]);
 }
 
 function getMindmapBranchSideFromCell(cell: CellData | undefined): MindmapDropSide {
@@ -477,9 +558,33 @@ function buildMindmapHierarchyDataFromCells(
   };
 }
 
+function pruneMindmapChildOrderInCells(cells: CellData[]): CellData[] {
+  const cellById = new Map<string, CellData>();
+  cells.forEach((cell) => {
+    if (cell.id) cellById.set(cell.id, cell);
+  });
+
+  return cells.map((cell) => {
+    if (!cell.id || isMindmapEdgeCell(cell)) return cell;
+    const stored = (cell.data?.mindChildOrder as string[] | undefined) ?? [];
+    if (!stored.length) return cell;
+    const pruned = getOrderedMindmapChildIdsFromCells(cells, cellById, cell.id);
+    if (stored.length === pruned.length && stored.every((id, index) => id === pruned[index])) {
+      return cell;
+    }
+    return {
+      ...cell,
+      data: {
+        ...(cell.data ?? {}),
+        mindChildOrder: pruned,
+      },
+    };
+  });
+}
+
 /** Apply hierarchy layout to persisted GraphData (no live Graph required). */
 export function layoutMindmapGraphData(data: GraphData): GraphData {
-  const cells = getMindmapGraphDataCells(data);
+  const cells = pruneMindmapChildOrderInCells(getMindmapGraphDataCells(data));
   if (!cells.length) return data;
 
   const cellById = new Map<string, CellData>();
@@ -544,6 +649,22 @@ export function layoutMindmapGraphData(data: GraphData): GraphData {
     nodes,
     edges,
   } as GraphData;
+}
+
+/** Insert new sibling immediately after anchor in branch order (Enter / explicit sibling add). */
+export function resolveMindmapSiblingInsertBeforeId(
+  graph: Graph,
+  parentId: string,
+  anchorNodeId: string,
+  newNodeId: string,
+): string | null {
+  const side = getMindmapBranchSide(graph, anchorNodeId);
+  const siblings = getOrderedMindmapChildIds(graph, parentId)
+    .filter((id) => id !== newNodeId && getMindmapBranchSide(graph, id) === side);
+  const anchorIndex = siblings.indexOf(anchorNodeId);
+  if (anchorIndex < 0) return null;
+  const nextIndex = anchorIndex + 1;
+  return nextIndex < siblings.length ? siblings[nextIndex]! : null;
 }
 
 export function resolveMindmapInsertBeforeId(
@@ -624,6 +745,9 @@ export function layoutMindmapGraph(graph: Graph, direction: MindmapDirection = '
   const rootId = findMindmapRootId(graph);
   if (!rootId) return;
 
+  sanitizeMindmapChildOrders(graph);
+  compactAllMindmapChildOrders(graph);
+
   const positions = computeMindmapLayoutPositions(graph);
   if (!positions.size) return;
 
@@ -647,6 +771,110 @@ export function layoutMindmapGraph(graph: Graph, direction: MindmapDirection = '
   });
 }
 
+export function readGraphMindmapDirection(graph: Graph): MindmapDirection {
+  const direction = (graph as { __mindmapDirection?: MindmapDirection }).__mindmapDirection;
+  return direction ?? 'LR';
+}
+
+export function captureMindmapStableNodePositions(
+  graph: Graph,
+  excludedNodeIds: ReadonlySet<string>,
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  graph.getNodes().forEach((node) => {
+    if (excludedNodeIds.has(node.id)) return;
+    positions.set(node.id, node.getPosition());
+  });
+  return positions;
+}
+
+export function restoreMindmapStableNodePositions(
+  graph: Graph,
+  positions: Map<string, { x: number; y: number }>,
+) {
+  positions.forEach((position, nodeId) => {
+    const node = graph.getCellById(nodeId);
+    if (node && graph.isNode(node)) {
+      node.position(position.x, position.y);
+    }
+  });
+}
+
+/** Drag-drop reparent finale: restore pre-change coords for stable nodes, then hierarchy layout. */
+export function relayoutMindmapGraphAfterStructureChange(
+  graph: Graph,
+  stablePositions: Map<string, { x: number; y: number }>,
+  direction?: MindmapDirection,
+) {
+  sanitizeMindmapChildOrders(graph);
+  graph.batchUpdate(() => {
+    restoreMindmapStableNodePositions(graph, stablePositions);
+  });
+  layoutMindmapGraph(graph, direction ?? readGraphMindmapDirection(graph));
+}
+
+function compactMindmapChildOrderForParent(graph: Graph, parentId: string): boolean {
+  const compact = getOrderedMindmapChildIds(graph, parentId);
+  const parent = graph.getCellById(parentId);
+  if (!parent || !graph.isNode(parent)) return false;
+  const stored = (parent.getData<Record<string, unknown>>()?.mindChildOrder as string[] | undefined) ?? [];
+  const unchanged = stored.length === compact.length && stored.every((id, index) => id === compact[index]);
+  if (unchanged) return false;
+  setMindmapChildOrder(graph, parentId, compact);
+  return true;
+}
+
+function compactAllMindmapChildOrders(graph: Graph): number {
+  let compacted = 0;
+  graph.getNodes().forEach((node) => {
+    if (getRawChildIds(graph, node.id).length === 0) return;
+    if (compactMindmapChildOrderForParent(graph, node.id)) {
+      compacted += 1;
+    }
+  });
+  return compacted;
+}
+
+/** Delete finale: prune child order then hierarchy layout (no stable-position restore). */
+export function relayoutMindmapGraphAfterDelete(
+  graph: Graph,
+  direction?: MindmapDirection,
+) {
+  sanitizeMindmapChildOrders(graph);
+  compactAllMindmapChildOrders(graph);
+  layoutMindmapGraph(graph, direction ?? readGraphMindmapDirection(graph));
+}
+
+function attachMindmapNodeToParent(
+  graph: Graph,
+  parentId: string,
+  node: Node,
+  side: MindmapDropSide,
+  insertBeforeId: string | null,
+  direction: MindmapDirection,
+) {
+  pruneMindmapChildOrder(graph, parentId);
+  graph.batchUpdate(() => {
+    insertMindmapChildOrder(graph, parentId, node.id, side, insertBeforeId);
+    node.setData({
+      ...node.getData(),
+      mindRole: 'topic',
+      mindFree: false,
+    });
+    applyMindmapTopicStyle(node);
+  });
+  layoutMindmapGraph(graph, direction);
+}
+
+function runMindmapStructureChange<T>(run: () => T): T {
+  mindmapStructureChangeDepth += 1;
+  try {
+    return run();
+  } finally {
+    mindmapStructureChangeDepth -= 1;
+  }
+}
+
 export function syncMindmapEdgeStyles(graph: Graph) {
   ensureMindmapConnectorRegistered();
   graph.getEdges().forEach((edge) => {
@@ -662,54 +890,85 @@ function getSelectedMindmapNode(graph: Graph): Node | null {
 }
 
 export function addMindmapChild(graph: Graph, parent?: Node | null): Node | null {
-  const parentNode = parent ?? getSelectedMindmapNode(graph) ?? (() => {
-    const rootId = findMindmapRootId(graph);
-    return rootId ? graph.getCellById(rootId) as Node : null;
-  })();
+  return runMindmapStructureChange(() => {
+    const parentNode = parent ?? getSelectedMindmapNode(graph) ?? (() => {
+      const rootId = findMindmapRootId(graph);
+      return rootId ? graph.getCellById(rootId) as Node : null;
+    })();
 
-  if (!parentNode || !graph.isNode(parentNode)) return null;
+    if (!parentNode || !graph.isNode(parentNode)) return null;
 
-  const child = graph.addNode(createMindmapNode({
-    id: createId('mindmap-topic'),
-    label: '新分支',
-    mindRole: 'topic' as MindmapNodeRole,
-  }));
+    const direction = readGraphMindmapDirection(graph);
 
-  graph.addEdge(createMindmapEdgeMetadata(parentNode.id, child.id));
-  graph.cleanSelection();
-  graph.select(child);
+    const child = graph.addNode(createMindmapNode({
+      id: createId('mindmap-topic'),
+      label: '新分支',
+      mindRole: 'topic' as MindmapNodeRole,
+    }));
 
-  const direction = (graph as any).__mindmapDirection as MindmapDirection | undefined;
-  layoutMindmapGraph(graph, direction ?? 'LR');
-  return child;
+    graph.addEdge(createMindmapEdgeMetadata(parentNode.id, child.id));
+
+    const side = getMindmapBranchSide(graph, parentNode.id);
+    attachMindmapNodeToParent(
+      graph,
+      parentNode.id,
+      child,
+      side,
+      null,
+      direction,
+    );
+
+    graph.cleanSelection();
+    graph.select(child);
+    return child;
+  });
 }
 
 export function addMindmapSibling(graph: Graph, node?: Node | null): Node | null {
-  const current = node ?? getSelectedMindmapNode(graph);
-  if (!current) return addMindmapChild(graph);
+  return runMindmapStructureChange(() => {
+    const current = node ?? getSelectedMindmapNode(graph);
+    if (!current) return addMindmapChild(graph);
 
-  const parentByChild = getParentIdMap(graph);
-  const parentId = parentByChild.get(current.id);
-  if (!parentId) {
-    return addMindmapChild(graph, current);
-  }
+    const parentByChild = getParentIdMap(graph);
+    const parentId = parentByChild.get(current.id);
+    if (!parentId) {
+      return addMindmapChild(graph, current);
+    }
 
-  const parentNode = graph.getCellById(parentId);
-  if (!parentNode || !graph.isNode(parentNode)) return null;
+    const parentNode = graph.getCellById(parentId);
+    if (!parentNode || !graph.isNode(parentNode)) return null;
 
-  const sibling = graph.addNode(createMindmapNode({
-    id: createId('mindmap-topic'),
-    label: '同级分支',
-    mindRole: 'topic',
-  }));
+    const direction = readGraphMindmapDirection(graph);
 
-  graph.addEdge(createMindmapEdgeMetadata(parentNode.id, sibling.id));
-  graph.cleanSelection();
-  graph.select(sibling);
+    const sibling = graph.addNode(createMindmapNode({
+      id: createId('mindmap-topic'),
+      label: '同级分支',
+      mindRole: 'topic',
+    }));
 
-  const direction = (graph as any).__mindmapDirection as MindmapDirection | undefined;
-  layoutMindmapGraph(graph, direction ?? 'LR');
-  return sibling;
+    graph.addEdge(createMindmapEdgeMetadata(parentNode.id, sibling.id));
+
+    const side = getMindmapBranchSide(graph, current.id);
+    const insertBeforeId = resolveMindmapSiblingInsertBeforeId(
+      graph,
+      parentId,
+      current.id,
+      sibling.id,
+    );
+
+    attachMindmapNodeToParent(
+      graph,
+      parentId,
+      sibling,
+      side,
+      insertBeforeId,
+      direction,
+    );
+
+    graph.cleanSelection();
+    graph.select(sibling);
+    return sibling;
+  });
 }
 
 export function collectMindmapDescendantIds(graph: Graph, rootId: string): string[] {

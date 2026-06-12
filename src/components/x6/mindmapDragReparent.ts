@@ -5,12 +5,15 @@ import {
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
   MINDMAP_DRAG_PREVIEW_OPTION,
   applyMindmapTopicStyle,
+  captureMindmapStableNodePositions,
   collectMindmapDescendantIds,
   computeMindmapInsertBeforeId,
   findMindmapRootId,
   insertMindmapChildOrder,
   layoutMindmapGraph,
+  readGraphMindmapDirection,
   removeMindmapChildFromOrder,
+  restoreMindmapStableNodePositions,
   setMindmapDragPreviewActive,
   setMindmapDragSession,
   setMindmapLayoutPreview,
@@ -36,11 +39,6 @@ let lastDragPointer: { x: number; y: number } | null = null;
 let dragStartNodePositions = new Map<string, { x: number; y: number }>();
 
 const DROP_TARGET_HIT_PADDING = 6;
-
-function readGraphMindmapDirection(graph: Graph): MindmapDirection {
-  const direction = (graph as { __mindmapDirection?: MindmapDirection }).__mindmapDirection;
-  return direction ?? 'LR';
-}
 
 function pointInBBox(x: number, y: number, bbox: NodeBBox, padding = 0): boolean {
   return (
@@ -237,29 +235,15 @@ function captureStableNodePositions(
   graph: Graph,
   excludedNodeIds: ReadonlySet<string>,
 ): Map<string, { x: number; y: number }> {
-  const positions = new Map<string, { x: number; y: number }>();
-  graph.getNodes().forEach((node) => {
-    if (excludedNodeIds.has(node.id)) return;
-    positions.set(node.id, node.getPosition());
-  });
-  return positions;
+  return captureMindmapStableNodePositions(graph, excludedNodeIds);
 }
 
 function captureAllNodePositions(graph: Graph): Map<string, { x: number; y: number }> {
-  const positions = new Map<string, { x: number; y: number }>();
-  graph.getNodes().forEach((node) => {
-    positions.set(node.id, node.getPosition());
-  });
-  return positions;
+  return captureMindmapStableNodePositions(graph, new Set());
 }
 
 function restoreStableNodePositions(graph: Graph, positions: Map<string, { x: number; y: number }>) {
-  positions.forEach((position, nodeId) => {
-    const node = graph.getCellById(nodeId);
-    if (node && graph.isNode(node)) {
-      node.position(position.x, position.y);
-    }
-  });
+  restoreMindmapStableNodePositions(graph, positions);
 }
 
 function removeIncomingMindmapEdges(graph: Graph, nodeId: string) {
