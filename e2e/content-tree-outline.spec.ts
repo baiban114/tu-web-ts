@@ -75,27 +75,52 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
-test('expands mindmap page ref using outline cache', async ({ page }) => {
-  test.setTimeout(60_000)
-  await page.goto('/')
-  await expect(page.locator('.page-tree')).toBeVisible()
-  await page.locator('.page-tree .tree-node').filter({ hasText: 'Outline 思维导图' }).click()
-  await expect(page.locator('.x6-stage')).toBeVisible()
+test.describe.serial('mindmap outline projection', () => {
+  test('expands ref toc and keeps deletions across collapse', async ({ page }) => {
+    test.setTimeout(60_000)
+    await page.goto('/')
+    await expect(page.locator('.page-tree')).toBeVisible()
+    await page.locator('.page-tree .tree-node').filter({ hasText: 'Outline 思维导图' }).click()
+    await expect(page.locator('.x6-stage')).toBeVisible()
 
-  const refNode = page.locator('.x6-node[data-cell-id]').filter({ hasText: '目录文档' }).first()
-  await expect(refNode).toBeVisible()
-  await refNode.hover()
+    const refNode = page.locator('.x6-node[data-cell-id]').filter({ hasText: '目录文档' }).first()
+    await expect(refNode).toBeVisible()
+    const refCellId = await refNode.getAttribute('data-cell-id')
+    expect(refCellId).toBeTruthy()
+    const refById = page.locator(`.x6-node[data-cell-id="${refCellId}"]`)
 
-  const collapseButton = page.locator('.mindmap-collapse-btn').first()
-  await expect(collapseButton).toBeVisible()
-  await collapseButton.click()
+    await refById.hover()
 
-  await expect.poll(async () => (
-    page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Alpha 章节' }).count()
-  )).toBeGreaterThanOrEqual(1)
-  await expect.poll(async () => (
-    page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Beta 章节' }).count()
-  )).toBeGreaterThanOrEqual(1)
+    const collapseButton = page.locator('.mindmap-collapse-btn').first()
+    await expect(collapseButton).toBeVisible()
+    await collapseButton.click()
+
+    await expect.poll(async () => (
+      page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Alpha 章节' }).count()
+    )).toBeGreaterThanOrEqual(1)
+    await expect.poll(async () => (
+      page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Beta 章节' }).count()
+    )).toBeGreaterThanOrEqual(1)
+
+    const betaNode = page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Beta 章节' }).first()
+    await betaNode.hover()
+    await betaNode.click()
+    await expect(page.locator('.toolbar-summary').first()).toContainText('Beta 章节')
+    await page.getByRole('button', { name: '删除' }).click()
+    await expect(page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Beta 章节' })).toHaveCount(0)
+    await expect(refById).toHaveCount(1)
+    await expect(page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Alpha 章节' }).count()).resolves.toBeGreaterThanOrEqual(1)
+
+    await refById.hover()
+    await collapseButton.click()
+    await refById.hover()
+    await collapseButton.click()
+
+    await expect(page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Beta 章节' })).toHaveCount(0)
+    await expect.poll(async () => (
+      page.locator('.x6-node[data-cell-id]').filter({ hasText: 'Alpha 章节' }).count()
+    )).toBeGreaterThanOrEqual(1)
+  })
 })
 
 test('persists content tree hours in mock state', async ({ page }) => {

@@ -1,19 +1,19 @@
 import type { Graph, Node } from '@antv/x6';
 import { createMindmapEdgeMetadata } from './graphCells';
+import { applyMindmapEdgeConnector } from './mindmapConnector';
 import {
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
   MINDMAP_DRAG_PREVIEW_OPTION,
-  MINDMAP_FREE_TOPIC_ROLE,
   applyMindmapTopicStyle,
   collectMindmapDescendantIds,
   computeMindmapInsertBeforeId,
   findMindmapRootId,
-  getOrderedMindmapChildIds,
   insertMindmapChildOrder,
   layoutMindmapGraph,
   removeMindmapChildFromOrder,
   setMindmapDragPreviewActive,
   setMindmapDragSession,
+  setMindmapLayoutPreview,
   syncMindmapEdgeStyles,
   type MindmapDirection,
   type MindmapDropSide,
@@ -36,8 +36,11 @@ let lastDragPointer: { x: number; y: number } | null = null;
 let dragStartNodePositions = new Map<string, { x: number; y: number }>();
 
 const DROP_TARGET_HIT_PADDING = 6;
-const SUBTREE_H_GAP = 88;
-const SUBTREE_V_GAP = 16;
+
+function readGraphMindmapDirection(graph: Graph): MindmapDirection {
+  const direction = (graph as { __mindmapDirection?: MindmapDirection }).__mindmapDirection;
+  return direction ?? 'LR';
+}
 
 function pointInBBox(x: number, y: number, bbox: NodeBBox, padding = 0): boolean {
   return (
@@ -95,14 +98,6 @@ function getNodeCenter(node: Node) {
     x: bbox.x + bbox.width / 2,
     y: bbox.y + bbox.height / 2,
     bbox,
-  };
-}
-
-function getNodeSize(node: Node) {
-  const size = node.getSize();
-  return {
-    width: size.width || 156,
-    height: size.height || 48,
   };
 }
 
@@ -193,30 +188,19 @@ function upsertMindmapDragPreviewEdge(
   preview: MindmapLayoutPreviewAttach,
 ) {
   const ports = getMindmapEdgePorts(preview.side);
-  const lineColor = preview.side === 'left' ? '#1677ff' : '#722ed1';
-  const edgeAttrs = {
-    line: {
-      stroke: lineColor,
-      strokeWidth: 2.6,
-      strokeDasharray: '6 4',
-      'data-source-port': ports.sourcePort,
-      'data-target-port': ports.targetPort,
-      targetMarker: {
-        name: 'classic',
-        size: 8,
-      },
-    },
+  const edgeOptions = { [MINDMAP_DRAG_PREVIEW_OPTION]: true };
+
+  const previewLineAttrs = {
+    'data-source-port': ports.sourcePort,
   };
 
   const existing = graph.getCellById(MINDMAP_DRAG_PREVIEW_EDGE_ID);
   if (existing && graph.isEdge(existing)) {
-    const options = { [MINDMAP_DRAG_PREVIEW_OPTION]: true };
-    existing.setSource({ cell: preview.parentId, port: ports.sourcePort }, options);
-    existing.setTarget({ cell: preview.childId, port: ports.targetPort }, options);
-    existing.setRouter({ name: 'normal' }, options);
-    existing.setConnector({ name: 'smooth' }, options);
-    existing.attr(edgeAttrs, options);
-    existing.setZIndex(10, options);
+    existing.setSource({ cell: preview.parentId, port: ports.sourcePort }, edgeOptions);
+    existing.setTarget({ cell: preview.childId, port: ports.targetPort }, edgeOptions);
+    applyMindmapEdgeConnector(existing, { preview: true, branchSide: preview.side });
+    existing.attr({ line: previewLineAttrs }, edgeOptions);
+    existing.setZIndex(10, edgeOptions);
     return;
   }
 
@@ -225,11 +209,17 @@ function upsertMindmapDragPreviewEdge(
     shape: 'edge',
     source: { cell: preview.parentId, port: ports.sourcePort },
     target: { cell: preview.childId, port: ports.targetPort },
-    router: { name: 'normal' },
-    connector: { name: 'smooth' },
-    attrs: edgeAttrs,
+    attrs: {
+      line: previewLineAttrs,
+    },
     zIndex: 10,
-  }, { [MINDMAP_DRAG_PREVIEW_OPTION]: true });
+  }, edgeOptions);
+
+  const previewEdge = graph.getCellById(MINDMAP_DRAG_PREVIEW_EDGE_ID);
+  if (previewEdge && graph.isEdge(previewEdge)) {
+    applyMindmapEdgeConnector(previewEdge, { preview: true, branchSide: preview.side });
+    previewEdge.attr({ line: previewLineAttrs }, edgeOptions);
+  }
 }
 
 function clearMindmapDragPreviewVisuals(graph: Graph) {
@@ -309,80 +299,6 @@ function getParentIdMapForReparent(graph: Graph): Map<string, string> {
   return parentByChild;
 }
 
-interface LocalTreeNode {
-  id: string;
-  children: LocalTreeNode[];
-  width: number;
-  height: number;
-  subtreeHeight: number;
-}
-
-function getSubtreeHeight(children: LocalTreeNode[]): number {
-  if (!children.length) return 0;
-  return children.reduce((sum, child) => sum + child.subtreeHeight + SUBTREE_V_GAP, -SUBTREE_V_GAP);
-}
-
-function buildLocalTree(graph: Graph, rootId: string): LocalTreeNode | null {
-  const node = graph.getCellById(rootId);
-  if (!node || !graph.isNode(node)) return null;
-  const size = getNodeSize(node);
-  const children = getOrderedMindmapChildIds(graph, rootId)
-    .map((childId) => buildLocalTree(graph, childId))
-    .filter((child): child is LocalTreeNode => child != null);
-
-  return {
-    id: rootId,
-    children,
-    width: size.width,
-    height: size.height,
-    subtreeHeight: Math.max(size.height, getSubtreeHeight(children)),
-  };
-}
-
-function positionLocalSubtree(
-  graph: Graph,
-  tree: LocalTreeNode,
-  x: number,
-  y: number,
-  side: MindmapDropSide,
-) {
-  const node = graph.getCellById(tree.id);
-  if (node && graph.isNode(node)) {
-    node.position(x, y);
-  }
-
-  if (!tree.children.length) return;
-
-  const totalHeight = getSubtreeHeight(tree.children);
-  let childY = y + tree.subtreeHeight / 2 - totalHeight / 2;
-  tree.children.forEach((child) => {
-    const childX = side === 'left'
-      ? x - SUBTREE_H_GAP - child.width
-      : x + tree.width + SUBTREE_H_GAP;
-    positionLocalSubtree(graph, child, childX, childY, side);
-    childY += child.subtreeHeight + SUBTREE_V_GAP;
-  });
-}
-
-function anchorDraggedSubtreeToTarget(
-  graph: Graph,
-  draggedNode: Node,
-  targetNode: Node,
-  side: MindmapDropSide,
-) {
-  const draggedTree = buildLocalTree(graph, draggedNode.id);
-  if (!draggedTree) return;
-
-  const targetPosition = targetNode.getPosition();
-  const targetSize = getNodeSize(targetNode);
-  const draggedPosition = draggedNode.getPosition();
-  const x = side === 'left'
-    ? targetPosition.x - SUBTREE_H_GAP - draggedTree.width
-    : targetPosition.x + targetSize.width + SUBTREE_H_GAP;
-
-  positionLocalSubtree(graph, draggedTree, x, draggedPosition.y, side);
-}
-
 export function updateMindmapDragPreview(
   graph: Graph,
   draggedNode: Node,
@@ -395,6 +311,7 @@ export function updateMindmapDragPreview(
   if (!target) {
     activeDropTarget = null;
     setMindmapDragPreviewActive(false);
+    setMindmapLayoutPreview(null);
     clearMindmapDragPreviewVisuals(graph);
     return null;
   }
@@ -403,6 +320,7 @@ export function updateMindmapDragPreview(
   if (!preview) {
     activeDropTarget = null;
     setMindmapDragPreviewActive(false);
+    setMindmapLayoutPreview(null);
     clearMindmapDragPreviewVisuals(graph);
     return null;
   }
@@ -416,6 +334,7 @@ export function clearMindmapDragPreview(graph: Graph, direction: MindmapDirectio
   resetMindmapDragDropState();
   clearMindmapDragPreviewVisuals(graph);
   setMindmapDragPreviewActive(false);
+  setMindmapLayoutPreview(null);
   setMindmapDragSession(null);
   dragStartNodePositions = new Map();
   layoutMindmapGraph(graph, direction);
@@ -435,6 +354,7 @@ export function endMindmapNodeDrag(
   resetMindmapDragDropState();
   clearMindmapDragPreviewVisuals(graph);
   setMindmapDragPreviewActive(false);
+  setMindmapLayoutPreview(null);
   setMindmapDragSession(null);
   dragStartNodePositions = new Map();
   if (options.layout === false) {
@@ -487,34 +407,10 @@ export function reparentMindmapNode(
       mindFree: false,
     });
     applyMindmapTopicStyle(draggedNode);
-    anchorDraggedSubtreeToTarget(graph, draggedNode, targetNode, target.side);
     restoreStableNodePositions(graph, stablePositions);
   });
 
-  return true;
-}
-
-export function detachMindmapAsFreeTopic(graph: Graph, draggedNode: Node): boolean {
-  const rootId = findMindmapRootId(graph);
-  if (!rootId || draggedNode.id === rootId) return false;
-  const draggedSubtreeIds = new Set(collectMindmapDescendantIds(graph, draggedNode.id));
-  const stablePositions = dragStartNodePositions.size
-    ? new Map(
-      Array.from(dragStartNodePositions.entries()).filter(([nodeId]) => !draggedSubtreeIds.has(nodeId)),
-    )
-    : captureStableNodePositions(graph, draggedSubtreeIds);
-
-  graph.batchUpdate(() => {
-    removeIncomingMindmapEdges(graph, draggedNode.id);
-    draggedNode.setData({
-      ...draggedNode.getData(),
-      mindRole: MINDMAP_FREE_TOPIC_ROLE,
-      mindFree: true,
-    });
-    applyMindmapTopicStyle(draggedNode);
-    restoreStableNodePositions(graph, stablePositions);
-  });
-
+  layoutMindmapGraph(graph, readGraphMindmapDirection(graph));
   return true;
 }
 
@@ -523,7 +419,7 @@ export function commitMindmapDragDrop(
   draggedNode: Node,
   dropTarget: MindmapDropTarget | null,
   pointer?: { x: number; y: number } | null,
-): 'reparent' | 'free' | 'unchanged' {
+): 'reparent' | 'unchanged' {
   const rootId = findMindmapRootId(graph);
   if (!rootId || draggedNode.id === rootId) {
     return 'unchanged';
@@ -538,8 +434,8 @@ export function commitMindmapDragDrop(
     }
   }
 
-  if (detachMindmapAsFreeTopic(graph, draggedNode)) {
-    return 'free';
+  if (dragStartNodePositions.size > 0) {
+    restoreStableNodePositions(graph, dragStartNodePositions);
   }
 
   return 'unchanged';

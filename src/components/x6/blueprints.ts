@@ -7,6 +7,7 @@ import {
   createNodeMetadata,
   createTaskNode,
 } from './graphCells';
+import { layoutMindmapGraphData } from './mindmap';
 
 export const TASK_FLOW_KIND = 'task-flow' as const;
 export const MINDMAP_KIND = 'mindmap' as const;
@@ -218,7 +219,7 @@ export function createMindmapStarterGraphData(): GraphData {
 
   const nodes = [root, branchA, branchB];
 
-  return {
+  return layoutMindmapGraphData({
     cells: [...nodes, ...edges],
     nodes,
     edges,
@@ -227,7 +228,7 @@ export function createMindmapStarterGraphData(): GraphData {
       kind: MINDMAP_KIND,
       direction: 'LR',
     },
-  } as GraphData;
+  } as GraphData);
 }
 
 export function resolveBlueprintStarter(data?: GraphData | null): GraphData {

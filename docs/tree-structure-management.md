@@ -351,6 +351,7 @@ tu-web-ts/src/
 | 写 API | `PATCH /api/content-tree-nodes/{id}`（工时）；页面 outline 随 `PageIndexCoordinator` 自动 rebuild |
 | ES | `tu_headings` 索引 + `GET /api/search/headings` |
 | 前端 | [`outlineCache`](../src/stores/outlineCache.ts)、[`mindmapRefToc.ts`](../src/utils/toc/mindmapRefToc.ts) 读 outline API（`structureSource: 'outline'`）；思维导图引用块展开/目录物化**不**拉 `GET /api/pages/{id}/content`，加载时 batch prefetch、展开前 `ensurePageOutline` / `ensureBlockOutline` |
+| 思维导图目录投影 | 首次展开引用块时物化子树；折叠/再展开仅切换可见性，**不** reconcile。图增删改不再触发 outline 对齐。选中引用块 → 属性面板「从目录同步」可显式 reconcile；拖拽/删除子节点会持久化，直至用户主动同步 |
 | Mock | [`mock/contentTree.ts`](../src/mock/contentTree.ts) + `contentTreeHours` in [`mock/store.ts`](../src/mock/store.ts) |
 
 ## 16. 确认后下一步

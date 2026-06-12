@@ -1,3 +1,4 @@
+import type { Graph } from '@antv/x6'
 import type { Block } from '@/api/types'
 import type { ContentTreeNode } from '@/api/outline'
 import {
@@ -23,6 +24,8 @@ export interface MindmapRefTocContext {
   getBlockOutline?: (blockId: string) => ContentTreeNode[] | undefined
   /** outline：只读 GET /api/pages/{id}/outline 等结构接口，不拉整页 content */
   structureSource?: MindmapRefStructureSource
+  /** 思维导图收起/可见性结算后回调（清理选中虚框等 UI 副作用） */
+  onCollapseSettled?: (graph: Graph) => void
 }
 
 function buildRefTocEntryId(refNodeId: string, headingBlockId: string, text: string): string {

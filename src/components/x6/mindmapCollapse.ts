@@ -40,7 +40,7 @@ export function readMindmapChildrenCollapsed(node: Node, defaultValue = false): 
 export function isMindmapRefTocEntryCollapsed(refNode: Node, entryId: string): boolean {
   const data = refNode.getData<Record<string, any>>() ?? {};
   const collapsedMap = (data.refTocCollapsed ?? {}) as Record<string, boolean>;
-  return collapsedMap[entryId] !== false;
+  return collapsedMap[entryId] === true;
 }
 
 export function getMindmapDirectChildIds(graph: Graph, nodeId: string): string[] {
@@ -153,6 +153,34 @@ function syncRefDocBlockNodes(
     });
 }
 
+/** Whether this ref block already has TOC-generated child nodes on the graph. */
+export function refBlockHasMaterializedTocChildren(graph: Graph, refNode: Node): boolean {
+  return graph.getNodes().some((node) => {
+    const data = node.getData<Record<string, any>>() ?? {};
+    return data.refTocParentRefId === refNode.id && typeof data.refTocEntryId === 'string';
+  });
+}
+
+/** First-time materialization only; does not reconcile an existing subtree. */
+export function materializeRefBlockTocChildrenIfNeeded(
+  graph: Graph,
+  refNode: Node,
+  ctx: MindmapRefTocContext,
+): boolean {
+  if (refBlockHasMaterializedTocChildren(graph, refNode)) return false;
+  syncRefBlockTocChildren(graph, refNode, ctx);
+  return true;
+}
+
+/** Reconcile ref subtree with current outline (explicit user action). */
+export function syncMindmapRefBlockTocFromSource(
+  graph: Graph,
+  refNode: Node,
+  ctx: MindmapRefTocContext,
+): void {
+  syncRefBlockTocChildren(graph, refNode, ctx);
+}
+
 export function syncRefBlockTocChildren(
   graph: Graph,
   refNode: Node,
@@ -199,6 +227,31 @@ function resolveNodeCollapsed(graph: Graph, node: Node, inheritedCollapsed: bool
   }
 
   return readMindmapChildrenCollapsed(node, false);
+}
+
+/** 收起后移除不可见 cell 的选中态，避免 X6 选中虚框残留在画布上。 */
+export function settleMindmapCollapseSelection(graph: Graph): void {
+  const selected = graph.getSelectedCells();
+  if (!selected.length) return;
+
+  const visibleSelected = selected.filter((cell) => {
+    if (!cell.isVisible()) return false;
+    if (graph.isEdge(cell)) {
+      const source = cell.getSourceCell();
+      const target = cell.getTargetCell();
+      if ((source && !source.isVisible()) || (target && !target.isVisible())) return false;
+    }
+    return true;
+  });
+
+  if (visibleSelected.length === selected.length) return;
+
+  if (visibleSelected.length === 0) {
+    graph.cleanSelection();
+    return;
+  }
+
+  graph.resetSelection(visibleSelected);
 }
 
 function applySuccessorVisibility(graph: Graph, node: Node, hideChildren: boolean) {
@@ -316,12 +369,6 @@ export function applyMindmapCollapseState(
   applyingMindmapCollapseState = true;
 
   try {
-    graph.getNodes().forEach((node) => {
-      if (!isMindmapRefBlockNode(node)) return;
-      if (readMindmapChildrenCollapsed(node, true)) return;
-      syncRefBlockTocChildren(graph, node, ctx);
-    });
-
     graph.batchUpdate(() => {
       graph.getNodes().forEach((node) => node.show());
       graph.getEdges().forEach((edge) => edge.show());
@@ -345,6 +392,8 @@ export function applyMindmapCollapseState(
     });
 
     layoutMindmapGraph(graph, direction);
+    settleMindmapCollapseSelection(graph);
+    ctx.onCollapseSettled?.(graph);
   } finally {
     applyingMindmapCollapseState = false;
   }
@@ -379,7 +428,7 @@ export function toggleMindmapNodeCollapse(
     const currentlyCollapsed = readMindmapChildrenCollapsed(node, true);
     node.updateData({ childrenCollapsed: !currentlyCollapsed });
     if (currentlyCollapsed) {
-      syncRefBlockTocChildren(graph, node, ctx);
+      materializeRefBlockTocChildrenIfNeeded(graph, node, ctx);
     }
   } else {
     const currentlyCollapsed = readMindmapChildrenCollapsed(node, false);
@@ -398,6 +447,7 @@ export function createMindmapRefTocContext(
     getPageBlocks?: (pageId: string) => Block[]
     getBlock?: (id: string) => Block | undefined
     structureSource?: MindmapRefStructureSource
+    onCollapseSettled?: (graph: Graph) => void
   } | ((pageId: string) => Block[]),
   getBlock?: (id: string) => Block | undefined,
   getPageTitle?: (pageId: string) => string,
@@ -424,5 +474,6 @@ export function createMindmapRefTocContext(
     getPageBlocks: options.getPageBlocks,
     getBlock: options.getBlock,
     structureSource: options.structureSource ?? (options.getPageOutline || options.getBlockOutline ? 'outline' : 'blocks'),
+    onCollapseSettled: options.onCollapseSettled,
   }
 }

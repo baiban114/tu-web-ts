@@ -16,10 +16,13 @@ export function getContentScrollGutterAnchor(el: HTMLElement | null | undefined)
   const paddingLeft = Number.parseFloat(getComputedStyle(scrollEl).paddingLeft) || 0
   const half = EDITOR_GUTTER_BTN_SIZE / 2
 
+  const outerLeft = rect.left + half
+  const innerLeft = rect.left + Math.max(half, paddingLeft - half)
+
   return {
     rect,
     paddingLeft,
-    foldLeft: rect.left + half,
-    hoverLeft: rect.left + Math.max(half, paddingLeft - half),
+    foldLeft: innerLeft,
+    hoverLeft: outerLeft,
   }
 }

@@ -1,5 +1,6 @@
 import type { UmlClassDefinition } from '@/stores/objectModel';
 import { createId, mergeDeep, type CellData } from './cellUtils';
+import { MINDMAP_CONNECTOR_NAME } from './mindmapConnector';
 import { createMindmapPorts, createNodePorts, getMindmapEdgePorts } from './ports';
 
 export type NodePreset = 'rect' | 'round' | 'ellipse' | 'diamond' | 'umlClass';
@@ -43,16 +44,12 @@ export function createMindmapEdgeMetadata(
       target: { cell: targetId, port: ports.targetPort },
     },
     {
-      router: { name: 'normal' },
-      connector: { name: 'smooth' },
+      connector: { name: MINDMAP_CONNECTOR_NAME },
       attrs: {
         line: {
-          stroke: '#8c8c8c',
+          stroke: '#A2B1C3',
           strokeWidth: 2,
-          targetMarker: {
-            name: 'classic',
-            size: 8,
-          },
+          targetMarker: '',
         },
       },
     },
@@ -269,6 +266,7 @@ export function createMindmapNode(options: Partial<CellData> & { mindRole?: Mind
       mindRole,
       mindBranchSide: isRoot ? undefined : 'right',
       ...(options.data ?? {}),
+      ...(isRoot ? { deleteProtected: true } : {}),
     },
     ...options,
   });

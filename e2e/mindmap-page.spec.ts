@@ -69,15 +69,15 @@ test('shows dashed edge only while previewing a dragged mindmap node', async ({ 
   await expect(previewEdge).toHaveCount(1)
   await expect(previewEdge.locator('[stroke-dasharray="6 4"]')).toHaveCount(1)
 
+  const rootBoxDuring = await rootNode.boundingBox()
+  const siblingBoxDuring = await siblingNode.boundingBox()
+  expect(rootBoxDuring).not.toBeNull()
+  expect(siblingBoxDuring).not.toBeNull()
+  expect(Math.abs(rootBoxDuring!.y - rootBoxBefore!.y)).toBeLessThan(1)
+  expect(Math.abs(siblingBoxDuring!.y - siblingBoxBefore!.y)).toBeLessThan(1)
+
   await page.mouse.up()
   await expect(previewEdge).toHaveCount(0)
-
-  const rootBoxAfter = await rootNode.boundingBox()
-  const siblingBoxAfter = await siblingNode.boundingBox()
-  expect(rootBoxAfter).not.toBeNull()
-  expect(siblingBoxAfter).not.toBeNull()
-  expect(Math.abs(rootBoxAfter!.y - rootBoxBefore!.y)).toBeLessThan(1)
-  expect(Math.abs(siblingBoxAfter!.y - siblingBoxBefore!.y)).toBeLessThan(1)
 })
 
 test('updates dashed preview source port when dragging across mindmap sides', async ({ page }) => {
@@ -105,6 +105,127 @@ test('updates dashed preview source port when dragging across mindmap sides', as
   await expect(previewEdge.locator('[data-source-port="port-left"]')).toHaveCount(1)
 
   await page.mouse.up()
+})
+
+test('lays out starter branches to the right of root on create', async ({ page }) => {
+  await createMindmapFromMenu(page)
+
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  const rootNode = page.locator('.x6-node[data-cell-id]').filter({ hasText: '中心主题' }).first()
+  const branch1 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 1' }).first()
+  const branch2 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 2' }).first()
+  await expect(rootNode).toBeVisible()
+  await expect(branch1).toBeVisible()
+  await expect(branch2).toBeVisible()
+
+  const rootBox = await rootNode.boundingBox()
+  const branch1Box = await branch1.boundingBox()
+  const branch2Box = await branch2.boundingBox()
+  expect(rootBox).not.toBeNull()
+  expect(branch1Box).not.toBeNull()
+  expect(branch2Box).not.toBeNull()
+  expect(branch1Box!.x).toBeGreaterThan(rootBox!.x + rootBox!.width - 4)
+  expect(branch2Box!.x).toBeGreaterThan(rootBox!.x + rootBox!.width - 4)
+})
+
+test('does not delete root when only center topic is selected', async ({ page }) => {
+  await createMindmapFromMenu(page)
+
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  const rootNode = page.locator('.x6-node[data-cell-id]').filter({ hasText: '中心主题' }).first()
+  const branch1 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 1' }).first()
+  const branch2 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 2' }).first()
+  await expect(rootNode).toBeVisible()
+  await expect(branch1).toBeVisible()
+  await expect(branch2).toBeVisible()
+
+  await rootNode.click()
+  await page.keyboard.press('Delete')
+
+  await expect(rootNode).toBeVisible()
+  await expect(branch1).toBeVisible()
+  await expect(branch2).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id]')).toHaveCount(3)
+})
+
+test('deletes a selected branch with Delete key', async ({ page }) => {
+  await createMindmapFromMenu(page)
+
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  const branch1 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 1' }).first()
+  const branch2 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 2' }).first()
+  await expect(branch1).toBeVisible()
+  await expect(branch2).toBeVisible()
+
+  await branch1.click()
+  await page.keyboard.press('Delete')
+
+  await expect(branch1).toHaveCount(0)
+  await expect(branch2).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id]')).toHaveCount(2)
+
+  await page.waitForTimeout(700)
+  await expect(page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 1' })).toHaveCount(0)
+})
+
+test('deletes multiple selected branches at once', async ({ page }) => {
+  await createMindmapFromMenu(page)
+
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  const rootNode = page.locator('.x6-node[data-cell-id]').filter({ hasText: '中心主题' }).first()
+  const branch1 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 1' }).first()
+  const branch2 = page.locator('.x6-node[data-cell-id]').filter({ hasText: '分支 2' }).first()
+  await expect(rootNode).toBeVisible()
+  await expect(branch1).toBeVisible()
+  await expect(branch2).toBeVisible()
+
+  await branch1.click()
+  await page.keyboard.down('Control')
+  await branch2.click()
+  await page.keyboard.up('Control')
+  await expect(page.locator('.x6-node-selected')).toHaveCount(2)
+  await expect(page.locator('.x6-widget-selection-inner')).toBeHidden()
+  await expect(page.locator('.x6-widget-selection-box')).toHaveCount(0)
+  await expect(page.locator('.x6-widget-transform')).toHaveCount(0)
+  await expect(page.locator('.tu-selection-frame')).toHaveCount(0)
+  await expect(branch1.locator('rect').first()).toHaveCSS('stroke-width', '2.4px')
+  await expect(branch2.locator('rect').first()).toHaveCSS('stroke-width', '2.4px')
+
+  await page.getByRole('button', { name: '删除' }).click()
+
+  await expect(branch1).toHaveCount(0)
+  await expect(branch2).toHaveCount(0)
+  await expect(rootNode).toBeVisible()
+  await expect(page.locator('.x6-node[data-cell-id]')).toHaveCount(1)
+})
+
+test('clears selected child outline after collapse settlement', async ({ page }) => {
+  await createMindmapFromMenu(page)
+
+  await expect(page.locator('.x6-stage')).toBeVisible()
+  const mindmapNodes = page.locator('.x6-node[data-cell-id]')
+  await expect(mindmapNodes).toHaveCount(3)
+  const rootNode = mindmapNodes.nth(0)
+  const childNode = mindmapNodes.nth(1)
+  await expect(rootNode).toBeVisible()
+  await expect(childNode).toBeVisible()
+
+  await childNode.click()
+  await expect(childNode).toHaveClass(/x6-node-selected/)
+
+  const rootBox = await rootNode.boundingBox()
+  expect(rootBox).not.toBeNull()
+  await page.mouse.move(rootBox!.x + rootBox!.width / 2, rootBox!.y + rootBox!.height / 2)
+
+  const collapseButton = page.locator('.mindmap-collapse-btn').first()
+  await expect(collapseButton).toBeVisible()
+  await collapseButton.click()
+
+  await expect(childNode).not.toBeVisible()
+  await expect(page.locator('.x6-node-selected')).toHaveCount(0)
+  await expect(page.locator('.x6-widget-selection-inner')).toBeHidden()
+  await expect(page.locator('.x6-widget-selection-box')).toHaveCount(0)
+  await expect(page.locator('.tu-selection-frame')).toHaveCount(0)
 })
 
 test('creates a document page from the same menu', async ({ page }) => {

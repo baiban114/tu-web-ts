@@ -45,18 +45,22 @@ import {
   syncMindmapEdgeStyles,
   addMindmapChild,
   addMindmapSibling,
-  deleteMindmapSelection,
+  expandMindmapDeleteTargets,
   attachMindmapDirection,
   readMindmapDirection,
   canConnectMindmapEdge,
+  filterDeletableCells,
   applyMindmapCollapseState,
   toggleMindmapNodeCollapse,
   createMindmapRefTocContext,
   isApplyingMindmapCollapseState,
   isApplyingMindmapDragPreview,
   isMindmapRefBlockNode,
+  materializeRefBlockTocChildrenIfNeeded,
   nodeHasMindmapExpandableChildren,
+  readMindmapChildrenCollapsed,
   readMindmapNodeCollapsedForDisplay,
+  syncMindmapRefBlockTocFromSource,
   getMindmapCollapseButtonStyle,
   beginMindmapNodeDrag,
   commitMindmapDragDrop,
@@ -67,6 +71,7 @@ import {
   getLastMindmapDragPointer,
   updateMindmapDragPreview,
   collectMindmapDescendantIds,
+  ensureMindmapConnectorRegistered,
   MINDMAP_DRAG_PREVIEW_EDGE_ID,
   MINDMAP_DRAG_PREVIEW_OPTION,
   type NodePreset,
@@ -151,6 +156,7 @@ const canRedo = ref(false);
 const gridVisible = ref(true);
 const zoomPercent = ref(100);
 const selectedCellsCount = ref(0);
+const deletableSelectionCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
 const objectModelStore = useObjectModelStore();
 const materialLibraryStore = useMaterialLibraryStore();
@@ -176,6 +182,7 @@ const mindmapRefTocContext = createMindmapRefTocContext({
   getPageOutline: (pageId) => outlineCacheStore.getPageNodes(pageId),
   getBlockOutline: (blockId) => outlineCacheStore.getBlockNodes(blockId),
   getPageTitle: (pageId) => resolvePageTitleForRef(pageId),
+  onCollapseSettled: () => settleMindmapCollapseInteraction(),
 });
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
 const toolbarVisible = ref(true);
@@ -348,6 +355,7 @@ function normalizeNode(node: CellData, mindmap = false): CellData {
       mindRole: mindRole === 'root' ? 'root' : 'topic',
       data: {
         ...node.data,
+        ...(mindRole === 'root' ? { deleteProtected: true } : {}),
         ...(isMindmapRefBlock && node.data?.childrenCollapsed == null ? { childrenCollapsed: true } : {}),
         ...(isMindmapRefBlock && !node.data?.refTocCollapsed ? { refTocCollapsed: {} } : {}),
       },
@@ -522,12 +530,14 @@ function serializeGraphData(): GraphData {
   const edges = graph.getEdges()
     .filter((edge) => edge.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID)
     .map((edge) => edge.toJSON() as CellData);
+  const blueprintMeta = props.graphData?.blueprintMeta ?? undefined;
   return {
     cells: (graph.toJSON().cells as CellData[]).filter(
       (cell) => cell.id !== MINDMAP_DRAG_PREVIEW_EDGE_ID,
     ),
     nodes,
     edges,
+    ...(blueprintMeta ? { blueprintMeta } : {}),
     uml: objectModelStore.model as Record<string, unknown>,
   } as GraphData;
 }
@@ -772,7 +782,47 @@ async function onMindmapCollapseButtonClick(nodeId: string) {
   }
 
   handleMindmapNodeCollapse(node);
+}
+
+/** 思维导图收起/可见性变更后的统一 UI 结算（选中虚框、悬浮按钮、编辑态等）。 */
+function settleMindmapCollapseInteraction() {
+  if (!graph) return;
+
+  if (mindmapCollapseHoverNodeId.value) {
+    const hovered = graph.getCellById(mindmapCollapseHoverNodeId.value);
+    if (!hovered?.isVisible()) {
+      mindmapCollapseHoverNodeId.value = null;
+    }
+  }
+
+  if (editingNodeId.value) {
+    const editing = graph.getCellById(editingNodeId.value);
+    if (!editing?.isVisible()) {
+      handleNodeOverlayCancel(editingNodeId.value);
+    }
+  }
+
+  if (mindmapDragActiveNodeId) {
+    const dragged = graph.getCellById(mindmapDragActiveNodeId);
+    if (!dragged?.isVisible()) {
+      cancelMindmapNodeDrag();
+    }
+  }
+
+  refreshSelectedCellState();
   updateMindmapCollapseOverlays();
+  updateNodeOverlays();
+}
+
+function handleMindmapNodeCollapse(node: Node) {
+  if (!graph || !isMindmap.value || !isEditable.value) return;
+  toggleMindmapNodeCollapse(
+    graph,
+    node,
+    readMindmapDirection(props.graphData),
+    mindmapRefTocContext,
+  );
+  scheduleSync();
 }
 
 function suspendCanvasInteractionForEdit() {
@@ -974,11 +1024,17 @@ function toggleNodeTextMode(mode: 'plain' | 'rich') {
 }
 
 function refreshSelectedCellState() {
-  if (!graph) return;
+  if (!graph) {
+    return;
+  }
 
   const cells = graph.getSelectedCells();
   selectedCellsCount.value = cells.length;
+  deletableSelectionCount.value = resolveDeletableCellsForDelete().length;
   selectedCell.value = null;
+  if (cells.length !== 1 || !graph.isNode(cells[0])) {
+    graph.clearTransformWidgets();
+  }
 
   if (cells.length === 1) {
     const [cell] = cells;
@@ -1098,6 +1154,9 @@ function applyGraphData(data?: GraphData, fitView = false) {
   graph.fromJSON({ cells: normalized.cells ?? [] });
   graph.cleanSelection();
   syncTaskFlowEdgeState();
+  if (isMindmap.value) {
+    layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+  }
   void syncMindmapGraphStateWithOutlines();
 
   // Hide SVG labels for rich-text nodes after loading
@@ -1113,6 +1172,9 @@ function applyGraphData(data?: GraphData, fitView = false) {
 
   nextTick(() => {
     if (!graph) return;
+    if (isMindmap.value) {
+      applyMindmapGraphState();
+    }
     if (fitView) {
       if (graph.getCellCount() > 0) {
         graph.zoomToFit({ padding: 24, maxScale: 1 });
@@ -1122,6 +1184,14 @@ function applyGraphData(data?: GraphData, fitView = false) {
       }
     }
     isApplyingExternalData = false;
+    if (isMindmap.value) {
+      const laidOut = normalizeGraphData(serializeGraphData());
+      const laidOutSnapshot = JSON.stringify(laidOut);
+      if (laidOutSnapshot !== snapshot) {
+        lastSerializedSnapshot = laidOutSnapshot;
+        emit('graph-data-change', laidOut);
+      }
+    }
   });
 }
 
@@ -1392,16 +1462,53 @@ function applyMindmapGraphState() {
     readMindmapDirection(props.graphData),
     mindmapRefTocContext,
   );
-  updateMindmapCollapseOverlays();
 }
 
 function syncMindmapGraphState() {
+  if (isApplyingExternalData) return;
   applyMindmapGraphState();
 }
 
 async function syncMindmapGraphStateWithOutlines() {
   await prefetchMindmapRefOutlines();
+  const currentGraph = graph;
+  if (currentGraph && isMindmap.value) {
+    currentGraph.getNodes().forEach((node) => {
+      if (!isMindmapRefBlockNode(node)) return;
+      if (readMindmapChildrenCollapsed(node, true)) return;
+      materializeRefBlockTocChildrenIfNeeded(currentGraph, node, mindmapRefTocContext);
+    });
+  }
+  if (isApplyingExternalData) return;
   applyMindmapGraphState();
+}
+
+async function syncSelectedMindmapRefBlockTocFromSource() {
+  const cell = selectedCell.value;
+  if (!graph || !isEditable.value || !isMindmap.value || !cell || cell.kind !== 'node' || !cell.isRefBlock) return;
+  const node = graph.getCellById(cell.id);
+  if (!node || !graph.isNode(node) || !isMindmapRefBlockNode(node)) return;
+
+  const data = node.getData<Record<string, any>>() ?? {};
+  const refBlockId = typeof data.refBlockId === 'string' ? data.refBlockId : '';
+  const refType: 'block' | 'page' = data.refType === 'page' ? 'page' : 'block';
+  if (!refBlockId) return;
+
+  if (refType === 'page') {
+    await outlineCacheStore.ensurePageOutline(refBlockId, { force: true });
+  } else {
+    await outlineCacheStore.ensureBlockOutline(refBlockId, { force: true });
+  }
+
+  syncMindmapRefBlockTocFromSource(
+    graph,
+    node,
+    mindmapRefTocContext,
+  );
+  applyMindmapGraphState();
+  refreshSelectedCellState();
+  updateMindmapCollapseOverlays();
+  scheduleSync();
 }
 
 async function prefetchMindmapRefOutlines() {
@@ -1420,34 +1527,38 @@ async function prefetchMindmapRefOutlines() {
   await outlineCacheStore.prefetchBatch([...pageIds], [...blockIds]);
 }
 
-function handleMindmapNodeCollapse(node: Node) {
-  if (!graph || !isMindmap.value || !isEditable.value) return;
-  toggleMindmapNodeCollapse(
-    graph,
-    node,
-    readMindmapDirection(props.graphData),
-    mindmapRefTocContext,
-  );
-  refreshSelectedCellState();
-  updateMindmapCollapseOverlays();
-  scheduleSync();
+function resolveDeletableCellsForDelete() {
+  const g = graph;
+  if (!g) return [];
+  let cells = filterDeletableCells(g.getSelectedCells());
+  if (!cells.length) return [];
+  if (isMindmap.value) {
+    const nodes = cells.filter((cell) => g.isNode(cell)) as Node[];
+    cells = expandMindmapDeleteTargets(g, nodes);
+  }
+  return cells;
 }
 
 function deleteSelection() {
   if (!graph || !isEditable.value) return;
-  if (isMindmap.value) {
-    if (deleteMindmapSelection(graph)) {
-      graph.cleanSelection();
-      refreshSelectedCellState();
-      scheduleSync();
-    }
-    return;
-  }
-  const cells = graph.getSelectedCells();
+  const cells = resolveDeletableCellsForDelete();
   if (!cells.length) return;
+
+  if (syncTimer !== null) {
+    window.clearTimeout(syncTimer);
+    syncTimer = null;
+  }
+
   graph.removeCells(cells);
   graph.cleanSelection();
   refreshSelectedCellState();
+
+  if (isMindmap.value) {
+    layoutMindmapGraph(graph, readMindmapDirection(props.graphData));
+    updateMindmapCollapseOverlays();
+    emitGraphData();
+    return;
+  }
   scheduleSync();
 }
 
@@ -2335,6 +2446,8 @@ function createMindmapConnectingEdge(): Edge {
 function initGraph() {
   if (!containerRef.value || !stageRef.value) return;
 
+  ensureMindmapConnectorRegistered();
+
   if (graph) {
     graph.dispose();
     graph = null;
@@ -2643,7 +2756,7 @@ defineExpose({
         <button type="button" class="tool-button" :disabled="!isEditable" @click="pasteSelection">
           粘贴
         </button>
-        <button type="button" class="tool-button tool-button--danger" :disabled="!isEditable || selectedCellsCount === 0" @click="deleteSelection">
+        <button type="button" class="tool-button tool-button--danger" :disabled="!isEditable || deletableSelectionCount === 0" @click="deleteSelection">
           删除
         </button>
       </div>
@@ -2809,7 +2922,7 @@ defineExpose({
             <span>Tab 添加子节点 · Enter 添加同级</span>
             <span>悬浮节点显示展开/收起按钮（避开连接桩）</span>
             <span>双击节点编辑文字（支持富文本）</span>
-            <span>Delete 删除分支（保留中心主题）</span>
+            <span>Delete 删除选中分支（含子节点）· 中心主题不可删除</span>
           </template>
           <template v-else>
             <span>双击空白处快速新建节点</span>
@@ -2918,6 +3031,15 @@ defineExpose({
                   </svg>
                 </button>
               </div>
+              <button
+                v-if="isMindmap"
+                type="button"
+                class="tool-button"
+                :disabled="!isEditable"
+                @click="void syncSelectedMindmapRefBlockTocFromSource()"
+              >
+                从目录同步
+              </button>
             </div>
 
             <label v-if="!selectedCell.isRefBlock" class="field">
@@ -3739,6 +3861,16 @@ defineExpose({
 .x6-canvas :deep(.x6-edge.x6-edge-selected .connection) {
   stroke-width: 3px !important;
   stroke: #1677ff !important;
+}
+
+.x6-canvas :deep(.x6-widget-selection-inner),
+.x6-canvas :deep(.x6-widget-selection-box) {
+  display: none !important;
+}
+
+.x6-canvas :deep(.x6-widget-transform) {
+  border-color: transparent !important;
+  box-shadow: none !important;
 }
 
 .x6-canvas :deep(.x6-node [magnet='true']) {
