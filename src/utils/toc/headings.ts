@@ -14,6 +14,10 @@ export interface FlatTocEntry {
   refId?: string
   targetText?: string
   sourceBinding?: HeadingSourceBinding
+  contentTreeNodeId?: string
+  previewText?: string
+  estimatedHours?: number
+  totalEstimatedHours?: number
 }
 
 export interface TocTreeItem {

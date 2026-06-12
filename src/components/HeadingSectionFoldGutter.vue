@@ -12,6 +12,7 @@ import {
   toggleTocEntryCollapse,
 } from '@/utils/toc/tocSectionFoldActions'
 import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
+import { getSectionFoldRevision } from '@/stores/sectionFoldSession'
 
 interface FoldToggleLayout {
   entryId: string
@@ -158,6 +159,11 @@ watch(
   () => tocCollectContext?.value,
   () => syncToggles(),
   { deep: true },
+)
+
+watch(
+  () => getSectionFoldRevision(),
+  () => syncToggles(),
 )
 
 onMounted(() => {

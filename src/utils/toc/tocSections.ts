@@ -1,4 +1,5 @@
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
+import { isSessionEntryCollapsed } from '@/stores/sectionFoldSession'
 import type { FlatTocEntry } from '@/utils/toc/headings'
 
 export interface TocSectionContentRange {
@@ -195,15 +196,13 @@ export function getCollapsedSectionDecorations(
 }
 
 export function isEntryCollapsed(entry: FlatTocEntry, doc: ProseMirrorNode): boolean {
-  if (entry.sourceType === 'local' || entry.sourceType === 'ref-group') {
-    const node = doc.nodeAt(entry.pos)
-    return Boolean(node?.attrs?.sectionCollapsed)
+  if (entry.sourceType === 'ref-group' || entry.sourceType === 'ref-child') {
+    return isSessionEntryCollapsed(entry.id)
   }
 
-  if (entry.sourceType === 'ref-child') {
+  if (entry.sourceType === 'local') {
     const node = doc.nodeAt(entry.pos)
-    const metadata = (node?.attrs?.metadata || {}) as { sectionCollapsedChildren?: Record<string, boolean> }
-    return Boolean(metadata.sectionCollapsedChildren?.[entry.id])
+    return Boolean(node?.attrs?.sectionCollapsed)
   }
 
   return false

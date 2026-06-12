@@ -38,6 +38,8 @@ import { createMindmapStarterGraphData } from '@/components/x6'
 import { createHeadingBlockId } from '@/utils/headingSource'
 import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
+import { getSectionFoldRevision } from '@/stores/sectionFoldSession'
 import { useWorkspaceStore } from '@/stores/workspace'
 import HoverHandle from './HoverHandle.vue'
 import HeadingSectionFoldGutter from './HeadingSectionFoldGutter.vue'
@@ -808,6 +810,7 @@ const editor = useEditor({
     }),
     HeadingSectionFold.configure({
       getTocContext: () => tocCollectContext?.value ?? null,
+      getFoldRevision: () => getSectionFoldRevision(),
     }),
     SelectionDecorations,
     BlockActions,
@@ -900,8 +903,9 @@ const editor = useEditor({
       }
     }
   },
-  onUpdate: () => {
+  onUpdate: ({ transaction }) => {
     if (isInternalUpdate || !editor.value) return
+    if (transaction.getMeta(HEADING_SECTION_FOLD_META)) return
     const currentSignature = getDocSignature()
     if (currentSignature === lastDocSignature) return
     lastDocSignature = currentSignature

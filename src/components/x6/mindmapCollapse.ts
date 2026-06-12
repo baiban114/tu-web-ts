@@ -1,5 +1,8 @@
 import type { Graph, Node } from '@antv/x6';
 import type { Block } from '@/api/types';
+import type { ContentTreeNode } from '@/api/outline';
+import type { MindmapRefStructureSource } from '@/utils/toc/mindmapRefToc';
+import { formatHours } from '@/utils/tree/hours';
 import { buildHeadingTree, type FlatTocEntry, type TocTreeItem } from '@/utils/toc/headings';
 import {
   getMindmapRefBlockFlatToc,
@@ -57,6 +60,14 @@ function ensureMindmapEdge(graph: Graph, sourceId: string, targetId: string) {
   }
 }
 
+function formatRefTocNodeLabel(entry: TocTreeItem | FlatTocEntry): string {
+  const flat = entry as FlatTocEntry;
+  if (flat.totalEstimatedHours != null && flat.totalEstimatedHours > 0) {
+    return `${entry.text} (${formatHours(flat.totalEstimatedHours)})`;
+  }
+  return entry.text;
+}
+
 function upsertRefTocNode(
   graph: Graph,
   refNode: Node,
@@ -65,19 +76,31 @@ function upsertRefTocNode(
   existingByEntryId: Map<string, Node>,
 ): Node {
   let childNode = existingByEntryId.get(entry.id);
+  const flatEntry = entry as FlatTocEntry;
+  const label = formatRefTocNodeLabel(entry);
   if (!childNode) {
     childNode = graph.addNode(createMindmapNode({
-      label: entry.text,
+      label,
       data: {
         mindRole: 'topic',
         refTocEntryId: entry.id,
         refTocParentRefId: refNode.id,
         refTocSourceType: entry.sourceType,
+        contentTreeNodeId: flatEntry.contentTreeNodeId,
+        refTocPreviewText: flatEntry.previewText,
+        refTocEstimatedHours: flatEntry.estimatedHours,
+        refTocTotalHours: flatEntry.totalEstimatedHours,
       },
     })) as Node;
     existingByEntryId.set(entry.id, childNode);
   } else {
-    childNode.attr('label/text', entry.text);
+    childNode.attr('label/text', label);
+    childNode.updateData({
+      contentTreeNodeId: flatEntry.contentTreeNodeId,
+      refTocPreviewText: flatEntry.previewText,
+      refTocEstimatedHours: flatEntry.estimatedHours,
+      refTocTotalHours: flatEntry.totalEstimatedHours,
+    });
   }
 
   ensureMindmapEdge(graph, parentNodeId, childNode.id);
@@ -367,10 +390,39 @@ export function toggleMindmapNodeCollapse(
 }
 
 export function createMindmapRefTocContext(
-  getPageBlocks: (pageId: string) => Block[],
-  getBlock: (id: string) => Block | undefined,
+  options: {
+    getPageOutline?: (pageId: string) => ContentTreeNode[] | undefined
+    getBlockOutline?: (blockId: string) => ContentTreeNode[] | undefined
+    getPageTitle?: (pageId: string) => string
+    getBlockMeta?: (id: string) => { pageTitle?: string } | undefined
+    getPageBlocks?: (pageId: string) => Block[]
+    getBlock?: (id: string) => Block | undefined
+    structureSource?: MindmapRefStructureSource
+  } | ((pageId: string) => Block[]),
+  getBlock?: (id: string) => Block | undefined,
   getPageTitle?: (pageId: string) => string,
   getBlockMeta?: (id: string) => { pageTitle?: string } | undefined,
+  getPageOutline?: (pageId: string) => ContentTreeNode[] | undefined,
+  getBlockOutline?: (blockId: string) => ContentTreeNode[] | undefined,
 ): MindmapRefTocContext {
-  return { getPageBlocks, getBlock, getPageTitle, getBlockMeta };
+  if (typeof options === 'function') {
+    return {
+      getPageBlocks: options,
+      getBlock,
+      getPageTitle,
+      getBlockMeta,
+      getPageOutline,
+      getBlockOutline,
+      structureSource: 'blocks',
+    }
+  }
+  return {
+    getPageOutline: options.getPageOutline,
+    getBlockOutline: options.getBlockOutline,
+    getPageTitle: options.getPageTitle,
+    getBlockMeta: options.getBlockMeta,
+    getPageBlocks: options.getPageBlocks,
+    getBlock: options.getBlock,
+    structureSource: options.structureSource ?? (options.getPageOutline || options.getBlockOutline ? 'outline' : 'blocks'),
+  }
 }

@@ -341,6 +341,18 @@ tu-web-ts/src/
 | 2026-06 | P1：`TreeListPanel.vue`、`ResourceManagerView` 左侧资源结构树、合并归类树选择 |
 | 2026-06 | P2/P3 适配器：`adapters/toc.ts`、`adapters/pages.ts`（导出/复用；页面仍用 `el-tree`） |
 
+## 17. 统一内容树 `content_tree_node`（2026-06）
+
+| 项 | 内容 |
+|----|------|
+| 表 | `content_tree_node` + `content_tree_scope`；`scope_type=page` 物化页面 outline，`scope_type=resource_item` 替代原 `external_resource_chapter` |
+| 工时 | 节点 `estimatedHours` 可编辑；API 返回 `totalEstimatedHours`（后代 rollup，语义同多维表格 `recordTotalHours`） |
+| 读 API | `GET /api/pages/{id}/outline`、`GET /api/blocks/{id}/outline`、`POST /api/outlines/batch` |
+| 写 API | `PATCH /api/content-tree-nodes/{id}`（工时）；页面 outline 随 `PageIndexCoordinator` 自动 rebuild |
+| ES | `tu_headings` 索引 + `GET /api/search/headings` |
+| 前端 | [`outlineCache`](../src/stores/outlineCache.ts)、[`mindmapRefToc.ts`](../src/utils/toc/mindmapRefToc.ts) 读 outline API（`structureSource: 'outline'`）；思维导图引用块展开/目录物化**不**拉 `GET /api/pages/{id}/content`，加载时 batch prefetch、展开前 `ensurePageOutline` / `ensureBlockOutline` |
+| Mock | [`mock/contentTree.ts`](../src/mock/contentTree.ts) + `contentTreeHours` in [`mock/store.ts`](../src/mock/store.ts) |
+
 ## 16. 确认后下一步
 
 1. 评审本方案（尤其是资源树层级与 `meta` 约定）。

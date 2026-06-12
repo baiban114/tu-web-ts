@@ -1,6 +1,9 @@
 import type { Editor } from '@tiptap/core'
 import type { FlatTocEntry } from '@/utils/toc/headings'
 import { createHeadingBlockId } from '@/utils/headingSource'
+import { isSessionEntryCollapsed, toggleSessionEntryCollapse } from '@/stores/sectionFoldSession'
+
+export const HEADING_SECTION_FOLD_META = 'headingSectionFold'
 
 export function findEmbedRoot(editorDom: HTMLElement, blockId: string): HTMLElement | null {
   return editorDom.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
@@ -93,7 +96,20 @@ export function clearEmbedChildSectionCollapses(editorDom: HTMLElement) {
   })
 }
 
+function refreshSectionFoldDecorations(editor: Editor) {
+  editor.view.dispatch(editor.state.tr.setMeta(HEADING_SECTION_FOLD_META, true))
+}
+
 export function toggleTocEntryCollapse(editor: Editor, entry: FlatTocEntry) {
+  if (entry.sourceType === 'ref-group' || entry.sourceType === 'ref-child') {
+    toggleSessionEntryCollapse(entry.id)
+    if (entry.sourceType === 'ref-child') {
+      syncEmbedChildSectionCollapse(editor.view.dom, entry, isSessionEntryCollapsed(entry.id))
+    }
+    refreshSectionFoldDecorations(editor)
+    return
+  }
+
   if (entry.sourceType === 'local') {
     editor.chain().focus().command(({ tr, state }) => {
       const node = state.doc.nodeAt(entry.pos)
@@ -102,42 +118,6 @@ export function toggleTocEntryCollapse(editor: Editor, entry: FlatTocEntry) {
         ...node.attrs,
         blockId: node.attrs.blockId || createHeadingBlockId(),
         sectionCollapsed: !node.attrs.sectionCollapsed,
-      })
-      return true
-    }).run()
-    return
-  }
-
-  if (entry.sourceType === 'ref-group') {
-    editor.chain().focus().command(({ tr, state }) => {
-      const node = state.doc.nodeAt(entry.pos)
-      if (!node) return false
-      tr.setNodeMarkup(entry.pos, undefined, {
-        ...node.attrs,
-        sectionCollapsed: !node.attrs.sectionCollapsed,
-      })
-      return true
-    }).run()
-    return
-  }
-
-  if (entry.sourceType === 'ref-child') {
-    editor.chain().focus().command(({ tr, state }) => {
-      const node = state.doc.nodeAt(entry.pos)
-      if (!node) return false
-      const metadata = { ...(node.attrs.metadata || {}) } as {
-        sectionCollapsedChildren?: Record<string, boolean>
-      }
-      const children = { ...(metadata.sectionCollapsedChildren || {}) }
-      if (children[entry.id]) {
-        delete children[entry.id]
-      } else {
-        children[entry.id] = true
-      }
-      metadata.sectionCollapsedChildren = children
-      tr.setNodeMarkup(entry.pos, undefined, {
-        ...node.attrs,
-        metadata,
       })
       return true
     }).run()

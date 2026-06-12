@@ -11,6 +11,7 @@ import {
 
 export interface HeadingSectionFoldOptions {
   getTocContext: () => TocCollectContext | null | undefined
+  getFoldRevision: () => number
 }
 
 export const headingSectionFoldKey = new PluginKey('headingSectionFold')
@@ -67,6 +68,7 @@ export const HeadingSectionFold = Extension.create<HeadingSectionFoldOptions>({
   addOptions() {
     return {
       getTocContext: () => null,
+      getFoldRevision: () => 0,
     }
   },
 
@@ -77,6 +79,8 @@ export const HeadingSectionFold = Extension.create<HeadingSectionFoldOptions>({
         key: headingSectionFoldKey,
         props: {
           decorations(state) {
+            // Touch revision so ref-section fold state refreshes without a content save.
+            void extension.options.getFoldRevision()
             return buildSectionFoldDecorations(state, () => extension.options.getTocContext())
           },
         },

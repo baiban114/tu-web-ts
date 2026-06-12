@@ -21,12 +21,15 @@ import { registerExternalUrlFromPaste } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { useBlockRegistryStore } from '@/stores/blockRegistry'
+import { useOutlineCacheStore } from '@/stores/outlineCache'
+import { clearSectionFoldSession } from '@/stores/sectionFoldSession'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import {
   buildHeadingTree,
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { GraphData } from '@/api/types'
@@ -285,6 +288,7 @@ watch(() => nodeViewToolbar.visible, (visible, wasVisible) => {
 const workspaceStore = useWorkspaceStore()
 const router = useRouter()
 const registryStore = useBlockRegistryStore()
+const outlineCacheStore = useOutlineCacheStore()
 
 interface Props {
   contentList: PageContent
@@ -599,8 +603,27 @@ const handleBlocksChange = (blocks: Block[]) => {
 const focusEditorFromStart = () => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
+
+  const firstChild = editor.state.doc.firstChild
+  if (firstChild && NODEVIEW_TYPES.includes(firstChild.type.name)) {
+    const blockId = String(firstChild.attrs.blockId || '')
+    if (blockId) {
+      const newBlock: Block = {
+        id: 'block-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
+        type: 'richtext',
+        content: '',
+      }
+      editor
+        .chain()
+        .focus()
+        .insertBlockBefore(newBlock, blockId)
+        .setTextSelection(2)
+        .run()
+      return
+    }
+  }
+
   editor.commands.focus()
-  // Move cursor to the beginning of the document
   editor.commands.setTextSelection({ from: 1, to: 1 })
 }
 
@@ -884,9 +907,48 @@ const tocCollectContext = computed<TocCollectContext>(() => ({
   getBlock: (id: string) => registryStore.getBlock(id),
   getBlockMeta: (id: string) => registryStore.getMeta(id),
   getPageTitle: findPageTitle,
+  getPageOutline: (pageId: string) => outlineCacheStore.getPageNodes(pageId),
+  getBlockOutline: (blockId: string) => outlineCacheStore.getBlockNodes(blockId),
+  structureSource: 'outline',
 }))
 
 provide('tocCollectContext', tocCollectContext)
+
+async function prefetchEditorRefOutlines() {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const pageIds = new Set<string>()
+  const blockIds = new Set<string>()
+  editor.state.doc.descendants((node) => {
+    if (node.type.name !== 'refBlock') return true
+    const refId = String(node.attrs?.refId ?? '')
+    if (!refId) return true
+    if (node.attrs?.refType === 'page') pageIds.add(refId)
+    else blockIds.add(refId)
+    return true
+  })
+
+  if (pageIds.size === 0 && blockIds.size === 0) return
+  await outlineCacheStore.prefetchBatch([...pageIds], [...blockIds])
+  editor.view.dispatch(editor.state.tr.setMeta(HEADING_SECTION_FOLD_META, true))
+}
+
+watch(
+  () => workspaceStore.currentPageId,
+  () => {
+    clearSectionFoldSession()
+    void nextTick(() => void prefetchEditorRefOutlines())
+  },
+)
+
+watch(
+  () => localBlocks.value,
+  () => {
+    void nextTick(() => void prefetchEditorRefOutlines())
+  },
+  { deep: true },
+)
 
 const tocItems = computed<TocItem[]>(() => {
   const editor = tuEditorRef.value?.editor

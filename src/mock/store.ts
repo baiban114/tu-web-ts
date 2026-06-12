@@ -11,6 +11,19 @@ import type {
   TextAnnotation,
 } from '@/api/types';
 import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
+import type {
+  BlockOutlineResponse,
+  ContentTreeNode,
+  OutlineBatchRequest,
+  OutlineBatchResponse,
+  PageOutlineResponse,
+} from '@/api/outline';
+import {
+  buildMockBatchResponse,
+  buildMockBlockOutline,
+  buildMockPageOutline,
+  pageContentToBlocks,
+} from '@/mock/contentTree';
 import {
   buildExcerptTitle,
   formatExcerptLocator,
@@ -53,6 +66,7 @@ interface MockState {
   resourceExcerpts: ResourceExcerpt[];
   urlClusterRules: UrlClusterRule[];
   resourceItemRelations: ResourceItemRelation[];
+  contentTreeHours: Record<string, number | null>;
 }
 
 const STORAGE_KEY = 'tu:mock-state';
@@ -264,6 +278,7 @@ const initialState: MockState = {
       sortOrder: 0,
     },
   ],
+  contentTreeHours: {},
 };
 
 function cloneState<T>(value: T): T {
@@ -294,6 +309,9 @@ function loadState(): MockState {
       resourceExcerpts: Array.isArray(parsed.resourceExcerpts) ? parsed.resourceExcerpts : cloneState(initialState.resourceExcerpts),
       urlClusterRules: Array.isArray(parsed.urlClusterRules) ? parsed.urlClusterRules : cloneState(initialState.urlClusterRules),
       resourceItemRelations: Array.isArray(parsed.resourceItemRelations) ? parsed.resourceItemRelations : cloneState(initialState.resourceItemRelations),
+      contentTreeHours: parsed.contentTreeHours && typeof parsed.contentTreeHours === 'object'
+        ? parsed.contentTreeHours
+        : cloneState(initialState.contentTreeHours),
     };
   } catch {
     return cloneState(initialState);
@@ -1698,4 +1716,80 @@ export function searchPagesMock(
     enabled: true,
     message: null,
   };
+}
+
+function getPageBlocksForOutline(pageId: string): Block[] {
+  const content = state.contents[pageId];
+  if (!content) return [];
+  return pageContentToBlocks(content);
+}
+
+function resolveMockPageOutline(pageId: string): PageOutlineResponse | null {
+  const page = state.pages.find((entry) => entry.id === pageId);
+  if (!page) return null;
+  const kb = state.knowledgeBases.find((entry) => entry.id === page.kbId);
+  return buildMockPageOutline(
+    pageId,
+    page.kbId,
+    page.title,
+    getPageBlocksForOutline(pageId),
+    state.contentTreeHours,
+  );
+}
+
+function resolveMockBlockOutline(blockId: string): BlockOutlineResponse | null {
+  for (const page of state.pages) {
+    const blocks = getPageBlocksForOutline(page.id);
+    if (findBlockById(blocks, blockId)) {
+      return buildMockBlockOutline(blockId, page.id, blocks, state.contentTreeHours);
+    }
+  }
+  return null;
+}
+
+function findBlockById(blocks: Block[], blockId: string): Block | null {
+  for (const block of blocks) {
+    if (block.id === blockId) return block;
+    if (block.children) {
+      const nested = findBlockById(block.children, blockId);
+      if (nested) return nested;
+    }
+  }
+  return null;
+}
+
+export function getPageOutlineMock(pageId: string): PageOutlineResponse {
+  const outline = resolveMockPageOutline(pageId);
+  if (!outline) throw new Error('page not found');
+  return cloneState(outline);
+}
+
+export function getBlockOutlineMock(blockId: string): BlockOutlineResponse {
+  const outline = resolveMockBlockOutline(blockId);
+  if (!outline) throw new Error('block not found');
+  return cloneState(outline);
+}
+
+export function batchOutlinesMock(request: OutlineBatchRequest): OutlineBatchResponse {
+  return cloneState(buildMockBatchResponse(
+    request,
+    (pageId) => resolveMockPageOutline(pageId),
+    (blockId) => resolveMockBlockOutline(blockId),
+  ));
+}
+
+export function patchContentTreeNodeHoursMock(
+  nodeId: string,
+  estimatedHours: number | null,
+): ContentTreeNode {
+  state.contentTreeHours[nodeId] = estimatedHours;
+  persistState();
+  for (const page of state.pages) {
+    const outline = resolveMockPageOutline(page.id);
+    const node = outline?.nodes.find((entry) => entry.id === nodeId);
+    if (node) {
+      return cloneState({ ...node, estimatedHours, totalEstimatedHours: node.totalEstimatedHours });
+    }
+  }
+  throw new Error('content tree node not found');
 }

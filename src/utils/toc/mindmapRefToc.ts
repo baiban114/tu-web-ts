@@ -1,21 +1,80 @@
 import type { Block } from '@/api/types'
+import type { ContentTreeNode } from '@/api/outline'
 import {
   applyRefContentHeadingShift,
   extractRichTextHeadingsFromBlocks,
   type FlatTocEntry,
+  type TocSourceType,
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { getRefTocSectionEntryIds, isRefTocDirectoryEntry } from '@/utils/toc/tocSections'
+import { buildEmbedRefChildEntryId } from '@/utils/toc/outlineTocEntries'
+
+export type MindmapRefStructureSource = 'outline' | 'blocks'
 
 export interface MindmapRefTocContext {
-  getPageBlocks: (pageId: string) => Block[]
-  getBlock: (id: string) => Block | undefined
+  /** @deprecated 仅 structureSource=blocks 时使用；展开目录应走 outline API */
+  getPageBlocks?: (pageId: string) => Block[]
+  /** @deprecated 仅 structureSource=blocks 时使用 */
+  getBlock?: (id: string) => Block | undefined
   getPageTitle?: (pageId: string) => string
   getBlockMeta?: (id: string) => { pageTitle?: string } | undefined
+  getPageOutline?: (pageId: string) => ContentTreeNode[] | undefined
+  getBlockOutline?: (blockId: string) => ContentTreeNode[] | undefined
+  /** outline：只读 GET /api/pages/{id}/outline 等结构接口，不拉整页 content */
+  structureSource?: MindmapRefStructureSource
 }
 
 function buildRefTocEntryId(refNodeId: string, headingBlockId: string, text: string): string {
   return `ref-child-${refNodeId}-${headingBlockId}-${text}`
+}
+
+function mapOutlineNodesToFlatToc(
+  refNodeId: string,
+  refBlockId: string,
+  nodes: ContentTreeNode[],
+): FlatTocEntry[] {
+  return nodes.map((node, index) => ({
+    id: buildEmbedRefChildEntryId(refNodeId, node),
+    blockId: refNodeId,
+    level: node.level ?? 2,
+    text: node.title,
+    pos: 0,
+    sortIndex: (node.sortOrder ?? index) + 1,
+    sourceType: (node.sourceType ?? 'ref-child') as TocSourceType,
+    refId: refBlockId,
+    targetText: node.title,
+    contentTreeNodeId: node.id,
+    previewText: node.previewText ?? undefined,
+    estimatedHours: node.estimatedHours ?? undefined,
+    totalEstimatedHours: node.totalEstimatedHours ?? undefined,
+  }))
+}
+
+function usesOutlineStructure(ctx: MindmapRefTocContext): boolean {
+  return ctx.structureSource === 'outline'
+    || Boolean(ctx.getPageOutline || ctx.getBlockOutline)
+}
+
+function getCachedOutlineNodes(
+  refBlockId: string,
+  refType: 'block' | 'page',
+  ctx: MindmapRefTocContext,
+): ContentTreeNode[] | undefined {
+  return refType === 'page'
+    ? ctx.getPageOutline?.(refBlockId)
+    : ctx.getBlockOutline?.(refBlockId)
+}
+
+function buildFlatTocFromOutlineCache(
+  refNodeId: string,
+  refBlockId: string,
+  refType: 'block' | 'page',
+  ctx: MindmapRefTocContext,
+): FlatTocEntry[] | null {
+  const nodes = getCachedOutlineNodes(refBlockId, refType, ctx)
+  if (nodes === undefined) return null
+  return mapOutlineNodesToFlatToc(refNodeId, refBlockId, nodes)
 }
 
 function buildRefDocBlockEntryId(refNodeId: string, blockId: string): string {
@@ -46,7 +105,7 @@ function getBlockPreviewLabel(block: Block): string {
  * Build flat TOC for a mindmap ref node — mirrors collectFlatTocEntries refBlock rules
  * (without ProseMirror). Mindmap ref node acts as the ref wrapper; includeGroup=false.
  */
-export function buildMindmapRefBlockFlatToc(
+function buildFlatTocFromBlocks(
   refNodeId: string,
   refBlockId: string,
   refType: 'block' | 'page',
@@ -54,9 +113,9 @@ export function buildMindmapRefBlockFlatToc(
 ): FlatTocEntry[] {
   let refBlocks: Block[] = []
   if (refType === 'page') {
-    refBlocks = ctx.getPageBlocks(refBlockId)
+    refBlocks = ctx.getPageBlocks?.(refBlockId) ?? []
   } else {
-    const refBlock = ctx.getBlock(refBlockId)
+    const refBlock = ctx.getBlock?.(refBlockId)
     if (refBlock) refBlocks = [refBlock]
   }
 
@@ -97,6 +156,18 @@ export function buildMindmapRefBlockFlatToc(
   return flat
 }
 
+export function buildMindmapRefBlockFlatToc(
+  refNodeId: string,
+  refBlockId: string,
+  refType: 'block' | 'page',
+  ctx: MindmapRefTocContext,
+): FlatTocEntry[] {
+  const fromOutline = buildFlatTocFromOutlineCache(refNodeId, refBlockId, refType, ctx)
+  if (fromOutline !== null) return fromOutline
+  if (usesOutlineStructure(ctx)) return []
+  return buildFlatTocFromBlocks(refNodeId, refBlockId, refType, ctx)
+}
+
 export function getMindmapRefBlockFlatToc(
   refNode: { id: string; getData: () => Record<string, any> | undefined },
   ctx: MindmapRefTocContext,
@@ -115,11 +186,16 @@ export function refBlockHasExpandableStructure(
   ctx: MindmapRefTocContext,
 ): boolean {
   if (!refBlockId) return false
-  if (buildMindmapRefBlockFlatToc(refNodeId, refBlockId, refType, ctx).length > 0) {
-    return true
+  const fromOutline = buildFlatTocFromOutlineCache(refNodeId, refBlockId, refType, ctx)
+  if (fromOutline !== null) {
+    return fromOutline.length > 0 || refType === 'page'
   }
-  if (refType === 'page') return true
-  return Boolean(ctx.getBlock(refBlockId))
+  if (usesOutlineStructure(ctx)) {
+    return refType === 'page' || Boolean(refBlockId)
+  }
+  return buildFlatTocFromBlocks(refNodeId, refBlockId, refType, ctx).length > 0
+    || (refType === 'page')
+    || Boolean(ctx.getBlock?.(refBlockId))
 }
 
 export function refTocEntryHasExpandableDescendants(flat: FlatTocEntry[], entryId: string): boolean {

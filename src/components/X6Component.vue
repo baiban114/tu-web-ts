@@ -3,8 +3,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import X6NodeOverlay from './X6NodeOverlay.vue';
 import X6MaterialLibrary from './X6MaterialLibrary.vue';
 import { useMaterialLibraryStore } from '@/stores/materialLibrary';
-import { useObjectModelStore } from '@/stores/objectModel';
 import { useBlockRegistryStore } from '@/stores/blockRegistry';
+import { useObjectModelStore } from '@/stores/objectModel';
+import { useOutlineCacheStore } from '@/stores/outlineCache';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { GraphData } from '@/api/types';
 import type { PageItem } from '@/api/page';
@@ -53,6 +54,7 @@ import {
   createMindmapRefTocContext,
   isApplyingMindmapCollapseState,
   isApplyingMindmapDragPreview,
+  isMindmapRefBlockNode,
   nodeHasMindmapExpandableChildren,
   readMindmapNodeCollapsedForDisplay,
   getMindmapCollapseButtonStyle,
@@ -152,7 +154,7 @@ const selectedCellsCount = ref(0);
 const selectedCell = ref<SelectedCellState | null>(null);
 const objectModelStore = useObjectModelStore();
 const materialLibraryStore = useMaterialLibraryStore();
-const blockRegistryStore = useBlockRegistryStore();
+const outlineCacheStore = useOutlineCacheStore();
 const workspaceStore = useWorkspaceStore();
 
 function resolvePageTitleForRef(pageId: string): string {
@@ -169,12 +171,12 @@ function resolvePageTitleForRef(pageId: string): string {
   return find(workspaceStore.pageTree)?.trim() || pageId;
 }
 
-const mindmapRefTocContext = createMindmapRefTocContext(
-  (pageId) => blockRegistryStore.getPageBlocks(pageId),
-  (blockId) => blockRegistryStore.getBlock(blockId),
-  (pageId) => resolvePageTitleForRef(pageId),
-  (blockId) => blockRegistryStore.getMeta(blockId),
-);
+const mindmapRefTocContext = createMindmapRefTocContext({
+  structureSource: 'outline',
+  getPageOutline: (pageId) => outlineCacheStore.getPageNodes(pageId),
+  getBlockOutline: (blockId) => outlineCacheStore.getBlockNodes(blockId),
+  getPageTitle: (pageId) => resolvePageTitleForRef(pageId),
+});
 const inspectorTab = ref<'inspector' | 'library'>('inspector');
 const toolbarVisible = ref(true);
 const inspectorVisible = ref(true);
@@ -204,6 +206,7 @@ interface MindmapCollapseButtonState {
 }
 
 const mindmapCollapseHoverNodeId = ref<string | null>(null);
+const mindmapCollapseLoadingNodeId = ref<string | null>(null);
 const mindmapCollapseButtons = ref<MindmapCollapseButtonState[]>([]);
 let mindmapCollapseHideTimer: number | null = null;
 
@@ -713,10 +716,61 @@ function updateMindmapCollapseOverlays() {
   mindmapCollapseButtons.value = buttons;
 }
 
-function onMindmapCollapseButtonClick(nodeId: string) {
+async function ensureMindmapRefOutlineLoaded(refBlockId: string, refType: 'block' | 'page') {
+  const load = (force: boolean) => (
+    refType === 'page'
+      ? outlineCacheStore.ensurePageOutline(refBlockId, { force })
+      : outlineCacheStore.ensureBlockOutline(refBlockId, { force })
+  );
+  const nodes = await load(false);
+  if (nodes.length === 0) {
+    return load(true);
+  }
+  return nodes;
+}
+
+async function ensureMindmapRefOutlineForNode(node: Node) {
   if (!graph) return;
+
+  if (isMindmapRefBlockNode(node)) {
+    const data = node.getData<Record<string, any>>() ?? {};
+    const refBlockId = typeof data.refBlockId === 'string' ? data.refBlockId : '';
+    if (!refBlockId) return;
+    const refType: 'block' | 'page' = data.refType === 'page' ? 'page' : 'block';
+    await ensureMindmapRefOutlineLoaded(refBlockId, refType);
+    return;
+  }
+
+  const data = node.getData<Record<string, any>>() ?? {};
+  const refParentId = typeof data.refTocParentRefId === 'string' ? data.refTocParentRefId : '';
+  const entryId = typeof data.refTocEntryId === 'string' ? data.refTocEntryId : '';
+  if (!refParentId || !entryId) return;
+
+  const refParent = graph.getCellById(refParentId);
+  if (!refParent || !graph.isNode(refParent) || !isMindmapRefBlockNode(refParent)) return;
+
+  const parentData = refParent.getData<Record<string, any>>() ?? {};
+  const refBlockId = typeof parentData.refBlockId === 'string' ? parentData.refBlockId : '';
+  if (!refBlockId) return;
+  const refType: 'block' | 'page' = parentData.refType === 'page' ? 'page' : 'block';
+  await ensureMindmapRefOutlineLoaded(refBlockId, refType);
+}
+
+async function onMindmapCollapseButtonClick(nodeId: string) {
+  if (!graph || !isEditable.value) return;
   const node = graph.getCellById(nodeId);
   if (!node || !graph.isNode(node)) return;
+
+  const willExpand = readMindmapNodeCollapsedForDisplay(graph, node);
+  if (willExpand) {
+    mindmapCollapseLoadingNodeId.value = nodeId;
+    try {
+      await ensureMindmapRefOutlineForNode(node);
+    } finally {
+      mindmapCollapseLoadingNodeId.value = null;
+    }
+  }
+
   handleMindmapNodeCollapse(node);
   updateMindmapCollapseOverlays();
 }
@@ -1044,7 +1098,7 @@ function applyGraphData(data?: GraphData, fitView = false) {
   graph.fromJSON({ cells: normalized.cells ?? [] });
   graph.cleanSelection();
   syncTaskFlowEdgeState();
-  syncMindmapGraphState();
+  void syncMindmapGraphStateWithOutlines();
 
   // Hide SVG labels for rich-text nodes after loading
   graph.getNodes().forEach(n => {
@@ -1329,7 +1383,7 @@ function syncTaskFlowEdgeState() {
   });
 }
 
-function syncMindmapGraphState() {
+function applyMindmapGraphState() {
   if (!graph || !isMindmap.value || isApplyingMindmapCollapseState()) return;
   if (isApplyingMindmapDragPreview()) return;
   syncMindmapEdgeStyles(graph);
@@ -1339,6 +1393,31 @@ function syncMindmapGraphState() {
     mindmapRefTocContext,
   );
   updateMindmapCollapseOverlays();
+}
+
+function syncMindmapGraphState() {
+  applyMindmapGraphState();
+}
+
+async function syncMindmapGraphStateWithOutlines() {
+  await prefetchMindmapRefOutlines();
+  applyMindmapGraphState();
+}
+
+async function prefetchMindmapRefOutlines() {
+  if (!graph || !isMindmap.value) return;
+  const pageIds = new Set<string>();
+  const blockIds = new Set<string>();
+  graph.getNodes().forEach((node) => {
+    const data = node.getData<Record<string, any>>() ?? {};
+    if (data.refKind !== 'block-ref' && !data.refBlockId) return;
+    const refBlockId = typeof data.refBlockId === 'string' ? data.refBlockId : '';
+    if (!refBlockId) return;
+    if (data.refType === 'page') pageIds.add(refBlockId);
+    else blockIds.add(refBlockId);
+  });
+  if (pageIds.size === 0 && blockIds.size === 0) return;
+  await outlineCacheStore.prefetchBatch([...pageIds], [...blockIds]);
 }
 
 function handleMindmapNodeCollapse(node: Node) {
@@ -1351,11 +1430,7 @@ function handleMindmapNodeCollapse(node: Node) {
   );
   refreshSelectedCellState();
   updateMindmapCollapseOverlays();
-  if (syncTimer !== null) {
-    window.clearTimeout(syncTimer);
-    syncTimer = null;
-  }
-  emitGraphData();
+  scheduleSync();
 }
 
 function deleteSelection() {
@@ -1623,12 +1698,15 @@ function insertRefBlock(
     }));
     graph.cleanSelection();
     graph.select(node);
-    applyMindmapCollapseState(
-      graph,
-      readMindmapDirection(props.graphData),
-      mindmapRefTocContext,
-    );
-    refreshSelectedCellState();
+    void (async () => {
+      if (refType === 'page') {
+        await outlineCacheStore.ensurePageOutline(refId);
+      } else {
+        await outlineCacheStore.ensureBlockOutline(refId);
+      }
+      applyMindmapGraphState();
+      refreshSelectedCellState();
+    })();
     scheduleSync();
     return;
   }
@@ -2676,9 +2754,9 @@ defineExpose({
           :style="btn.style"
           :title="btn.collapsed ? '展开子节点' : '收起子节点'"
           :aria-label="btn.collapsed ? '展开子节点' : '收起子节点'"
-          :disabled="!isEditable"
+          :disabled="!isEditable || mindmapCollapseLoadingNodeId === btn.nodeId"
           @mousedown.stop
-          @click.stop="onMindmapCollapseButtonClick(btn.nodeId)"
+          @click.stop="void onMindmapCollapseButtonClick(btn.nodeId)"
           @mouseenter="showMindmapCollapseForNode(btn.nodeId)"
           @mouseleave="scheduleHideMindmapCollapse"
         >

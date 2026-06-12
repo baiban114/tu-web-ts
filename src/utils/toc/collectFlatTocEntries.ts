@@ -1,4 +1,5 @@
 import type { Block, ExternalResourceEmbedData } from '@/api/types'
+import type { ContentTreeNode } from '@/api/outline'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import {
   applyRefContentHeadingShift,
@@ -7,6 +8,9 @@ import {
   findParentHeadingLevel,
   type FlatTocEntry,
 } from '@/utils/toc/headings'
+import { mapOutlineNodesToEmbedFlatToc } from '@/utils/toc/outlineTocEntries'
+
+export type TocStructureSource = 'outline' | 'blocks'
 
 export interface TocCollectContext {
   blocks: Block[]
@@ -14,6 +18,36 @@ export interface TocCollectContext {
   getBlock: (id: string) => Block | undefined
   getBlockMeta: (id: string) => { pageTitle?: string } | undefined
   getPageTitle: (pageId: string) => string
+  getPageOutline?: (pageId: string) => ContentTreeNode[] | undefined
+  getBlockOutline?: (blockId: string) => ContentTreeNode[] | undefined
+  /** outline：目录走 GET /api/pages/{id}/outline，不拉整页 content */
+  structureSource?: TocStructureSource
+}
+
+function usesOutlineStructure(ctx: TocCollectContext): boolean {
+  return ctx.structureSource === 'outline'
+    || Boolean(ctx.getPageOutline || ctx.getBlockOutline)
+}
+
+function getCachedOutlineNodes(
+  refBlockId: string,
+  refType: 'block' | 'page',
+  ctx: TocCollectContext,
+): ContentTreeNode[] | undefined {
+  return refType === 'page'
+    ? ctx.getPageOutline?.(refBlockId)
+    : ctx.getBlockOutline?.(refBlockId)
+}
+
+function buildEmbedFlatTocFromOutline(
+  embedBlockId: string,
+  refBlockId: string,
+  refType: 'block' | 'page',
+  ctx: TocCollectContext,
+): FlatTocEntry[] | null {
+  const nodes = getCachedOutlineNodes(refBlockId, refType, ctx)
+  if (nodes === undefined) return null
+  return mapOutlineNodesToEmbedFlatToc(embedBlockId, refBlockId, nodes)
 }
 
 function appendEmbedTocEntries(
@@ -110,12 +144,17 @@ export function collectFlatTocEntries(doc: ProseMirrorNode, ctx: TocCollectConte
       const refType: string = node.attrs?.refType || refMetaMap.get(blockId)?.refType || 'block'
       if (!blockId || !refId) return true
 
+      const typedRefType: 'block' | 'page' = refType === 'page' ? 'page' : 'block'
+      const outlineChildren = buildEmbedFlatTocFromOutline(blockId, refId, typedRefType, ctx)
+
       let refBlocks: Block[] = []
-      if (refType === 'page') {
-        refBlocks = ctx.getPageBlocks(refId)
-      } else {
-        const refBlock = ctx.getBlock(refId)
-        if (refBlock) refBlocks = [refBlock]
+      if (outlineChildren === null && !usesOutlineStructure(ctx)) {
+        if (typedRefType === 'page') {
+          refBlocks = ctx.getPageBlocks(refId)
+        } else {
+          const refBlock = ctx.getBlock(refId)
+          if (refBlock) refBlocks = [refBlock]
+        }
       }
 
       const tocSettings = (node.attrs?.metadata as Record<string, unknown> | undefined)?.tocSettings as
@@ -139,16 +178,34 @@ export function collectFlatTocEntries(doc: ProseMirrorNode, ctx: TocCollectConte
         }
       }
 
-      appendEmbedTocEntries(flat, {
-        blockId,
-        pos,
-        wrapperLevel,
-        groupTitle,
-        contentBlocks: refBlocks,
-        contentParentLevel,
-        refId,
-        includeGroup: !hideTitle,
-      })
+      if (outlineChildren !== null) {
+        if (!hideTitle && groupTitle && wrapperLevel > 0) {
+          flat.push({
+            id: `ref-group-${blockId}`,
+            blockId,
+            level: wrapperLevel,
+            text: groupTitle,
+            pos,
+            sortIndex: 0,
+            sourceType: 'ref-group',
+            refId,
+          })
+        }
+        outlineChildren.forEach((entry) => {
+          flat.push({ ...entry, pos, blockId })
+        })
+      } else {
+        appendEmbedTocEntries(flat, {
+          blockId,
+          pos,
+          wrapperLevel,
+          groupTitle,
+          contentBlocks: refBlocks,
+          contentParentLevel,
+          refId,
+          includeGroup: !hideTitle,
+        })
+      }
       return true
     }
 
