@@ -1078,6 +1078,35 @@ function refreshSelectedCellState() {
   updateUndoRedoState();
 }
 
+/**
+ * Re-derive the X6 "selected" class for every cell from the authoritative
+ * selection set.
+ *
+ * The selection plugin runs with `showNodeSelectionBox: false`, so the visual
+ * selected state is driven purely by CSS on the `x6-node-selected` /
+ * `x6-edge-selected` classes. X6 adds that class when a cell enters the
+ * selection collection, but with the graph in async-render mode a rubberband
+ * selects every cell in one batch while ctrl/⌘+click adds cells incrementally —
+ * and earlier cells can end up without the class, so only the last-clicked node
+ * looks selected. Reconciling from `getSelectedCells()` on every
+ * `selection:changed` keeps click and rubberband multi-select visually identical.
+ */
+function reconcileSelectionHighlight() {
+  if (!graph) return;
+  const selectedIds = new Set(graph.getSelectedCells().map((cell) => cell.id));
+  const cells: Array<Node | Edge> = [...graph.getNodes(), ...graph.getEdges()];
+  cells.forEach((cell) => {
+    const view = graph!.findViewByCell(cell);
+    if (!view) return;
+    const className = cell.isNode() ? 'x6-node-selected' : 'x6-edge-selected';
+    if (selectedIds.has(cell.id)) {
+      view.addClass(className);
+    } else {
+      view.removeClass(className);
+    }
+  });
+}
+
 function scheduleSync() {
   if (!graph || isApplyingExternalData) return;
   if (isApplyingMindmapDragPreview()) return;
@@ -2216,6 +2245,7 @@ function bindGraphEvents() {
   if (!graph) return;
 
   graph.on('selection:changed', () => {
+    reconcileSelectionHighlight();
     refreshSelectedCellState();
     updateMindmapCollapseOverlays();
   });
