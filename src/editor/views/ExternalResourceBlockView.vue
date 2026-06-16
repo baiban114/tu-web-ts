@@ -18,6 +18,35 @@ interface CompoundBadge {
 
 const props = defineProps(nodeViewProps)
 
+const EXTERNAL_RESOURCE_EXCERPT_MAX_HEIGHT = 200
+
+const META_DISPLAY_LIMITS = {
+  title: 56,
+  workTitle: 28,
+  identityValue: 20,
+  chapterTitle: 32,
+  locator: 40,
+  note: 48,
+  sourceUrl: 40,
+} as const
+
+function truncateDisplayText(value: string, max: number): string {
+  const text = value.trim()
+  if (!text) return ''
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}…`
+}
+
+function formatSourceUrlLabel(url: string): string {
+  const trimmed = url.trim()
+  if (!trimmed) return ''
+  try {
+    return truncateDisplayText(new URL(trimmed).hostname, META_DISPLAY_LIMITS.sourceUrl)
+  } catch {
+    return truncateDisplayText(trimmed, META_DISPLAY_LIMITS.sourceUrl)
+  }
+}
+
 const compoundAnnotationBadges = inject<Record<string, CompoundBadge[]> | Ref<Record<string, CompoundBadge[]>>>('compoundAnnotationBadges', {})
 const onCompoundBadgeClick = inject<((blockId: string, annotationId: string, event: MouseEvent) => void)>('onCompoundBadgeClick', () => {})
 
@@ -51,6 +80,19 @@ const excerptNote = computed(() => latestExcerpt.value?.note || snapshot.value.e
 const isExcerpt = computed(() => data.value.mode === 'excerpt' || Boolean(data.value.resourceExcerptId))
 const usingSnapshot = computed(() => Boolean(loadError.value || (!latestItem.value && snapshot.value.resourceTitle)))
 const headingText = computed(() => props.node.attrs.title || (isExcerpt.value ? excerptTitle.value : resourceTitle.value))
+const showInlineTitle = computed(() => headingLevel.value <= 0)
+const cardTitle = computed(() => (isExcerpt.value ? (excerptTitle.value || resourceTitle.value) : resourceTitle.value))
+const cardTitleDisplay = computed(() => truncateDisplayText(cardTitle.value, META_DISPLAY_LIMITS.title))
+const workTitleDisplay = computed(() => truncateDisplayText(workTitle.value, META_DISPLAY_LIMITS.workTitle))
+const identityDisplay = computed(() => {
+  if (!identityValue.value) return ''
+  const value = truncateDisplayText(identityValue.value, META_DISPLAY_LIMITS.identityValue)
+  return `${identityLabel.value}: ${value}`
+})
+const chapterTitleDisplay = computed(() => truncateDisplayText(chapterTitle.value, META_DISPLAY_LIMITS.chapterTitle))
+const excerptLocatorDisplay = computed(() => truncateDisplayText(excerptLocator.value, META_DISPLAY_LIMITS.locator))
+const excerptNoteDisplay = computed(() => truncateDisplayText(excerptNote.value, META_DISPLAY_LIMITS.note))
+const sourceUrlLabel = computed(() => formatSourceUrlLabel(sourceUrl.value))
 
 const excerptEditorBlocks = computed<Block[]>(() => [{
   id: blockId.value || 'external-resource-excerpt',
@@ -108,31 +150,68 @@ onMounted(() => {
       @resize="onResize"
       @compound-badge-click="handleBadgeClick"
     >
+      <template #header-meta>
+        <span class="external-resource-meta__badge">{{ isExcerpt ? '资源节选' : resourceTypeName }}</span>
+        <span v-if="usingSnapshot" class="external-resource-meta__snapshot">快照</span>
+        <span
+          v-if="showInlineTitle && cardTitleDisplay"
+          class="external-resource-meta__title"
+          :title="cardTitle"
+        >{{ cardTitleDisplay }}</span>
+        <span
+          v-if="workTitleDisplay"
+          class="external-resource-meta__chip"
+          :title="workTitle"
+        >{{ workTitleDisplay }}</span>
+        <span
+          v-if="identityDisplay"
+          class="external-resource-meta__chip"
+          :title="`${identityLabel}: ${identityValue}`"
+        >{{ identityDisplay }}</span>
+        <span
+          v-if="isExcerpt && chapterTitleDisplay"
+          class="external-resource-meta__chip"
+          :title="`章节：${chapterTitle}`"
+        >章节：{{ chapterTitleDisplay }}</span>
+        <span
+          v-if="isExcerpt && excerptLocatorDisplay"
+          class="external-resource-meta__chip"
+          :title="excerptLocator"
+        >{{ excerptLocatorDisplay }}</span>
+        <span
+          v-if="isExcerpt && excerptNoteDisplay"
+          class="external-resource-meta__chip external-resource-meta__chip--note"
+          :title="excerptNote"
+        >{{ excerptNoteDisplay }}</span>
+        <a
+          v-if="sourceUrl"
+          class="external-resource-meta__link"
+          :href="sourceUrl"
+          target="_blank"
+          rel="noreferrer"
+          :title="sourceUrl"
+        >{{ sourceUrlLabel || sourceUrl }}</a>
+        <span v-if="loading" class="external-resource-meta__status">加载中…</span>
+        <span
+          v-else-if="loadError"
+          class="external-resource-meta__status external-resource-meta__status--warn"
+          title="最新资源不可用，已显示插入时快照"
+        >快照模式</span>
+      </template>
+
       <article class="external-resource-card" :class="{ 'external-resource-card--excerpt': isExcerpt }">
-        <header class="external-resource-card__header">
-          <span class="external-resource-card__badge">{{ isExcerpt ? '资源节选' : resourceTypeName }}</span>
-          <span v-if="usingSnapshot" class="external-resource-card__snapshot">快照</span>
-        </header>
-        <h3>{{ isExcerpt ? (excerptTitle || resourceTitle) : resourceTitle }}</h3>
-        <p class="external-resource-card__meta">
-          <span>{{ resourceTypeName }}</span>
-          <span v-if="workTitle"> · {{ workTitle }}</span>
-          <span v-if="identityValue"> · {{ identityLabel }}: {{ identityValue }}</span>
-        </p>
-        <p v-if="isExcerpt && chapterTitle" class="external-resource-card__locator">章节：{{ chapterTitle }}</p>
-        <p v-if="isExcerpt && excerptLocator" class="external-resource-card__locator">{{ excerptLocator }}</p>
-        <TuEditor
+        <div
           v-if="isExcerpt && excerptText.trim()"
-          :blocks="excerptEditorBlocks"
-          :editable="false"
-          class="external-resource-card__excerpt-editor"
-        />
-        <p v-if="isExcerpt && excerptNote" class="external-resource-card__note">{{ excerptNote }}</p>
-        <a v-if="sourceUrl" :href="sourceUrl" target="_blank" rel="noreferrer">{{ sourceUrl }}</a>
-        <p v-if="loading" class="external-resource-card__status">正在加载最新资源...</p>
-        <p v-else-if="loadError" class="external-resource-card__status external-resource-card__status--warn">
-          最新资源不可用，已显示插入时快照。
-        </p>
+          class="external-resource-card__excerpt-scroll"
+          :style="{ '--external-resource-excerpt-max-height': `${EXTERNAL_RESOURCE_EXCERPT_MAX_HEIGHT}px` }"
+        >
+          <TuEditor
+            :blocks="excerptEditorBlocks"
+            :editable="false"
+            :hover-handle="false"
+            class="external-resource-card__excerpt-editor"
+          />
+        </div>
       </article>
     </ResizableBlockWrapper>
   </node-view-wrapper>
@@ -140,67 +219,91 @@ onMounted(() => {
 
 <style scoped>
 .external-resource-card {
-  display: grid;
-  gap: 8px;
+  min-width: 0;
   border: 1px solid #d8dee8;
-  border-radius: 8px;
-  padding: 14px;
+  border-radius: 0 0 8px 8px;
   background: #ffffff;
   color: #1f2937;
 }
 
-.external-resource-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+.external-resource-card--excerpt:empty {
+  display: none;
 }
 
-.external-resource-card__badge,
-.external-resource-card__snapshot {
+.external-resource-card:not(:empty) {
+  padding: 10px 12px;
+}
+
+.external-resource-meta__badge,
+.external-resource-meta__snapshot {
   border-radius: 999px;
-  padding: 2px 8px;
-  font-size: 12px;
+  padding: 1px 8px;
+  font-size: 11px;
+  flex-shrink: 0;
 }
 
-.external-resource-card__badge {
+.external-resource-meta__badge {
   color: #075985;
   background: #e0f2fe;
 }
 
-.external-resource-card__snapshot {
+.external-resource-meta__snapshot {
   color: #92400e;
   background: #fef3c7;
 }
 
-.external-resource-card h3,
-.external-resource-card p {
-  margin: 0;
+.external-resource-meta__title {
+  max-width: min(100%, 360px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: #1f2937;
 }
 
-.external-resource-card h3 {
-  font-size: 16px;
+.external-resource-meta__chip {
+  max-width: min(100%, 240px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.external-resource-card__meta,
-.external-resource-card__locator,
-.external-resource-card__note,
-.external-resource-card__status {
-  color: #64748b;
-  font-size: 13px;
+.external-resource-meta__chip--note {
+  max-width: min(100%, 280px);
+  font-style: italic;
 }
 
-.external-resource-card__excerpt-editor :deep(.tu-editor-content) {
-  padding: 0 !important;
-}
-
-.external-resource-card a {
+.external-resource-meta__link {
+  max-width: min(100%, 200px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: #1677ff;
-  font-size: 13px;
-  overflow-wrap: anywhere;
 }
 
-.external-resource-card__status--warn {
+.external-resource-meta__status {
+  flex-shrink: 0;
+  font-size: 11px;
+}
+
+.external-resource-meta__status--warn {
   color: #b45309;
+}
+
+.external-resource-card__excerpt-scroll {
+  max-height: var(--external-resource-excerpt-max-height, 200px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  min-height: 0;
+}
+
+.external-resource-card__excerpt-scroll :deep(.tu-editor-wrapper) {
+  min-height: 0 !important;
+  --tiptap-handle-gutter: 0;
+}
+
+.external-resource-card__excerpt-scroll :deep(.tu-editor-content) {
+  min-height: 0 !important;
+  padding: 0 !important;
 }
 </style>

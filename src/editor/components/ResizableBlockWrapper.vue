@@ -171,6 +171,14 @@ onBeforeUnmount(() => {
       />
     </div>
 
+    <div
+      v-if="$slots['header-meta']"
+      class="resizable-block-wrapper__header-meta"
+      data-node-view-no-drag
+    >
+      <slot name="header-meta" />
+    </div>
+
     <component
       :is="'h' + headingLevel"
       v-if="headingLevel > 0 && headingText"
@@ -266,6 +274,21 @@ onBeforeUnmount(() => {
   background: #eef2ff;
   color: #4338ca;
   font-weight: 600;
+  flex-shrink: 0;
+}
+
+.resizable-block-wrapper__header-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #64748b;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
 }
 
 .resizable-block-wrapper__heading {
