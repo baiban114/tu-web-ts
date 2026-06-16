@@ -57,6 +57,7 @@ const keyword = ref('')
 const types = ref<ResourceType[]>([])
 const items = ref<ResourceItem[]>([])
 const excerpts = ref<ResourceExcerpt[]>([])
+const excerptIndex = ref<Record<string, ResourceExcerpt[]>>({})
 const chapters = ref<ResourceChapter[]>([])
 const selectedItemId = ref('')
 const createResourceVisible = ref(false)
@@ -124,17 +125,48 @@ const excerptEditorBlocks = computed<Block[]>(() => [{
   content: excerptForm.excerptText,
 }])
 
+const getItemSearchText = (item: ResourceItem): string => [
+  item.title,
+  item.typeName,
+  item.workTitle,
+  item.identityValue,
+  item.sourceUrl,
+].filter(Boolean).join(' ')
+
+const getExcerptSearchText = (excerpt: ResourceExcerpt): string => {
+  const plainExcerpt = (excerpt.excerptText ?? '').replace(/[#*`>\-_\[\]]/g, ' ').trim()
+  return [
+    excerpt.title,
+    excerpt.chapterTitle,
+    excerpt.locator,
+    plainExcerpt,
+    excerpt.note,
+  ].filter(Boolean).join(' ')
+}
+
+const excerptMatchesKeyword = (excerpt: ResourceExcerpt, keywordText: string): boolean => (
+  getExcerptSearchText(excerpt).toLowerCase().includes(keywordText)
+)
+
+const itemMatchesKeyword = (item: ResourceItem, keywordText: string): boolean => (
+  getItemSearchText(item).toLowerCase().includes(keywordText)
+)
+
 const filteredItems = computed(() => {
   const q = keyword.value.trim().toLowerCase()
   const sourceItems = items.value
   if (!q) return sourceItems
-  return sourceItems.filter((item) => [
-    item.title,
-    item.typeName,
-    item.workTitle,
-    item.identityValue,
-    item.sourceUrl,
-  ].filter(Boolean).join(' ').toLowerCase().includes(q))
+  return sourceItems.filter((item) => {
+    if (itemMatchesKeyword(item, q)) return true
+    const indexedExcerpts = excerptIndex.value[item.id] ?? []
+    return indexedExcerpts.some((excerpt) => excerptMatchesKeyword(excerpt, q))
+  })
+})
+
+const filteredExcerpts = computed(() => {
+  const q = keyword.value.trim().toLowerCase()
+  if (!q) return excerpts.value
+  return excerpts.value.filter((excerpt) => excerptMatchesKeyword(excerpt, q))
 })
 
 const resetExcerptForm = () => {
@@ -159,6 +191,29 @@ const handleExcerptEditorUpdate = (blocks: Block[]) => {
   excerptForm.excerptText = richTextBlock?.content ?? ''
 }
 
+const loadExcerptIndex = async () => {
+  const excerptItems = items.value.filter((item) => {
+    const type = typeById.value.get(item.typeId)
+    return supportsResourceExcerpts(type?.code)
+  })
+  if (excerptItems.length === 0) {
+    excerptIndex.value = {}
+    return
+  }
+
+  const entries = await Promise.all(
+    excerptItems.map(async (item) => {
+      try {
+        const result = await listResourceExcerpts(item.id, { page: 0, pageSize: MAX_PAGE_SIZE })
+        return [item.id, result.items] as const
+      } catch {
+        return [item.id, []] as const
+      }
+    }),
+  )
+  excerptIndex.value = Object.fromEntries(entries)
+}
+
 const loadResources = async () => {
   loading.value = true
   error.value = ''
@@ -179,6 +234,7 @@ const loadResources = async () => {
     if (!selectedItemId.value || !selectedStillUsable) {
       selectedItemId.value = firstAvailableItem?.id || ''
     }
+    await loadExcerptIndex()
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载外部资源失败'
   } finally {
@@ -239,6 +295,10 @@ const loadExcerpts = async () => {
     ])
     excerpts.value = result.items
     chapters.value = chapterList
+    excerptIndex.value = {
+      ...excerptIndex.value,
+      [selectedItem.value.id]: result.items,
+    }
   } catch (err) {
     error.value = err instanceof Error ? err.message : '加载节选失败'
   } finally {
@@ -316,6 +376,10 @@ const createAndInsertExcerpt = async () => {
       sortOrder: excerpts.value.length,
     })
     excerpts.value = [...excerpts.value, excerpt]
+    excerptIndex.value = {
+      ...excerptIndex.value,
+      [item.id]: [...(excerptIndex.value[item.id] ?? []), excerpt],
+    }
     if (isMarkExcerptMode.value) {
       emit('excerpt-created', { item, excerpt })
       emit('update:visible', false)
@@ -362,7 +426,7 @@ watch(selectedItemId, () => {
     @update:model-value="emit('update:visible', $event)"
   >
     <div class="resource-picker">
-      <el-input v-model="keyword" placeholder="搜索资源标题、类型、归类或标识" clearable />
+      <el-input v-model="keyword" placeholder="搜索资源标题、类型、归类、标识或节选" clearable />
       <p v-if="error" class="resource-picker__error">{{ error }}</p>
       <div class="resource-picker__layout">
         <section class="resource-picker__list">
@@ -450,7 +514,7 @@ watch(selectedItemId, () => {
             <div v-if="selectedSupportsExcerpts" class="resource-picker__excerpts">
               <div class="resource-picker__section-title">资源节选</div>
               <button
-                v-for="excerpt in excerpts"
+                v-for="excerpt in filteredExcerpts"
                 :key="excerpt.id"
                 type="button"
                 class="resource-picker__excerpt"
@@ -461,7 +525,9 @@ watch(selectedItemId, () => {
                 <small v-if="excerpt.locator">{{ excerpt.locator }}</small>
                 <em>{{ excerpt.excerptText }}</em>
               </button>
-              <p v-if="!excerptLoading && excerpts.length === 0" class="resource-picker__empty">暂无节选</p>
+              <p v-if="!excerptLoading && filteredExcerpts.length === 0" class="resource-picker__empty">
+                {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
+              </p>
 
               <form class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
                 <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
