@@ -16,6 +16,7 @@ import {
   tableContextMenuPosition,
 } from './tableCore'
 import MultiTableKanbanCard from './MultiTableKanbanCard.vue'
+import TableCellRichEditor from './TableCellRichEditor.vue'
 
 const props = withDefaults(defineProps<{
   data?: MultiTableData
@@ -227,6 +228,21 @@ const formatHours = (value: number) => {
   const rounded = Math.round(value * 100) / 100
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(2)} 小时`
 }
+
+function plainTextPreview(value: unknown, max = 160): string {
+  const text = String(value ?? '')
+    .replace(/!\[[^\]]*\]\([^)]+\)/g, '[图片]')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/[*_`~]/g, '')
+    .replace(/^#+\s/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!text) return ''
+  if (text.length <= max) return text
+  return `${text.slice(0, max)}…`
+}
+
+const textCellId = (recordId: string, fieldId: string) => `multi-table-${recordId}-${fieldId}`
 
 const normalizeValueForType = (value: unknown, field: MultiTableField) => {
   if (field.type === 'checkbox') return Boolean(value)
@@ -440,10 +456,11 @@ const totalEstimatedHours = computed(() => {
 
 const recordTitle = (record: MultiTableRecord) => {
   const field = taskTitleField.value
-  return String((field ? record.values[field.id] : '') || '未命名')
+  const raw = String((field ? record.values[field.id] : '') || '')
+  return plainTextPreview(raw, 80) || '未命名'
 }
 
-const recordDescription = (record: MultiTableRecord) => String(record.values.description || '')
+const recordDescription = (record: MultiTableRecord) => plainTextPreview(record.values.description, 120)
 
 const recordResource = (record: MultiTableRecord) => String(record.values.resource || '')
 
@@ -813,6 +830,7 @@ const displayValue = (field: MultiTableField, value: unknown) => {
   if (field.type === 'checkbox') return value ? '是' : '否'
   if (field.type === 'singleSelect' || field.type === 'lifecycle') return optionLabel(field, value)
   if (field.type === 'estimatedHours') return formatHours(toFiniteNumber(value))
+  if (field.type === 'text') return plainTextPreview(value)
   return String(value ?? '')
 }
 
@@ -1108,7 +1126,7 @@ onBeforeUnmount(() => {
           @drop="dropNativeKanbanCard($event, column.id)"
           group="multi-table-kanban"
           draggable=".kanban-card"
-          filter="input, textarea, select, button, a, [contenteditable='true'], .record-subtasks"
+          filter="input, textarea, select, button, a, [contenteditable='true'], .record-subtasks, .multi-table__text-cell, .table-cell-rich-editor"
           ghost-class="kanban-card--ghost"
           chosen-class="kanban-card--chosen"
           drag-class="kanban-card--drag"
@@ -1190,6 +1208,18 @@ onBeforeUnmount(() => {
               >
                 {{ formatHours(recordTotalHours(record)) }}
               </span>
+              <TableCellRichEditor
+                v-else-if="field.type === 'text'"
+                :cell-id="textCellId(record.id, field.id)"
+                :content="String(record.values[field.id] ?? '')"
+                :editable="editable"
+                class="multi-table__text-cell"
+                :class="{ 'multi-table__text-cell--tree': isLearningPlan && field.id === taskTitleField?.id }"
+                :style="isLearningPlan && field.id === taskTitleField?.id
+                  ? { '--multi-table-tree-indent': `${recordDepth(record) * 20}px` }
+                  : undefined"
+                @change="(value) => updateCell(record.id, field.id, value)"
+              />
               <input
                 v-else-if="editable"
                 :type="inputTypeForField(field)"
@@ -1593,6 +1623,32 @@ select:focus {
 
 td input[type='checkbox'] {
   width: auto;
+}
+
+td:has(.multi-table__text-cell) {
+  padding: 0;
+  vertical-align: top;
+}
+
+.multi-table__text-cell {
+  min-height: 38px;
+}
+
+.multi-table__text-cell--tree :deep(.tu-editor-content) {
+  padding-left: calc(10px + var(--multi-table-tree-indent, 0px));
+}
+
+.multi-table__text-cell :deep(.tu-editor-wrapper) {
+  min-height: 38px;
+}
+
+.multi-table__text-cell :deep(.tu-editor-content) {
+  min-height: 38px;
+}
+
+.multi-table__text-cell :deep(.tu-editor-content img) {
+  max-width: 100%;
+  height: auto;
 }
 
 .learning-plan-hours {

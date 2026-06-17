@@ -12,6 +12,7 @@ import TextAlign from '@tiptap/extension-text-align'
 import TaskList from '@tiptap/extension-task-list'
 import TaskItem from '@tiptap/extension-task-item'
 import type { Block, HeadingSourceBinding, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import { uploadFile } from '@/api/fileStorage'
 import {
   AnnotationDecorations,
   annotationDecorationsKey,
@@ -779,6 +780,18 @@ const selectSlashOption = (option: InsertOption) => {
 
 let currentSlashRange: { from: number; to: number } | null = null
 
+function findClipboardImageFile(clipboard: DataTransfer | null): File | null {
+  if (!clipboard) return null
+  const fromFiles = Array.from(clipboard.files).find((file) => file.type.startsWith('image/'))
+  if (fromFiles) return fromFiles
+  for (const item of Array.from(clipboard.items ?? [])) {
+    if (!item.type.startsWith('image/')) continue
+    const file = item.getAsFile()
+    if (file) return file
+  }
+  return null
+}
+
 const editor = useEditor({
   content: blocksToTipTap(props.blocks),
   editable: props.editable,
@@ -872,6 +885,23 @@ const editor = useEditor({
     attributes: {
       class: 'tu-editor-content',
       spellcheck: 'false',
+    },
+    handlePaste: (_view, event) => {
+      if (!props.editable) return false
+      const imageFile = findClipboardImageFile(event.clipboardData)
+      if (!imageFile) return false
+
+      event.preventDefault()
+      void uploadFile(imageFile)
+        .then((result) => {
+          if (result.url) {
+            editor.value?.chain().focus().setImage({ src: result.url }).run()
+          }
+        })
+        .catch((error: unknown) => {
+          console.error('[TuEditor] image upload failed', error)
+        })
+      return true
     },
     handleKeyDown: (view, event) => {
       if ((event.key === 'Delete' || event.key === 'Backspace') && lassoSelectedBlockIds.value.size > 0) {

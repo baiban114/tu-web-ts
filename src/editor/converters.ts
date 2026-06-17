@@ -459,6 +459,25 @@ function collectEmbedIdsFromContent(content: string): Set<string> {
 
 // ─── Markdown → ProseMirror nodes (adapted from old code, no longer needs blockId) ──
 
+/** Match `![](url)` and legacy escaped form `\![\](url\)` from failed prior saves. */
+function parseStandaloneImage(text: string): { alt: string; src: string } | null {
+  const trimmed = text.trim()
+  const normal = trimmed.match(/^!\[(.*?)\]\((.+?)\)$/)
+  if (normal) return { alt: normal[1], src: normal[2] }
+
+  if (trimmed.startsWith('\\![') && trimmed.endsWith('\\)')) {
+    const afterBang = trimmed.slice(2)
+    const closeBracket = afterBang.indexOf('\\](')
+    if (closeBracket > 0 && afterBang.startsWith('[')) {
+      const alt = afterBang.slice(1, closeBracket)
+      const src = afterBang.slice(closeBracket + 3, -2)
+      if (src) return { alt, src }
+    }
+  }
+
+  return null
+}
+
 function parseMarkdown(markdown: string): JSONContent[] {
   if (!markdown.trim()) return []
 
@@ -642,10 +661,15 @@ function parseMarkdown(markdown: string): JSONContent[] {
 
     if (currentLines.length > 0) {
       const text = currentLines.join('\n')
-      nodes.push({
-        type: 'paragraph',
-        content: text ? parseInlineMarkdown(text) : [],
-      })
+      const standaloneImg = parseStandaloneImage(text)
+      if (standaloneImg) {
+        nodes.push({ type: 'image', attrs: { src: standaloneImg.src, alt: standaloneImg.alt || '' } })
+      } else {
+        nodes.push({
+          type: 'paragraph',
+          content: text ? parseInlineMarkdown(text) : [],
+        })
+      }
     }
   }
 
@@ -698,7 +722,7 @@ export function parseInlineMarkdown(text: string): JSONContent[] {
       continue
     }
 
-    const imgMatch = remaining.match(/^!\[(.+?)\]\((.+?)\)/)
+    const imgMatch = remaining.match(/^!\[(.*?)\]\((.+?)\)/)
     if (imgMatch) {
       parts.push({ type: 'image', attrs: { src: imgMatch[2], alt: imgMatch[1] } })
       remaining = remaining.slice(imgMatch[0].length)
@@ -789,11 +813,13 @@ function contentToMarkdown(content: JSONContent[]): string {
       return text
     }
     if (c.type === 'hardBreak') return '\n'
+    if (c.type === 'image') return '![' + (c.attrs?.alt || '') + '](' + (c.attrs?.src || '') + ')'
     if (c.type === 'paragraph') return contentToMarkdown(c.content || [])
     return ''
   }).join('')
 }
 
 function escapeMarkdownText(text: string): string {
+  if (parseStandaloneImage(text)) return text.trim()
   return text.replace(/(^|[^\\])([*`[\]()~_!#>])/g, '$1\\$2')
 }
