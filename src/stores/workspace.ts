@@ -60,6 +60,39 @@ interface ImportMarkdownFileOptions {
 const LOCAL_FILE_SAVE_DELAY = 800;
 const UNSUPPORTED_SAVE_MESSAGE = 'Current browser can import the file, but it cannot auto-save changes back to the original local file.';
 const UNTITLED_PAGE_TITLE = '未命名页面';
+const WORKSPACE_SELECTION_STORAGE_KEY = 'tu:workspace-selection';
+
+interface WorkspaceSelection {
+  kbId: string;
+  pageId: string;
+}
+
+function readPersistedSelection(): WorkspaceSelection | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(WORKSPACE_SELECTION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<WorkspaceSelection>;
+    if (typeof parsed.kbId === 'string' && typeof parsed.pageId === 'string') {
+      return { kbId: parsed.kbId, pageId: parsed.pageId };
+    }
+  } catch {
+    // ignore corrupt storage
+  }
+  return null;
+}
+
+function persistSelection(kbId: string | null, pageId: string | null) {
+  if (typeof window === 'undefined') return;
+  if (!kbId || !pageId) {
+    window.localStorage.removeItem(WORKSPACE_SELECTION_STORAGE_KEY);
+    return;
+  }
+  window.localStorage.setItem(
+    WORKSPACE_SELECTION_STORAGE_KEY,
+    JSON.stringify({ kbId, pageId } satisfies WorkspaceSelection),
+  );
+}
 
 export const useWorkspaceStore = defineStore('workspace', () => {
   const kbList = ref<KnowledgeBase[]>([]);
@@ -114,15 +147,20 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     kbList.value = await listKnowledgeBases();
     if (kbList.value.length === 0) {
       resetWorkspaceState();
+      persistSelection(null, null);
       return;
     }
 
+    const persisted = readPersistedSelection();
     const nextKbId = currentKbId.value && kbList.value.some((kb) => kb.id === currentKbId.value)
       ? currentKbId.value
-      : kbList.value[0].id;
+      : persisted?.kbId && kbList.value.some((kb) => kb.id === persisted.kbId)
+        ? persisted.kbId
+        : kbList.value[0].id;
 
     if (nextKbId) {
-      await selectKb(nextKbId);
+      const preferredPageId = persisted?.kbId === nextKbId ? persisted.pageId : null;
+      await selectKb(nextKbId, { preferredPageId });
     }
   }
 
@@ -141,7 +179,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
-  async function selectKb(kbId: string) {
+  async function selectKb(kbId: string, options?: { preferredPageId?: string | null }) {
     await flushCurrentPageIndexBestEffort();
     currentKbId.value = kbId;
     currentPageId.value = null;
@@ -150,8 +188,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     pageContent.value = null;
     registryStore.clear();
     pageTree.value = await getPageTree(kbId);
-    const firstPage = findFirstPage(pageTree.value);
-    if (firstPage) await selectPage(firstPage.id);
+
+    const preferredPageId = options?.preferredPageId;
+    const restoredPageId = preferredPageId && findPageInTree(pageTree.value, preferredPageId)
+      ? preferredPageId
+      : null;
+    const pageToSelect = restoredPageId ?? findFirstPage(pageTree.value)?.id;
+    if (pageToSelect) {
+      await selectPage(pageToSelect);
+    }
   }
 
   async function selectPage(pageId: string) {
@@ -167,6 +212,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       pageContent.value = data;
       currentPageTitleOverride.value = resolvePageTitle(pageId, data);
       registryStore.registerPageContent(data, pageId, currentPageTitle.value);
+      if (currentKbId.value) {
+        persistSelection(currentKbId.value, pageId);
+      }
     } finally {
       loading.value = false;
     }
@@ -527,6 +575,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       currentPageTitleOverride.value = null;
       blockSyncManager.setPageId(null);
       pageContent.value = null;
+      const fallbackPage = findFirstPage(pageTree.value);
+      if (fallbackPage) {
+        await selectPage(fallbackPage.id);
+      } else {
+        persistSelection(currentKbId.value, null);
+      }
     }
   }
 
