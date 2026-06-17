@@ -1,19 +1,17 @@
 <script setup lang="ts">
+import { computed, ref, watch, onBeforeUnmount, toRef } from 'vue'
+import type { Editor } from '@tiptap/core'
+import { BubbleMenu } from '@tiptap/vue-3/menus'
+import { ElButton, ElDivider } from 'element-plus'
+import { getSelectionToolbarActions, shouldShowSelectionBubbleMenu } from '@/editor/selectionToolbar'
+
 interface Props {
-  visible: boolean
-  top: number
-  left: number
-  zIndex?: number
-  canMarkResourceExcerpt?: boolean
-  canMarkHeadingSource?: boolean
-  canClearHeadingSource?: boolean
+  editor: Editor | null | undefined
+  suppressed?: boolean
 }
 
-withDefaults(defineProps<Props>(), {
-  zIndex: 20,
-  canMarkResourceExcerpt: true,
-  canMarkHeadingSource: false,
-  canClearHeadingSource: false,
+const props = withDefaults(defineProps<Props>(), {
+  suppressed: false,
 })
 
 const emit = defineEmits<{
@@ -22,108 +20,192 @@ const emit = defineEmits<{
   (e: 'mark-heading-source'): void
   (e: 'clear-heading-source'): void
 }>()
+
+const menuRoot = ref<HTMLElement | null>(null)
+const selectionRevision = ref(0)
+const suppressedRef = toRef(props, 'suppressed')
+let detachEditorListeners: (() => void) | null = null
+
+watch(
+  () => props.editor,
+  (editor, _prev, onCleanup) => {
+    detachEditorListeners?.()
+    detachEditorListeners = null
+    if (!editor) return
+
+    const bump = () => {
+      selectionRevision.value += 1
+    }
+    editor.on('selectionUpdate', bump)
+    editor.on('transaction', bump)
+    detachEditorListeners = () => {
+      editor.off('selectionUpdate', bump)
+      editor.off('transaction', bump)
+    }
+    onCleanup(() => {
+      detachEditorListeners?.()
+      detachEditorListeners = null
+    })
+  },
+  { immediate: true },
+)
+
+onBeforeUnmount(() => {
+  detachEditorListeners?.()
+})
+
+watch(suppressedRef, () => {
+  selectionRevision.value += 1
+  const editor = props.editor
+  if (!editor) return
+  editor.view.updateState(editor.state)
+})
+
+const actions = computed(() => {
+  selectionRevision.value
+  const editor = props.editor
+  if (!editor) {
+    return {
+      canAddNote: false,
+      canMarkResourceExcerpt: false,
+      canMarkHeadingSource: false,
+      canClearHeadingSource: false,
+      canShow: false,
+    }
+  }
+  const { from, to } = editor.state.selection
+  return getSelectionToolbarActions(editor, from, to)
+})
+
+const bubbleShouldShow = (ctx: {
+  editor: Editor
+  view: Editor['view']
+  state: Editor['state']
+  from: number
+  to: number
+}) => shouldShowSelectionBubbleMenu(
+  ctx.editor,
+  ctx.view,
+  ctx.state,
+  ctx.from,
+  ctx.to,
+  suppressedRef.value,
+  menuRoot.value,
+)
+
+const appendToBody = () => document.body
 </script>
 
 <template>
-  <Teleport to="body">
+  <BubbleMenu
+    v-if="editor"
+    :editor="editor"
+    :update-delay="120"
+    :append-to="appendToBody"
+    :should-show="bubbleShouldShow"
+    :options="{
+      strategy: 'fixed',
+      placement: 'top',
+      offset: 8,
+      flip: true,
+      shift: { padding: 8 },
+    }"
+  >
     <div
-      v-if="visible"
+      ref="menuRoot"
       class="selection-toolbar"
-      :style="{ top: `${top}px`, left: `${left}px`, zIndex }"
       @mousedown.prevent.stop
       @click.stop
     >
-      <button
-        type="button"
-        class="selection-toolbar__btn"
-        @mousedown.prevent.stop
-        @click="emit('add-note')"
-      >
-        添加笔记
-      </button>
-      <button
-        v-if="canMarkHeadingSource"
-        type="button"
-        class="selection-toolbar__btn selection-toolbar__btn--source"
-        @mousedown.prevent.stop
-        @click="emit('mark-heading-source')"
-      >
-        标记来源
-      </button>
-      <button
-        v-if="canClearHeadingSource"
-        type="button"
-        class="selection-toolbar__btn selection-toolbar__btn--clear"
-        @mousedown.prevent.stop
-        @click="emit('clear-heading-source')"
-      >
-        解除来源
-      </button>
-      <button
-        v-if="canMarkResourceExcerpt"
-        type="button"
-        class="selection-toolbar__btn selection-toolbar__btn--resource"
-        @mousedown.prevent.stop
-        @click="emit('mark-resource-excerpt')"
-      >
-        标记节选
-      </button>
+      <div class="selection-toolbar__group">
+        <ElButton
+          v-if="actions.canAddNote"
+          size="small"
+          text
+          class="selection-toolbar__btn"
+          @mousedown.prevent.stop
+          @click="emit('add-note')"
+        >
+          添加笔记
+        </ElButton>
+        <template v-if="actions.canMarkHeadingSource">
+          <ElDivider v-if="actions.canAddNote" direction="vertical" class="selection-toolbar__divider" />
+          <ElButton
+            size="small"
+            text
+            type="success"
+            class="selection-toolbar__btn"
+            @mousedown.prevent.stop
+            @click="emit('mark-heading-source')"
+          >
+            标记来源
+          </ElButton>
+        </template>
+        <template v-if="actions.canClearHeadingSource">
+          <ElDivider
+            v-if="actions.canAddNote || actions.canMarkHeadingSource"
+            direction="vertical"
+            class="selection-toolbar__divider"
+          />
+          <ElButton
+            size="small"
+            text
+            type="danger"
+            class="selection-toolbar__btn"
+            @mousedown.prevent.stop
+            @click="emit('clear-heading-source')"
+          >
+            解除来源
+          </ElButton>
+        </template>
+        <template v-if="actions.canMarkResourceExcerpt">
+          <ElDivider
+            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource"
+            direction="vertical"
+            class="selection-toolbar__divider"
+          />
+          <ElButton
+            size="small"
+            text
+            type="primary"
+            class="selection-toolbar__btn"
+            @mousedown.prevent.stop
+            @click="emit('mark-resource-excerpt')"
+          >
+            标记节选
+          </ElButton>
+        </template>
+      </div>
     </div>
-  </Teleport>
+  </BubbleMenu>
 </template>
 
 <style scoped>
 .selection-toolbar {
-  position: fixed;
-  transform: translateX(-50%);
   display: flex;
-  gap: 6px;
-  pointer-events: none;
+  align-items: center;
+  padding: 2px 4px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+  box-shadow: var(--el-box-shadow-light);
+}
+
+.selection-toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
 .selection-toolbar__btn {
-  pointer-events: auto;
-  padding: 6px 14px;
-  border: 1px solid #d0d7de;
-  border-radius: 8px;
-  background: #fff;
-  color: #24292f;
+  margin: 0;
+  padding: 4px 10px;
   font-size: 13px;
   font-weight: 500;
-  cursor: pointer;
-  box-shadow: 0 6px 20px rgba(31, 35, 40, 0.14);
-  white-space: nowrap;
-  transition: background 0.15s;
 }
 
-.selection-toolbar__btn:hover {
-  background: #f3f4f6;
-}
-
-.selection-toolbar__btn--resource {
-  border-color: #bfdbfe;
-  color: #075985;
-}
-
-.selection-toolbar__btn--resource:hover {
-  background: #eff6ff;
-}
-
-.selection-toolbar__btn--source {
-  border-color: #bbf7d0;
-  color: #166534;
-}
-
-.selection-toolbar__btn--source:hover {
-  background: #f0fdf4;
-}
-
-.selection-toolbar__btn--clear {
-  border-color: #fecaca;
-  color: #991b1b;
-}
-
-.selection-toolbar__btn--clear:hover {
-  background: #fef2f2;
+.selection-toolbar__divider {
+  height: 16px;
+  margin: 0 2px;
 }
 </style>

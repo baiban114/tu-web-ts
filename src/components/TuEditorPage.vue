@@ -356,24 +356,17 @@ const localBlocks = computed<Block[]>(() => {
 // --- Selection state ---
 const hasSelection = ref(false)
 const selectedText = ref('')
-const selectionToolbarVisible = ref(false)
 const selectionBlockIndex = ref(-1)
 const selectionBlockId = ref('')
 const selectionFrom = ref(0)
 const selectionTo = ref(0)
 const selectionSpannedBlockIds = ref<string[]>([])
 const selectionSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
-let selectionToolbarTimer: ReturnType<typeof setTimeout> | null = null
 const selectionStateVersion = ref(0)
 
 const isSelectionInHeading = computed(() => {
   selectionStateVersion.value
   return tuEditorRef.value?.isSelectionInHeading?.() ?? false
-})
-
-const headingSourceBindingAtSelection = computed(() => {
-  selectionStateVersion.value
-  return tuEditorRef.value?.getHeadingSourceBindingAtSelection?.() ?? null
 })
 
 const canAddNoteFromSelection = computed(() => {
@@ -389,15 +382,11 @@ const canMarkHeadingSourceFromSelection = computed(() => {
 })
 
 const canClearHeadingSourceFromSelection = computed(() => {
-  return hasSelection.value && isSelectionInHeading.value && Boolean(headingSourceBindingAtSelection.value)
+  selectionStateVersion.value
+  return tuEditorRef.value?.getHeadingSourceBindingAtSelection?.() != null
+    && (tuEditorRef.value?.isSelectionInHeading?.() ?? false)
+    && hasSelection.value
 })
-
-const canShowSelectionToolbar = computed(() => (
-  canAddNoteFromSelection.value
-  || canMarkResourceExcerptFromSelection.value
-  || canMarkHeadingSourceFromSelection.value
-  || canClearHeadingSourceFromSelection.value
-))
 
 const tocContextMenu = ref<{ visible: boolean; top: number; left: number; item: TocItem | null }>({
   visible: false,
@@ -405,18 +394,6 @@ const tocContextMenu = ref<{ visible: boolean; top: number; left: number; item: 
   left: 0,
   item: null,
 })
-
-const clearSelectionToolbarTimer = () => {
-  if (selectionToolbarTimer !== null) {
-    clearTimeout(selectionToolbarTimer)
-    selectionToolbarTimer = null
-  }
-}
-
-const hideSelectionToolbar = () => {
-  clearSelectionToolbarTimer()
-  selectionToolbarVisible.value = false
-}
 
 const getSelectionAnchor = (): FloatingAnchorRect | null => {
   const pos = tuEditorRef.value?.getSelectionPosition?.()
@@ -430,16 +407,6 @@ const getSelectionAnchor = (): FloatingAnchorRect | null => {
     height: 0,
   }
 }
-
-const {
-  position: selectionToolbarPosition,
-  updatePosition: updateSelectionToolbarPosition,
-} = useAnchoredFloating({
-  visible: selectionToolbarVisible,
-  getAnchorRect: getSelectionAnchor,
-  placement: 'top',
-  offset: 40,
-})
 
 // --- Toast ---
 const toastMessages = ref<Array<{ id: string; message: string }>>([])
@@ -491,6 +458,14 @@ const pendingNoteTo = ref(0)
 const pendingNoteSpannedBlockIds = ref<string[]>([])
 const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
+
+const selectionToolbarSuppressed = computed(() => (
+  nodeViewToolbar.visible
+  || showResourcePicker.value
+  || noteEditorVisible.value
+))
 
 const notePopoverVisible = ref(false)
 const notePopoverAnnotation = ref<TextAnnotation | null>(null)
@@ -637,8 +612,6 @@ const handleSelectionChange = (
   selSpannedBlockIds?: string[],
   selSpannedBlockMetadata?: SpannedBlockInfo[],
 ) => {
-  clearSelectionToolbarTimer()
-
   hasSelection.value = selHasSelection
   selectedText.value = selText
   selectionFrom.value = selFrom ?? 0
@@ -648,17 +621,6 @@ const handleSelectionChange = (
   selectionSpannedBlockIds.value = selSpannedBlockIds ?? []
   selectionSpannedBlockMetadata.value = selSpannedBlockMetadata ?? []
   selectionStateVersion.value += 1
-
-  if (selHasSelection && tuEditorRef.value) {
-    updateSelectionToolbarPosition()
-    selectionToolbarTimer = setTimeout(() => {
-      selectionToolbarTimer = null
-      selectionToolbarVisible.value = canShowSelectionToolbar.value
-      updateSelectionToolbarPosition()
-    }, 120)
-  } else {
-    hideSelectionToolbar()
-  }
 }
 
 // --- Block picker ---
@@ -736,7 +698,6 @@ const handleMarkResourceExcerptFromSelection = () => {
   pendingResourceExcerptTitle.value = buildResourceExcerptTitle(excerptText)
   resourcePickerMode.value = 'markExcerpt'
   showResourcePicker.value = true
-  hideSelectionToolbar()
 }
 
 const handleResourceExcerptCreated = (payload: { excerpt: { title: string } }) => {
@@ -770,14 +731,12 @@ const handleMarkHeadingSourceFromSelection = () => {
   pendingResourceExcerptTitle.value = headingText
   resourcePickerMode.value = 'bindSource'
   showResourcePicker.value = true
-  hideSelectionToolbar()
 }
 
 const handleClearHeadingSourceFromSelection = () => {
   if (!canClearHeadingSourceFromSelection.value) return
   tuEditorRef.value?.clearHeadingSourceBinding?.()
   tuEditorRef.value?.flushContentChange?.()
-  hideSelectionToolbar()
   showToast('已解除标题来源')
 }
 
@@ -1244,7 +1203,6 @@ const handleSaveAnnotation = (note: string) => {
   noteEditorVisible.value = false
   editingAnnotation.value = undefined
   hasSelection.value = false
-  hideSelectionToolbar()
   selectionBlockIndex.value = -1
   selectionBlockId.value = ''
   pendingNoteBlockId.value = ''
@@ -1414,7 +1372,6 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
-  clearSelectionToolbarTimer()
   if (annotationPersistTimer) {
     clearTimeout(annotationPersistTimer)
     annotationPersistTimer = null
@@ -1669,14 +1626,9 @@ onBeforeUnmount(() => {
 
     <!-- 选中文本工具栏 -->
     <SelectionToolbar
-      v-if="selectionToolbarVisible && !nodeViewToolbar.visible"
-      :visible="selectionToolbarVisible"
-      :top="selectionToolbarPosition.top"
-      :left="selectionToolbarPosition.left"
-      :z-index="selectionToolbarPosition.zIndex"
-      :can-mark-resource-excerpt="canMarkResourceExcerptFromSelection"
-      :can-mark-heading-source="canMarkHeadingSourceFromSelection"
-      :can-clear-heading-source="canClearHeadingSourceFromSelection"
+      v-if="editable"
+      :editor="tiptapEditor"
+      :suppressed="selectionToolbarSuppressed"
       @add-note="handleAddNoteFromSelection"
       @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
       @mark-heading-source="handleMarkHeadingSourceFromSelection"
@@ -1805,8 +1757,9 @@ onBeforeUnmount(() => {
   flex: 0 0 auto;
   width: 100%;
   box-sizing: border-box;
-  margin: 0 0 22px;
-  padding: 8px 0 4px;
+  margin: 0 0 10px;
+  padding: 8px 0 0;
+  overflow: visible;
   cursor: text;
 }
 
@@ -1819,16 +1772,31 @@ onBeforeUnmount(() => {
   border: 0;
   background: transparent;
   color: #111827;
-  font: inherit;
+  font-family:
+    'Segoe UI',
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    Roboto,
+    'Helvetica Neue',
+    Arial,
+    sans-serif;
   font-size: clamp(30px, 4vw, 44px);
   font-weight: 760;
-  line-height: 1.12;
-  letter-spacing: -0.04em;
+  line-height: 1.28;
+  letter-spacing: 0;
+  text-rendering: auto;
+  overflow: visible;
+  padding-left: 2px;
 }
 
 .page-title-input {
-  padding: 8px 0;
+  padding: 6px 0 10px 2px;
   outline: none;
+}
+
+.page-title-heading {
+  padding: 6px 0 10px 2px;
 }
 
 .page-title-input::placeholder {
