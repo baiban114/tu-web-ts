@@ -71,10 +71,11 @@ const emit = defineEmits<{
   'open-resource-picker': []
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding]
+  'mark-block-excerpt': [blockId: string]
 }>()
 
 type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
-type HandleAction = InsertBlockType | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
+type HandleAction = InsertBlockType | 'mark-excerpt' | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
 
 interface InsertOption {
   key: InsertBlockType
@@ -135,6 +136,7 @@ const handleItems = [
   { key: 'insert-divider', label: '插入', divider: true },
   ...insertOptions.map((option) => ({ key: option.key, label: option.label, icon: option.icon })),
   { key: 'action-divider', label: '操作', divider: true },
+  { key: 'mark-excerpt', label: '标记节选', icon: '▣' },
   { key: 'cut', label: '剪切行', icon: '✂️' },
   { key: 'copy', label: '复制', icon: '📋' },
   { key: 'duplicate', label: '复制行', icon: '📄' },
@@ -713,6 +715,11 @@ const handleHandleSelect = (key: HandleAction) => {
   }
 
   switch (key) {
+    case 'mark-excerpt': {
+      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      if (blockId) emit('mark-block-excerpt', blockId)
+      break
+    }
     case 'cut': {
       const text = editor.value.state.doc.textBetween(from, to)
       navigator.clipboard.writeText(text).catch(() => {})

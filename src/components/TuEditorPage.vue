@@ -29,6 +29,7 @@ import {
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import { getBlockExcerptContent, getTocEntryExcerptContent } from '@/utils/blockExcerptContent'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -700,6 +701,29 @@ const handleMarkResourceExcerptFromSelection = () => {
   showResourcePicker.value = true
 }
 
+const openMarkBlockExcerptPicker = (text: string, title: string) => {
+  const excerptText = normalizeResourceExcerptSelectionText(text)
+  if (!excerptText) return
+  pendingResourceExcerptText.value = excerptText
+  pendingResourceExcerptTitle.value = title || buildResourceExcerptTitle(excerptText)
+  resourcePickerMode.value = 'markExcerpt'
+  showResourcePicker.value = true
+}
+
+const handleMarkBlockExcerpt = (blockId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const payload = getBlockExcerptContent(editor.state.doc, blockId, tocCollectContext.value)
+  if (!payload) return
+  hideNodeViewToolbar()
+  openMarkBlockExcerptPicker(payload.text, payload.title)
+}
+
+const handleMarkNodeViewBlockExcerpt = () => {
+  if (!nodeViewToolbar.blockId) return
+  handleMarkBlockExcerpt(nodeViewToolbar.blockId)
+}
+
 const handleResourceExcerptCreated = (payload: { excerpt: { title: string } }) => {
   showResourcePicker.value = false
   resourcePickerMode.value = 'insert'
@@ -763,7 +787,7 @@ const closeTocContextMenu = () => {
 }
 
 const handleTocContextMenu = (item: TocItem, event: MouseEvent) => {
-  if (item.sourceType !== 'local') return
+  if (item.sourceType !== 'local' && item.sourceType !== 'ref-group') return
   event.preventDefault()
   tocContextMenu.value = {
     visible: true,
@@ -771,6 +795,17 @@ const handleTocContextMenu = (item: TocItem, event: MouseEvent) => {
     left: event.clientX,
     item,
   }
+}
+
+const handleTocMarkExcerpt = () => {
+  const item = tocContextMenu.value.item
+  const editor = tuEditorRef.value?.editor
+  if (!item || !editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const payload = getTocEntryExcerptContent(editor.state.doc, flat, item.id, tocCollectContext.value)
+  if (!payload) return
+  openMarkBlockExcerptPicker(payload.text, payload.title)
+  closeTocContextMenu()
 }
 
 const handleTocMarkSource = () => {
@@ -1503,6 +1538,7 @@ onBeforeUnmount(() => {
           @open-resource-picker="handleOpenResourcePicker"
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
+          @mark-block-excerpt="handleMarkBlockExcerpt"
           @heading-source-click="handleHeadingSourceClick"
         />
       </div>
@@ -1573,6 +1609,10 @@ onBeforeUnmount(() => {
           class="nodeview-toolbar__btn"
           @click="handleAddNoteFromSelection"
         >添加笔记</button>
+        <button
+          class="nodeview-toolbar__btn"
+          @click="handleMarkNodeViewBlockExcerpt"
+        >标记节选</button>
         <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
         <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
         <button
@@ -1661,7 +1701,12 @@ onBeforeUnmount(() => {
       :style="{ top: `${tocContextMenu.top}px`, left: `${tocContextMenu.left}px` }"
       @mousedown.prevent
     >
-      <button type="button" @click="handleTocMarkSource">标记来源</button>
+      <button type="button" @click="handleTocMarkExcerpt">标记节选</button>
+      <button
+        v-if="tocContextMenu.item?.sourceType === 'local'"
+        type="button"
+        @click="handleTocMarkSource"
+      >标记来源</button>
       <button
         v-if="tocContextMenu.item?.sourceBinding"
         type="button"
