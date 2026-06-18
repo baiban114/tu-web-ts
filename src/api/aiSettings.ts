@@ -1,11 +1,18 @@
 import { isMockDataSource } from '@/dev/dataSource'
 import { request } from './http'
 
+export const DEFAULT_AI_AGENT_CONNECT_TIMEOUT_SECONDS = 30
+export const DEFAULT_AI_AGENT_READ_TIMEOUT_SECONDS = 300
+export const DEFAULT_AI_AGENT_REQUEST_TIMEOUT_SECONDS = 300
+
 export interface AiAgentSettings {
   enabled: boolean
   baseUrl: string
   model: string
   apiKeyConfigured: boolean
+  connectTimeoutSeconds: number
+  readTimeoutSeconds: number
+  requestTimeoutSeconds: number
 }
 
 export interface UpdateAiAgentSettingsPayload {
@@ -13,6 +20,9 @@ export interface UpdateAiAgentSettingsPayload {
   baseUrl: string
   model: string
   apiKey?: string
+  connectTimeoutSeconds: number
+  readTimeoutSeconds: number
+  requestTimeoutSeconds: number
 }
 
 export interface AiAgentConnectionTestResult {
@@ -27,6 +37,9 @@ const defaultSettings = (): AiAgentSettings => ({
   baseUrl: '',
   model: '',
   apiKeyConfigured: false,
+  connectTimeoutSeconds: DEFAULT_AI_AGENT_CONNECT_TIMEOUT_SECONDS,
+  readTimeoutSeconds: DEFAULT_AI_AGENT_READ_TIMEOUT_SECONDS,
+  requestTimeoutSeconds: DEFAULT_AI_AGENT_REQUEST_TIMEOUT_SECONDS,
 })
 
 const readMockSettings = (): AiAgentSettings => {
@@ -51,11 +64,15 @@ export function getAiAgentSettings(): Promise<AiAgentSettings> {
 
 export function updateAiAgentSettings(payload: UpdateAiAgentSettingsPayload): Promise<AiAgentSettings> {
   if (isMockDataSource()) {
+    const previous = readMockSettings()
     const next: AiAgentSettings = {
       enabled: payload.enabled,
       baseUrl: payload.baseUrl,
       model: payload.model,
-      apiKeyConfigured: Boolean(payload.apiKey?.trim()) || readMockSettings().apiKeyConfigured,
+      apiKeyConfigured: Boolean(payload.apiKey?.trim()) || previous.apiKeyConfigured,
+      connectTimeoutSeconds: payload.connectTimeoutSeconds,
+      readTimeoutSeconds: payload.readTimeoutSeconds,
+      requestTimeoutSeconds: payload.requestTimeoutSeconds,
     }
     writeMockSettings(next)
     return Promise.resolve(next)

@@ -10,7 +10,13 @@ import type {
   MultiTableSubtask,
   MultiTableView,
 } from '@/api/types'
-import { generateLearningPlan, type LearningPlanNode, type LearningPlanResponse } from '@/api/aiAgent'
+import {
+  generateLearningPlanStream,
+  type LearningPlanNode,
+  type LearningPlanProgressPhase,
+  type LearningPlanResponse,
+} from '@/api/aiAgent'
+import { useWorkspaceStore } from '@/stores/workspace'
 import {
   MultiTableColumnController,
   tableContextMenuPosition,
@@ -28,6 +34,8 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (e: 'change', data: MultiTableData): void
 }>()
+
+const workspaceStore = useWorkspaceStore()
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
@@ -135,6 +143,12 @@ interface LearningPlanKanbanNode {
   children: LearningPlanKanbanNode[]
 }
 
+interface PlanProgressStep {
+  phase: LearningPlanProgressPhase
+  message: string
+  at: number
+}
+
 const kanbanColumns = ref<KanbanColumn[]>([])
 const kanbanDragActive = ref(false)
 const nativeDraggedRecordId = ref('')
@@ -142,6 +156,10 @@ const showAiPanel = ref(false)
 const generatingPlan = ref(false)
 const aiPlanError = ref('')
 const generatedPlan = ref<LearningPlanResponse | null>(null)
+const planProgressSteps = ref<PlanProgressStep[]>([])
+const planAbortController = ref<AbortController | null>(null)
+const planElapsedMs = ref(0)
+let planElapsedTimer: number | null = null
 const learningPlanPreviewRef = ref<HTMLElement | null>(null)
 const learningPlanPreviewHeight = ref<number | null>(null)
 const learningPlanPreviewResizeCleanup = ref<(() => void) | null>(null)
@@ -150,6 +168,7 @@ const learningPlanForm = ref({
   totalHours: '',
   dailyHours: '',
   deadline: '',
+  enableWebSearch: false,
 })
 const fieldMenu = ref({
   visible: false,
@@ -515,30 +534,80 @@ const planNodeHours = (node: LearningPlanNode): number => {
   return own + children
 }
 
+const formatPlanElapsed = (ms: number) => {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, '0')}`
+}
+
+const startPlanElapsedTimer = () => {
+  planElapsedMs.value = 0
+  if (planElapsedTimer != null) {
+    window.clearInterval(planElapsedTimer)
+  }
+  planElapsedTimer = window.setInterval(() => {
+    planElapsedMs.value += 1000
+  }, 1000)
+}
+
+const stopPlanElapsedTimer = () => {
+  if (planElapsedTimer != null) {
+    window.clearInterval(planElapsedTimer)
+    planElapsedTimer = null
+  }
+}
+
+const cancelPlanGeneration = () => {
+  planAbortController.value?.abort()
+}
+
 const generatePlan = async () => {
   const topic = learningPlanForm.value.topic.trim()
   aiPlanError.value = ''
   generatedPlan.value = null
   learningPlanPreviewHeight.value = null
+  planProgressSteps.value = []
   if (!topic) {
     aiPlanError.value = '请先填写学习目标。'
     return
   }
+  planAbortController.value?.abort()
+  const abortController = new AbortController()
+  planAbortController.value = abortController
   generatingPlan.value = true
+  startPlanElapsedTimer()
   try {
-    generatedPlan.value = await generateLearningPlan({
+    generatedPlan.value = await generateLearningPlanStream({
       topic,
       totalHours: learningPlanForm.value.totalHours ? Number(learningPlanForm.value.totalHours) : undefined,
       dailyHours: learningPlanForm.value.dailyHours ? Number(learningPlanForm.value.dailyHours) : undefined,
       deadline: learningPlanForm.value.deadline || undefined,
+      kbId: workspaceStore.currentKbId || undefined,
+      enableWebSearch: learningPlanForm.value.enableWebSearch || undefined,
+    }, {
+      signal: abortController.signal,
+      onEvent(event) {
+        planProgressSteps.value.push({
+          phase: event.phase,
+          message: event.message,
+          at: Date.now(),
+        })
+      },
     })
   } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      aiPlanError.value = '已中止生成'
+      return
+    }
     const message = error instanceof Error ? error.message : '生成学习计划失败。'
     aiPlanError.value = message.includes('configuration incomplete')
       ? 'AI Agent 配置不完整，请先到系统配置中设置 Base URL、Model 和 API Key。'
       : message
   } finally {
     generatingPlan.value = false
+    stopPlanElapsedTimer()
+    planAbortController.value = null
   }
 }
 
@@ -951,6 +1020,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  planAbortController.value?.abort()
+  stopPlanElapsedTimer()
   learningPlanPreviewResizeCleanup.value?.()
   window.removeEventListener('click', closeContextMenus)
   window.removeEventListener('keydown', closeContextMenusOnEscape)
@@ -1003,9 +1074,36 @@ onBeforeUnmount(() => {
           截止日期
           <input v-model="learningPlanForm.deadline" type="date" />
         </label>
-        <button type="button" :disabled="generatingPlan" @click="generatePlan">
-          {{ generatingPlan ? '生成中...' : '生成' }}
-        </button>
+        <label class="learning-plan-ai__option">
+          <input v-model="learningPlanForm.enableWebSearch" type="checkbox" />
+          联网搜索参考资料
+        </label>
+        <div class="learning-plan-ai__actions">
+          <button type="button" :disabled="generatingPlan" @click="generatePlan">
+            {{ generatingPlan ? '生成中...' : '生成' }}
+          </button>
+          <button v-if="generatingPlan" type="button" class="learning-plan-ai__cancel" @click="cancelPlanGeneration">
+            中止
+          </button>
+        </div>
+      </div>
+      <div v-if="generatingPlan || planProgressSteps.length" class="learning-plan-ai__progress">
+        <div class="learning-plan-ai__progress-head">
+          <span>{{ generatingPlan ? '正在生成学习计划' : '生成过程' }}</span>
+          <span v-if="generatingPlan">已用时 {{ formatPlanElapsed(planElapsedMs) }}</span>
+        </div>
+        <ol class="learning-plan-ai__progress-log">
+          <li
+            v-for="(step, index) in planProgressSteps"
+            :key="`${step.at}-${index}`"
+            :class="{
+              'learning-plan-ai__progress-log-item--latest':
+                generatingPlan && index === planProgressSteps.length - 1,
+            }"
+          >
+            {{ step.message }}
+          </li>
+        </ol>
       </div>
       <p v-if="aiPlanError" class="learning-plan-ai__error">{{ aiPlanError }}</p>
       <div
@@ -1391,9 +1489,74 @@ onBeforeUnmount(() => {
 
 .learning-plan-ai__form {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(110px, 150px)) auto;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(110px, 150px)) minmax(140px, auto) auto;
   align-items: end;
   gap: 10px;
+}
+
+.learning-plan-ai__option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #475569;
+  font-size: 12px;
+  min-height: 32px;
+}
+
+.learning-plan-ai__option input[type='checkbox'] {
+  margin: 0;
+}
+
+.learning-plan-ai__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.learning-plan-ai__cancel {
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 7px 12px;
+  color: #b91c1c;
+  background: #fff;
+  cursor: pointer;
+}
+
+.learning-plan-ai__progress {
+  display: grid;
+  gap: 8px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fff;
+}
+
+.learning-plan-ai__progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.learning-plan-ai__progress-log {
+  max-height: 160px;
+  margin: 0;
+  padding-left: 18px;
+  overflow-y: auto;
+  color: #334155;
+  font-size: 13px;
+}
+
+.learning-plan-ai__progress-log li {
+  padding: 2px 0;
+}
+
+.learning-plan-ai__progress-log-item--latest {
+  color: #1d4ed8;
+  font-weight: 600;
 }
 
 .learning-plan-ai label {

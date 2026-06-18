@@ -27,15 +27,19 @@ const runsPage = ref(0)
 const runsPageSize = 10
 const totalRuns = ref(0)
 
+/** Placeholder shown when a key exists but plaintext is not returned from the server. */
+const API_KEY_MASK = '••••••••••••••••'
+
 const form = reactive({
   enabled: false,
   baseUrl: '',
   model: '',
   apiKey: '',
   apiKeyConfigured: false,
+  connectTimeoutSeconds: 30,
+  readTimeoutSeconds: 300,
+  requestTimeoutSeconds: 300,
 })
-
-const totalRunPages = computed(() => Math.max(1, Math.ceil(totalRuns.value / runsPageSize)))
 
 function readableError(err: unknown, fallback: string) {
   const message = err instanceof Error ? err.message : fallback
@@ -46,6 +50,43 @@ function readableError(err: unknown, fallback: string) {
     return 'TU_SECRET_ENCRYPTION_KEY 格式不正确，需要 base64 编码的 32 字节密钥。'
   }
   return message
+}
+
+const totalRunPages = computed(() => Math.max(1, Math.ceil(totalRuns.value / runsPageSize)))
+
+function isApiKeyMask(value: string) {
+  return value === API_KEY_MASK
+}
+
+function apiKeyInputValue(configured: boolean) {
+  return configured ? API_KEY_MASK : ''
+}
+
+function resolveApiKeyForSave(configured: boolean, value: string) {
+  const trimmed = value.trim()
+  if (configured && (trimmed === '' || isApiKeyMask(trimmed))) {
+    return undefined
+  }
+  return trimmed || undefined
+}
+
+function onApiKeyFocus() {
+  if (form.apiKeyConfigured && isApiKeyMask(form.apiKey)) {
+    form.apiKey = ''
+  }
+}
+
+function onApiKeyBlur() {
+  if (form.apiKeyConfigured && !form.apiKey.trim()) {
+    form.apiKey = API_KEY_MASK
+  }
+}
+
+function normalizeTimeoutSeconds(value: number, fallback: number) {
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback
+  }
+  return Math.round(value)
 }
 
 onMounted(() => {
@@ -61,8 +102,11 @@ async function loadSettings() {
     form.enabled = settings.enabled
     form.baseUrl = settings.baseUrl || ''
     form.model = settings.model || ''
-    form.apiKey = ''
+    form.apiKey = apiKeyInputValue(settings.apiKeyConfigured)
     form.apiKeyConfigured = settings.apiKeyConfigured
+    form.connectTimeoutSeconds = settings.connectTimeoutSeconds
+    form.readTimeoutSeconds = settings.readTimeoutSeconds
+    form.requestTimeoutSeconds = settings.requestTimeoutSeconds
   } catch (err) {
     error.value = readableError(err, '加载 AI Agent 配置失败')
   } finally {
@@ -79,13 +123,19 @@ async function saveSettings() {
       enabled: form.enabled,
       baseUrl: form.baseUrl.trim(),
       model: form.model.trim(),
-      apiKey: form.apiKey.trim() || undefined,
+      apiKey: resolveApiKeyForSave(form.apiKeyConfigured, form.apiKey),
+      connectTimeoutSeconds: normalizeTimeoutSeconds(form.connectTimeoutSeconds, 30),
+      readTimeoutSeconds: normalizeTimeoutSeconds(form.readTimeoutSeconds, 300),
+      requestTimeoutSeconds: normalizeTimeoutSeconds(form.requestTimeoutSeconds, 300),
     })
     form.enabled = settings.enabled
     form.baseUrl = settings.baseUrl || ''
     form.model = settings.model || ''
-    form.apiKey = ''
+    form.apiKey = apiKeyInputValue(settings.apiKeyConfigured)
     form.apiKeyConfigured = settings.apiKeyConfigured
+    form.connectTimeoutSeconds = settings.connectTimeoutSeconds
+    form.readTimeoutSeconds = settings.readTimeoutSeconds
+    form.requestTimeoutSeconds = settings.requestTimeoutSeconds
     message.value = 'AI Agent 配置已保存'
   } catch (err) {
     error.value = readableError(err, '保存 AI Agent 配置失败')
@@ -198,7 +248,7 @@ function formatTokens(value?: number | null) {
       <div class="settings-panel__title">
         <div>
           <h2>OpenAI-compatible 接入</h2>
-          <p>配置学习计划生成使用的模型服务。API Key 只保存加密值，不会回显。</p>
+          <p>配置学习计划生成使用的模型服务。已保存的 Key 以密文占位显示，不会回显明文。HTTP 响应超时可在下方调整。</p>
         </div>
         <span :class="{ 'settings-status--ok': form.enabled && form.apiKeyConfigured }" class="settings-status">
           {{ form.enabled && form.apiKeyConfigured ? '已配置' : '未配置' }}
@@ -223,12 +273,31 @@ function formatTokens(value?: number | null) {
           <input
             v-model="form.apiKey"
             type="password"
-            :placeholder="form.apiKeyConfigured ? '留空则保留当前 Key' : '粘贴 API Key'"
+            autocomplete="off"
+            :placeholder="form.apiKeyConfigured ? '点击可更换 Key' : '粘贴 API Key'"
+            @focus="onApiKeyFocus"
+            @blur="onApiKeyBlur"
           />
         </label>
         <div class="settings-form__key-state">
           {{ form.apiKeyConfigured ? 'Key 已配置' : 'Key 未配置' }}
         </div>
+        <fieldset class="settings-form__timeouts">
+          <legend>HTTP 响应超时（秒）</legend>
+          <p class="settings-form__timeouts-hint">工具循环多轮调用模型时，读超时与请求超时建议 ≥ 300。DeepSeek 等慢模型可适当调大。</p>
+          <label>
+            连接超时
+            <input v-model.number="form.connectTimeoutSeconds" type="number" min="1" max="3600" step="1" />
+          </label>
+          <label>
+            读超时
+            <input v-model.number="form.readTimeoutSeconds" type="number" min="1" max="7200" step="1" />
+          </label>
+          <label>
+            请求总超时
+            <input v-model.number="form.requestTimeoutSeconds" type="number" min="1" max="7200" step="1" />
+          </label>
+        </fieldset>
         <div class="settings-form__actions">
           <button type="submit" :disabled="saving || loading">{{ saving ? '保存中...' : '保存配置' }}</button>
           <button type="button" :disabled="saving || !form.apiKeyConfigured" @click="removeApiKey">删除 Key</button>
@@ -472,6 +541,36 @@ function formatTokens(value?: number | null) {
 
 .settings-form__key-state {
   color: #64748b;
+  font-size: 13px;
+}
+
+.settings-form__timeouts {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.settings-form__timeouts legend {
+  padding: 0 4px;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-form__timeouts-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-form__timeouts label {
+  display: grid;
+  gap: 6px;
+  color: #475569;
   font-size: 13px;
 }
 

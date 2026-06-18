@@ -184,9 +184,23 @@ async function openMockLearningPlanPreview(page: Page) {
   await block.getByPlaceholder('例如：两周内入门机器学习基础').fill('学习 TypeScript')
   await block.getByLabel('总可用小时').fill('12')
   await block.getByRole('button', { name: '生成', exact: true }).click()
+  await expect(block.locator('.learning-plan-ai__progress-log')).toContainText('开始生成学习计划')
   await expect(block.locator('.learning-plan-ai__preview')).toContainText('学习 TypeScript 学习计划')
   return block
 }
+
+test('cancels mock learning-plan generation', async ({ page }) => {
+  page.once('dialog', (dialog) => dialog.accept())
+  const block = page.locator('.multi-table').last()
+  await block.getByRole('button', { name: '学习计划' }).click()
+  await block.getByRole('button', { name: 'AI 生成计划' }).click()
+  await block.getByPlaceholder('例如：两周内入门机器学习基础').fill('学习 TypeScript')
+  await block.getByRole('button', { name: '生成', exact: true }).click()
+  await expect(block.locator('.learning-plan-ai__progress-log')).toBeVisible()
+  await block.getByRole('button', { name: '中止' }).click()
+  await expect(block.getByText('已中止生成')).toBeVisible()
+  await expect(block.locator('.learning-plan-ai__preview')).toHaveCount(0)
+})
 
 async function generateMockLearningPlan(page: Page) {
   const block = await openMockLearningPlanPreview(page)
