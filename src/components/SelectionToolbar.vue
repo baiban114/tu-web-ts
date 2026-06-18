@@ -17,6 +17,7 @@ const props = withDefaults(defineProps<Props>(), {
 const emit = defineEmits<{
   (e: 'add-note'): void
   (e: 'mark-resource-excerpt'): void
+  (e: 'set-excerpt-basis'): void
   (e: 'mark-heading-source'): void
   (e: 'clear-heading-source'): void
 }>()
@@ -68,6 +69,7 @@ const actions = computed(() => {
     return {
       canAddNote: false,
       canMarkResourceExcerpt: false,
+      canSetExcerptBasis: false,
       canMarkHeadingSource: false,
       canClearHeadingSource: false,
       canShow: false,
@@ -193,6 +195,23 @@ const bubbleFloatingOptions = computed(() => {
             @click="emit('mark-resource-excerpt')"
           >
             标记节选
+          </ElButton>
+        </template>
+        <template v-if="actions.canSetExcerptBasis">
+          <ElDivider
+            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canMarkResourceExcerpt"
+            direction="vertical"
+            class="selection-toolbar__divider"
+          />
+          <ElButton
+            size="small"
+            text
+            type="success"
+            class="selection-toolbar__btn"
+            @mousedown.prevent.stop
+            @click="emit('set-excerpt-basis')"
+          >
+            设置依据
           </ElButton>
         </template>
       </div>

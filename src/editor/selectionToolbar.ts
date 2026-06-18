@@ -19,6 +19,7 @@ const TEXT_BLOCK_NODE_TYPES = new Set([
 export interface SelectionToolbarActions {
   canAddNote: boolean
   canMarkResourceExcerpt: boolean
+  canSetExcerptBasis: boolean
   canMarkHeadingSource: boolean
   canClearHeadingSource: boolean
   canShow: boolean
@@ -75,13 +76,15 @@ export function getSelectionToolbarActions(
 
   const canAddNote = hasText || spannedBlockIds.length > 0
   const canMarkResourceExcerpt = hasText && !inHeading
+  const canSetExcerptBasis = hasText && !inHeading
   const canMarkHeadingSource = inHeading
   const canClearHeadingSource = inHeading && Boolean(sourceBinding)
-  const canShow = canAddNote || canMarkResourceExcerpt || canMarkHeadingSource || canClearHeadingSource
+  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource
 
   return {
     canAddNote,
     canMarkResourceExcerpt,
+    canSetExcerptBasis,
     canMarkHeadingSource,
     canClearHeadingSource,
     canShow,

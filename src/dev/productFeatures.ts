@@ -130,6 +130,14 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Resource',
   },
   {
+    id: 'external-resource-excerpt-basis',
+    module: '外部资源',
+    name: '设置节选依据',
+    description: '选中文本、块或目录 section 可绑定外部资源实体或节选作为依据；依据以绿色高亮或块角标展示。',
+    status: 'testing',
+    owner: 'Resource',
+  },
+  {
     id: 'heading-source-binding',
     module: '外部资源',
     name: '标题标记来源',

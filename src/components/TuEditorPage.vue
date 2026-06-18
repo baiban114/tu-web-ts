@@ -29,7 +29,7 @@ import {
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
-import { getBlockExcerptContent, getTocEntryExcerptContent } from '@/utils/blockExcerptContent'
+import { getBlockExcerptContent, getTocEntryExcerptContent, collectBasisBlockIds, collectTocEntryBasisBlockIds } from '@/utils/blockExcerptContent'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -316,7 +316,7 @@ const pageTitleEditing = ref(false)
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const showResourcePicker = ref(false)
-const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource'>('insert')
+const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
 const pendingResourceExcerptText = ref('')
 const pendingResourceExcerptTitle = ref('')
 const highlightedBlockId = ref<string | null>(null)
@@ -377,6 +377,8 @@ const canAddNoteFromSelection = computed(() => {
 const canMarkResourceExcerptFromSelection = computed(() => {
   return hasSelection.value && selectedText.value.trim().length > 0 && !isSelectionInHeading.value
 })
+
+const canSetExcerptBasisFromSelection = computed(() => canMarkResourceExcerptFromSelection.value)
 
 const canMarkHeadingSourceFromSelection = computed(() => {
   return hasSelection.value && isSelectionInHeading.value
@@ -460,6 +462,19 @@ const pendingNoteSpannedBlockIds = ref<string[]>([])
 const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 
+interface PendingBasisTarget {
+  selectedText: string
+  contextBefore: string
+  contextAfter: string
+  from?: number
+  to?: number
+  scope: 'text' | 'block' | 'compound'
+  spannedBlockIds?: string[]
+  spannedBlockMetadata?: SpannedBlockInfo[]
+}
+
+const pendingBasisTarget = ref<PendingBasisTarget | null>(null)
+
 const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
 
 const selectionToolbarSuppressed = computed(() => (
@@ -479,8 +494,10 @@ const {
 } = useAnchoredFloating({
   visible: notePopoverVisible,
   getAnchorRect: () => notePopoverAnchor.value,
-  placement: 'right',
-  offset: 12,
+  placement: 'below',
+  offset: 8,
+  floatingWidth: 360,
+  floatingHeight: 420,
 })
 
 // --- Watchers ---
@@ -724,6 +741,102 @@ const handleMarkNodeViewBlockExcerpt = () => {
   handleMarkBlockExcerpt(nodeViewToolbar.blockId)
 }
 
+const openSetBasisPicker = (target: PendingBasisTarget) => {
+  if (!target.selectedText.trim() && !(target.spannedBlockIds?.length)) return
+  pendingBasisTarget.value = target
+  pendingResourceExcerptText.value = ''
+  pendingResourceExcerptTitle.value = ''
+  resourcePickerMode.value = 'setBasis'
+  showResourcePicker.value = true
+}
+
+const handleSetExcerptBasisFromSelection = () => {
+  if (!canSetExcerptBasisFromSelection.value) return
+  const payload = getSelectionAnnotationPayload(selectionFrom.value, selectionTo.value)
+  const excerptText = payload.selectedText || selectedText.value
+  if (!excerptText.trim()) return
+  const hasSpannedBlocks = selectionSpannedBlockIds.value.length > 0
+  openSetBasisPicker({
+    selectedText: excerptText,
+    contextBefore: payload.contextBefore,
+    contextAfter: payload.contextAfter,
+    from: payload.from ?? selectionFrom.value,
+    to: payload.to ?? selectionTo.value,
+    scope: hasSpannedBlocks ? 'compound' : 'text',
+    spannedBlockIds: hasSpannedBlocks ? selectionSpannedBlockIds.value : undefined,
+    spannedBlockMetadata: hasSpannedBlocks
+      ? normalizeSpannedBlockMetadata(selectionSpannedBlockIds.value, selectionSpannedBlockMetadata.value)
+      : undefined,
+  })
+}
+
+const handleSetBlockBasis = (blockId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const payload = getBlockExcerptContent(editor.state.doc, blockId, tocCollectContext.value)
+  if (!payload) return
+  const blockIds = collectBasisBlockIds(editor.state.doc, blockId, tocCollectContext.value)
+  const scope = blockIds.length > 1 ? 'compound' : 'block'
+  hideNodeViewToolbar()
+  openSetBasisPicker({
+    selectedText: payload.text,
+    contextBefore: '',
+    contextAfter: '',
+    scope,
+    spannedBlockIds: blockIds,
+    spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+  })
+}
+
+const handleSetNodeViewBlockBasis = () => {
+  if (!nodeViewToolbar.blockId) return
+  handleSetBlockBasis(nodeViewToolbar.blockId)
+}
+
+const saveExcerptBasisAnnotation = (binding: HeadingSourceBinding) => {
+  const target = pendingBasisTarget.value
+  if (!target) return
+  const now = Date.now()
+  const hasText = !!target.selectedText.trim()
+  const hasSpannedBlocks = (target.spannedBlockIds?.length ?? 0) > 0
+  const scope = target.scope
+  const annotation: TextAnnotation = {
+    id: `basis-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    kind: 'basis',
+    basisBinding: binding,
+    selectedText: target.selectedText,
+    contextBefore: target.contextBefore,
+    contextAfter: target.contextAfter,
+    note: '',
+    color: '#A5D6A7',
+    createdAt: now,
+    updatedAt: now,
+    from: scope === 'text' && hasText ? target.from : undefined,
+    to: scope === 'text' && hasText ? target.to : undefined,
+    blockId: '',
+    anchorVersion: scope === 'text' && hasText ? 1 : undefined,
+    lastResolvedAt: scope === 'text' && hasText ? now : undefined,
+    unresolved: false,
+    scope,
+    spannedBlockIds: hasSpannedBlocks ? target.spannedBlockIds : undefined,
+    spannedBlockMetadata: hasSpannedBlocks ? target.spannedBlockMetadata : undefined,
+  }
+  localAnnotations.value = [...localAnnotations.value, annotation]
+  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+  pendingBasisTarget.value = null
+  showToast(`已设置依据：${binding.snapshot.excerptTitle || binding.snapshot.resourceTitle || '外部资源'}`)
+}
+
+const handleBindResourceFromPicker = (payload: { binding: HeadingSourceBinding }) => {
+  if (resourcePickerMode.value === 'setBasis') {
+    saveExcerptBasisAnnotation(payload.binding)
+    showResourcePicker.value = false
+    resourcePickerMode.value = 'insert'
+    return
+  }
+  handleBindHeadingSource(payload)
+}
+
 const handleResourceExcerptCreated = (payload: { excerpt: { title: string } }) => {
   showResourcePicker.value = false
   resourcePickerMode.value = 'insert'
@@ -739,7 +852,7 @@ const navigateToHeadingSource = (binding: HeadingSourceBinding) => {
     query: {
       tab: 'items',
       itemId: binding.resourceItemId,
-      excerptId: binding.resourceExcerptId,
+      ...(binding.resourceExcerptId ? { excerptId: binding.resourceExcerptId } : {}),
     },
   })
 }
@@ -808,6 +921,26 @@ const handleTocMarkExcerpt = () => {
   closeTocContextMenu()
 }
 
+const handleTocSetBasis = () => {
+  const item = tocContextMenu.value.item
+  const editor = tuEditorRef.value?.editor
+  if (!item || !editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const payload = getTocEntryExcerptContent(editor.state.doc, flat, item.id, tocCollectContext.value)
+  if (!payload) return
+  const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, item.id, tocCollectContext.value)
+  const scope = blockIds.length > 1 ? 'compound' : 'block'
+  openSetBasisPicker({
+    selectedText: payload.text,
+    contextBefore: '',
+    contextAfter: '',
+    scope,
+    spannedBlockIds: blockIds,
+    spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
+  })
+  closeTocContextMenu()
+}
+
 const handleTocMarkSource = () => {
   const item = tocContextMenu.value.item
   if (!item) return
@@ -840,6 +973,7 @@ const handleResourcePickerVisibleChange = (visible: boolean) => {
     resourcePickerMode.value = 'insert'
     pendingResourceExcerptText.value = ''
     pendingResourceExcerptTitle.value = ''
+    pendingBasisTarget.value = null
   }
 }
 
@@ -1261,6 +1395,36 @@ const rectFromPoint = (clientX: number, clientY: number): FloatingAnchorRect => 
   height: 0,
 })
 
+const unionDomRects = (rects: DOMRect[]): FloatingAnchorRect | null => {
+  if (rects.length === 0) return null
+  const left = Math.min(...rects.map((r) => r.left))
+  const top = Math.min(...rects.map((r) => r.top))
+  const right = Math.max(...rects.map((r) => r.right))
+  const bottom = Math.max(...rects.map((r) => r.bottom))
+  return { left, top, right, bottom, width: right - left, height: bottom - top }
+}
+
+const resolveBlockIdsAnchorRect = (blockIds: string[]): FloatingAnchorRect | null => {
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  if (!editorDom || blockIds.length === 0) return null
+  const rects: DOMRect[] = []
+  for (const blockId of blockIds) {
+    const el = editorDom.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+    if (el) rects.push(el.getBoundingClientRect())
+  }
+  return unionDomRects(rects)
+}
+
+const resolveAnnotationAnchorRect = (
+  annotation: TextAnnotation,
+  fallback: FloatingAnchorRect,
+): FloatingAnchorRect => {
+  if ((annotation.scope === 'block' || annotation.scope === 'compound') && annotation.spannedBlockIds?.length) {
+    return resolveBlockIdsAnchorRect(annotation.spannedBlockIds) ?? fallback
+  }
+  return fallback
+}
+
 const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }) => {
   const annotations = getBlockAnnotations()
   const ids = payload.annotationIds?.length ? payload.annotationIds : [payload.annotationId]
@@ -1270,10 +1434,11 @@ const handleAnnotationClick = (payload: { annotationId: string; annotationIds?: 
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = matched.length ? matched : [annotation]
-  notePopoverAnchor.value = (payload.event.target as HTMLElement | null)
+  const highlightRect = (payload.event.target as HTMLElement | null)
     ?.closest('[data-tu-annotation-id]')
     ?.getBoundingClientRect()
-    ?? rectFromPoint(payload.event.clientX, payload.event.clientY)
+  const fallback = highlightRect ?? rectFromPoint(payload.event.clientX, payload.event.clientY)
+  notePopoverAnchor.value = resolveAnnotationAnchorRect(annotation, fallback)
   notePopoverVisible.value = true
   updateNotePopoverPosition()
 }
@@ -1334,14 +1499,15 @@ const handleCompoundBadgeClick = (_blockId: string, annotationId: string, client
   if (!annotation) return
   notePopoverAnnotation.value = annotation
   notePopoverAnnotations.value = related.length ? related : [annotation]
-  notePopoverAnchor.value = rectFromPoint(clientX, clientY)
+  const fallback = rectFromPoint(clientX, clientY)
+  notePopoverAnchor.value = resolveAnnotationAnchorRect(annotation, fallback)
   notePopoverVisible.value = true
   updateNotePopoverPosition()
 }
 
 const handleEditAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
-  if (!target) return
+  if (!target || target.kind === 'basis') return
 
   pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = target.selectedText
@@ -1350,6 +1516,13 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
   editingAnnotation.value = { ...target }
   noteEditorVisible.value = true
   notePopoverVisible.value = false
+}
+
+const handleNavigateBasisFromPopover = (annotation?: TextAnnotation) => {
+  const target = annotation ?? notePopoverAnnotation.value
+  if (!target?.basisBinding) return
+  notePopoverVisible.value = false
+  navigateToHeadingSource(target.basisBinding)
 }
 
 const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
@@ -1539,6 +1712,7 @@ onBeforeUnmount(() => {
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
+          @set-block-basis="handleSetBlockBasis"
           @heading-source-click="handleHeadingSourceClick"
         />
       </div>
@@ -1613,6 +1787,10 @@ onBeforeUnmount(() => {
           class="nodeview-toolbar__btn"
           @click="handleMarkNodeViewBlockExcerpt"
         >标记节选</button>
+        <button
+          class="nodeview-toolbar__btn"
+          @click="handleSetNodeViewBlockBasis"
+        >设置依据</button>
         <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
         <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
         <button
@@ -1671,6 +1849,7 @@ onBeforeUnmount(() => {
       :suppressed="selectionToolbarSuppressed"
       @add-note="handleAddNoteFromSelection"
       @mark-resource-excerpt="handleMarkResourceExcerptFromSelection"
+      @set-excerpt-basis="handleSetExcerptBasisFromSelection"
       @mark-heading-source="handleMarkHeadingSourceFromSelection"
       @clear-heading-source="handleClearHeadingSourceFromSelection"
     />
@@ -1691,7 +1870,7 @@ onBeforeUnmount(() => {
       :initial-excerpt-title="pendingResourceExcerptTitle"
       @select="handleResourcePickerSelect"
       @excerpt-created="handleResourceExcerptCreated"
-      @bind-source="handleBindHeadingSource"
+      @bind-source="handleBindResourceFromPicker"
       @update:visible="handleResourcePickerVisibleChange"
     />
 
@@ -1702,6 +1881,7 @@ onBeforeUnmount(() => {
       @mousedown.prevent
     >
       <button type="button" @click="handleTocMarkExcerpt">标记节选</button>
+      <button type="button" @click="handleTocSetBasis">设置依据</button>
       <button
         v-if="tocContextMenu.item?.sourceType === 'local'"
         type="button"
@@ -1740,11 +1920,13 @@ onBeforeUnmount(() => {
       :visible="notePopoverVisible"
       :annotation="notePopoverAnnotation"
       :annotations="notePopoverAnnotations"
+      :anchor-rect="notePopoverAnchor"
       :top="notePopoverPosition.top"
       :left="notePopoverPosition.left"
       :z-index="notePopoverPosition.zIndex"
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
+      @navigate-basis="handleNavigateBasisFromPopover"
       @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []; notePopoverAnchor = null"
     />
 

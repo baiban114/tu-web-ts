@@ -2,7 +2,7 @@ import type { Block, ExternalResourceEmbedData } from '@/api/types'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import type { FlatTocEntry } from '@/utils/toc/headings'
-import { getTocEntrySectionContentRange } from '@/utils/toc/tocSections'
+import { getTocEntrySectionContentRange, getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
 
 export interface BlockExcerptContent {
   text: string
@@ -187,4 +187,66 @@ export function getTocEntryExcerptContent(
   }
 
   return null
+}
+
+function collectTopLevelBlockIdsBetween(doc: ProseMirrorNode, fromPos: number, toPos: number): string[] {
+  const ids: string[] = []
+  let childPos = 0
+  for (let i = 0; i < doc.childCount; i += 1) {
+    const child = doc.child(i)
+    if (childPos >= fromPos && childPos < toPos) {
+      const childBlockId = child.attrs?.blockId
+      if (childBlockId) ids.push(childBlockId)
+    }
+    childPos += child.nodeSize
+  }
+  return ids
+}
+
+/** 标题 section 或单块：用于依据标注的 spannedBlockIds */
+export function collectBasisBlockIds(
+  doc: ProseMirrorNode,
+  blockId: string,
+  ctx: TocCollectContext,
+): string[] {
+  const found = findTopLevelBlock(doc, blockId)
+  if (!found) return [blockId]
+  const { pos, node } = found
+
+  if (node.type.name !== 'heading') {
+    return [blockId]
+  }
+
+  const flat = collectFlatTocEntries(doc, ctx)
+  const entryIndex = flat.findIndex((entry) => (
+    entry.blockId === blockId && entry.pos === pos && entry.sourceType === 'local'
+  ))
+  if (entryIndex < 0) return [blockId]
+
+  const boundaryPos = getTocSectionBoundaryPos(flat, entryIndex, doc)
+  const ids = collectTopLevelBlockIdsBetween(doc, pos, boundaryPos)
+  return ids.length > 0 ? ids : [blockId]
+}
+
+export function collectTocEntryBasisBlockIds(
+  doc: ProseMirrorNode,
+  flat: FlatTocEntry[],
+  entryId: string,
+  ctx: TocCollectContext,
+): string[] {
+  const entryIndex = flat.findIndex((entry) => entry.id === entryId)
+  if (entryIndex < 0) return []
+  const entry = flat[entryIndex]
+  const boundaryPos = getTocSectionBoundaryPos(flat, entryIndex, doc)
+
+  if (entry.sourceType === 'local') {
+    return collectBasisBlockIds(doc, entry.blockId, ctx)
+  }
+
+  if (entry.sourceType === 'ref-group') {
+    const ids = collectTopLevelBlockIdsBetween(doc, entry.pos, boundaryPos)
+    return ids.length > 0 ? ids : (entry.blockId ? [entry.blockId] : [])
+  }
+
+  return entry.blockId ? [entry.blockId] : []
 }

@@ -35,6 +35,22 @@ export function bindingFromExternalResource(data: ExternalResourceEmbedData): He
   }
 }
 
+/** 依据标注：可挂靠资源实体，节选可选 */
+export function basisBindingFromExternalResource(data: ExternalResourceEmbedData): HeadingSourceBinding | null {
+  if (!data.resourceItemId) return null
+  const snapshot = data.snapshot || { resourceTitle: '' }
+  return {
+    resourceItemId: data.resourceItemId,
+    resourceExcerptId: data.resourceExcerptId ?? null,
+    snapshot: {
+      resourceTitle: snapshot.resourceTitle,
+      resourceTypeName: snapshot.resourceTypeName,
+      excerptTitle: snapshot.excerptTitle,
+      excerptLocator: snapshot.excerptLocator,
+    },
+  }
+}
+
 export function parseHeadingSourceComment(attrsStr: string): { blockId: string; binding: HeadingSourceBinding } | null {
   const attrs = parseAttrString(attrsStr)
   const blockId = attrs.id
@@ -61,8 +77,10 @@ export function serializeHeadingSourceComment(blockId: string, binding: HeadingS
   const parts = [
     `id="${escapeAttr(blockId)}"`,
     `item="${escapeAttr(binding.resourceItemId)}"`,
-    `excerpt="${escapeAttr(binding.resourceExcerptId)}"`,
   ]
+  if (binding.resourceExcerptId) {
+    parts.push(`excerpt="${escapeAttr(binding.resourceExcerptId)}"`)
+  }
   if (snapshot.excerptTitle) parts.push(`title="${escapeAttr(snapshot.excerptTitle)}"`)
   if (snapshot.excerptLocator) parts.push(`locator="${escapeAttr(snapshot.excerptLocator)}"`)
   if (snapshot.resourceTypeName) parts.push(`type="${escapeAttr(snapshot.resourceTypeName)}"`)
@@ -84,5 +102,5 @@ export function headingSourceBadgeTitle(binding: HeadingSourceBinding): string {
     snapshot.excerptTitle,
     snapshot.excerptLocator,
   ].filter(Boolean)
-  return parts.join(' · ') || '外部资源节选'
+  return parts.join(' · ') || (binding.resourceExcerptId ? '外部资源节选' : '外部资源')
 }

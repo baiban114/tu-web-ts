@@ -72,10 +72,11 @@ const emit = defineEmits<{
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding]
   'mark-block-excerpt': [blockId: string]
+  'set-block-basis': [blockId: string]
 }>()
 
 type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
-type HandleAction = InsertBlockType | 'mark-excerpt' | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
+type HandleAction = InsertBlockType | 'mark-excerpt' | 'set-basis' | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
 
 interface InsertOption {
   key: InsertBlockType
@@ -137,6 +138,7 @@ const handleItems = [
   ...insertOptions.map((option) => ({ key: option.key, label: option.label, icon: option.icon })),
   { key: 'action-divider', label: '操作', divider: true },
   { key: 'mark-excerpt', label: '标记节选', icon: '▣' },
+  { key: 'set-basis', label: '设置依据', icon: '◎' },
   { key: 'cut', label: '剪切行', icon: '✂️' },
   { key: 'copy', label: '复制', icon: '📋' },
   { key: 'duplicate', label: '复制行', icon: '📄' },
@@ -165,7 +167,12 @@ const compoundAnnotationBadges = computed(() => {
   const map: Record<string, { annotationId: string; color: string }[]> = {}
   for (const annotations of Object.values(props.annotations)) {
     for (const ann of annotations) {
-      if ((ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
+      if (ann.kind === 'basis' && (ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
+        for (const bid of ann.spannedBlockIds) {
+          if (!map[bid]) map[bid] = []
+          map[bid].push({ annotationId: ann.id, color: ann.color || '#81C784' })
+        }
+      } else if ((ann.scope === 'compound' || ann.scope === 'block') && ann.spannedBlockIds?.length) {
         for (const bid of ann.spannedBlockIds) {
           if (!map[bid]) map[bid] = []
           map[bid].push({ annotationId: ann.id, color: ann.color || '#FFEB3B' })
@@ -718,6 +725,11 @@ const handleHandleSelect = (key: HandleAction) => {
     case 'mark-excerpt': {
       const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
       if (blockId) emit('mark-block-excerpt', blockId)
+      break
+    }
+    case 'set-basis': {
+      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      if (blockId) emit('set-block-basis', blockId)
       break
     }
     case 'cut': {

@@ -18,7 +18,7 @@ import {
 import { MAX_PAGE_SIZE } from '@/constants/pagination'
 import { buildTreeFromFlat } from '@/utils/tree'
 import type { Block, ExternalResourceEmbedData, HeadingSourceBinding } from '@/api/types'
-import { bindingFromExternalResource } from '@/utils/headingSource'
+import { bindingFromExternalResource, basisBindingFromExternalResource } from '@/utils/headingSource'
 import TuEditor from './TuEditor.vue'
 
 export interface ExternalResourcePickerSelection {
@@ -37,7 +37,7 @@ export interface ExternalResourcePickerBindSourcePayload {
 
 const props = defineProps<{
   visible: boolean
-  mode?: 'insert' | 'markExcerpt' | 'bindSource'
+  mode?: 'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'
   initialExcerptText?: string
   initialExcerptTitle?: string
 }>()
@@ -91,8 +91,11 @@ const selectedSupportsExcerpts = computed(() => supportsResourceExcerpts(selecte
 const selectedSupportsBookChapters = computed(() => supportsBookChapters(selectedItemType.value?.code))
 const isMarkExcerptMode = computed(() => props.mode === 'markExcerpt')
 const isBindSourceMode = computed(() => props.mode === 'bindSource')
-const isExcerptOnlyMode = computed(() => isMarkExcerptMode.value || isBindSourceMode.value)
+const isSetBasisMode = computed(() => props.mode === 'setBasis')
+const isBindLikeMode = computed(() => isBindSourceMode.value || isSetBasisMode.value)
+const isExcerptOnlyMode = computed(() => isMarkExcerptMode.value || isBindLikeMode.value)
 const dialogTitle = computed(() => {
+  if (isSetBasisMode.value) return '设置依据'
   if (isBindSourceMode.value) return '标记标题来源'
   if (isMarkExcerptMode.value) return '标记外部资源节选'
   return '插入外部资源'
@@ -335,11 +338,22 @@ const selectResource = (item: ResourceItem) => {
   emit('update:visible', false)
 }
 
-const emitBindSource = (externalResource: ExternalResourceEmbedData) => {
-  const binding = bindingFromExternalResource(externalResource)
+const emitBindLike = (externalResource: ExternalResourceEmbedData) => {
+  const binding = isSetBasisMode.value
+    ? basisBindingFromExternalResource(externalResource)
+    : bindingFromExternalResource(externalResource)
   if (!binding) return
   emit('bind-source', { binding })
   emit('update:visible', false)
+}
+
+const selectResourceForBasis = (item: ResourceItem) => {
+  emitBindLike({
+    resourceItemId: item.id,
+    resourceExcerptId: null,
+    mode: 'resource',
+    snapshot: snapshotFor(item),
+  })
 }
 
 const selectExcerpt = (excerpt: ResourceExcerpt) => {
@@ -351,8 +365,8 @@ const selectExcerpt = (excerpt: ResourceExcerpt) => {
     mode: 'excerpt',
     snapshot: snapshotFor(item, excerpt),
   }
-  if (isBindSourceMode.value) {
-    emitBindSource(externalResource)
+  if (isBindLikeMode.value) {
+    emitBindLike(externalResource)
     return
   }
   emit('select', {
@@ -385,8 +399,8 @@ const createAndInsertExcerpt = async () => {
       emit('update:visible', false)
       return
     }
-    if (isBindSourceMode.value) {
-      emitBindSource({
+    if (isBindLikeMode.value) {
+      emitBindLike({
         resourceItemId: item.id,
         resourceExcerptId: excerpt.id,
         mode: 'excerpt',
@@ -497,13 +511,21 @@ watch(selectedItemId, () => {
             </div>
           </form>
           <template v-else-if="selectedItem">
-            <div class="resource-picker__section-title">{{ isBindSourceMode ? '绑定来源' : '插入' }}</div>
+            <div class="resource-picker__section-title">{{ isSetBasisMode ? '选择依据资料' : isBindSourceMode ? '绑定来源' : '插入' }}</div>
             <h3>{{ selectedItem.title }}</h3>
             <p>{{ selectedItem.typeName }} · {{ selectedItem.workTitle || '未归类' }}</p>
             <p>{{ selectedItem.identityFieldLabel }}: {{ selectedItem.identityValue || '未填写' }}</p>
             <a v-if="selectedItem.sourceUrl" :href="selectedItem.sourceUrl" target="_blank" rel="noreferrer">{{ selectedItem.sourceUrl }}</a>
             <button
-              v-if="!isExcerptOnlyMode"
+              v-if="isSetBasisMode"
+              type="button"
+              class="resource-picker__primary"
+              @click="selectResourceForBasis(selectedItem)"
+            >
+              挂靠此资源实体
+            </button>
+            <button
+              v-else-if="!isExcerptOnlyMode"
               type="button"
               class="resource-picker__primary"
               @click="selectResource(selectedItem)"
@@ -512,7 +534,7 @@ watch(selectedItemId, () => {
             </button>
 
             <div v-if="selectedSupportsExcerpts" class="resource-picker__excerpts">
-              <div class="resource-picker__section-title">资源节选</div>
+              <div class="resource-picker__section-title">{{ isSetBasisMode ? '可选：具体节选' : '资源节选' }}</div>
               <button
                 v-for="excerpt in filteredExcerpts"
                 :key="excerpt.id"
@@ -525,11 +547,14 @@ watch(selectedItemId, () => {
                 <small v-if="excerpt.locator">{{ excerpt.locator }}</small>
                 <em>{{ excerpt.excerptText }}</em>
               </button>
-              <p v-if="!excerptLoading && filteredExcerpts.length === 0" class="resource-picker__empty">
+              <p v-if="!excerptLoading && filteredExcerpts.length === 0 && !isSetBasisMode" class="resource-picker__empty">
                 {{ keyword.trim() ? '没有匹配的节选' : '暂无节选' }}
               </p>
+              <p v-else-if="!excerptLoading && filteredExcerpts.length === 0 && isSetBasisMode" class="resource-picker__empty">
+                该资源暂无节选，可直接挂靠上方资源实体。
+              </p>
 
-              <form class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
+              <form v-if="!isSetBasisMode" class="resource-picker__form" @submit.prevent="createAndInsertExcerpt">
                 <input v-model.trim="excerptForm.title" placeholder="节选标题" required maxlength="255" />
                 <el-tree-select
                   v-if="selectedSupportsBookChapters && excerptChapterTreeOptions.length"
@@ -561,7 +586,7 @@ watch(selectedItemId, () => {
                 </button>
               </form>
             </div>
-            <p v-else-if="isExcerptOnlyMode" class="resource-picker__empty">
+            <p v-else-if="isBindSourceMode" class="resource-picker__empty">
               当前资源类型暂不支持创建节选，请选择支持节选的资源实体。
             </p>
           </template>

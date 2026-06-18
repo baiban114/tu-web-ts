@@ -94,6 +94,10 @@ export interface TextAnnotation {
   scope?: 'text' | 'block' | 'compound';
   spannedBlockIds?: string[];
   spannedBlockMetadata?: SpannedBlockInfo[];
+  /** note（默认）或依据标注 */
+  kind?: 'note' | 'basis';
+  /** 依据标注绑定的外部资源节选 */
+  basisBinding?: HeadingSourceBinding;
 }
 
 export interface BlockMetadata {
@@ -190,7 +194,8 @@ export interface ExternalResourceEmbedData {
 /** 标题节点绑定的外部资源节选（持久化于 heading attrs + markdown 注释） */
 export interface HeadingSourceBinding {
   resourceItemId: string;
-  resourceExcerptId: string;
+  /** 标题来源必填；依据标注可仅挂靠资源实体 */
+  resourceExcerptId?: string | null;
   snapshot: Pick<ExternalResourceSnapshot,
     'resourceTitle' | 'resourceTypeName' | 'excerptTitle' | 'excerptLocator'>;
 }
