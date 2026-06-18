@@ -93,23 +93,43 @@ const bubbleShouldShow = (ctx: {
   menuRoot.value,
 )
 
-const appendToBody = () => document.body
+/** Anchor bubble menu inside the editor surface so it scrolls with content (not viewport-fixed). */
+const appendToEditorSurface = (): HTMLElement => {
+  const editor = props.editor
+  if (!editor) return document.body
+  return (
+    (editor.view.dom.closest('.tu-editor-wrapper') as HTMLElement | null)
+    ?? editor.view.dom.parentElement
+    ?? document.body
+  )
+}
+
+const bubbleFloatingOptions = computed(() => {
+  const editor = props.editor
+  const scrollTarget = editor
+    ? ((editor.view.dom.closest('.content-scroll') as HTMLElement | null) ?? window)
+    : window
+  return {
+    strategy: 'absolute' as const,
+    placement: 'top' as const,
+    offset: 8,
+    flip: true,
+    shift: { padding: 8 },
+    inline: true,
+    scrollTarget,
+  }
+})
 </script>
 
 <template>
   <BubbleMenu
     v-if="editor"
+    class="selection-toolbar-host"
     :editor="editor"
     :update-delay="120"
-    :append-to="appendToBody"
+    :append-to="appendToEditorSurface"
     :should-show="bubbleShouldShow"
-    :options="{
-      strategy: 'fixed',
-      placement: 'top',
-      offset: 8,
-      flip: true,
-      shift: { padding: 8 },
-    }"
+    :options="bubbleFloatingOptions"
   >
     <div
       ref="menuRoot"
@@ -181,6 +201,10 @@ const appendToBody = () => document.body
 </template>
 
 <style scoped>
+.selection-toolbar-host {
+  z-index: 50;
+}
+
 .selection-toolbar {
   display: flex;
   align-items: center;

@@ -24,6 +24,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: devProxyTarget,
           changeOrigin: true,
+          timeout: 0,
         },
       },
     },
@@ -32,6 +33,7 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: devProxyTarget,
           changeOrigin: true,
+          timeout: 0,
         },
       },
     },
