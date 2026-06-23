@@ -28,6 +28,8 @@ export interface AnchoredFloatingOptions {
   /** 预估浮层高度，用于视口内定位 */
   floatingHeight?: MaybeRef<number>
   viewportPadding?: number
+  /** 除 window 外额外监听 scroll 的容器（如 `.content-scroll`） */
+  getScrollRoots?: () => readonly (HTMLElement | Window)[]
 }
 
 const DEFAULT_VIEWPORT_PADDING = 12
@@ -79,6 +81,7 @@ export function useAnchoredFloating(options: AnchoredFloatingOptions) {
   })
   const anchorVersion = ref(0)
   let rafId = 0
+  let boundScrollRoots: (HTMLElement | Window)[] = []
 
   const compute = () => {
     if (!options.visible.value) return
@@ -147,13 +150,30 @@ export function useAnchoredFloating(options: AnchoredFloatingOptions) {
     })
   }
 
+  const bindScrollRoots = () => {
+    for (const root of boundScrollRoots) {
+      root.removeEventListener('scroll', scheduleUpdate, true)
+    }
+    const roots = new Set<HTMLElement | Window>([window])
+    for (const root of options.getScrollRoots?.() ?? []) {
+      roots.add(root)
+    }
+    boundScrollRoots = [...roots]
+    for (const root of boundScrollRoots) {
+      root.addEventListener('scroll', scheduleUpdate, true)
+    }
+  }
+
   const bind = () => {
-    window.addEventListener('scroll', scheduleUpdate, true)
+    bindScrollRoots()
     window.addEventListener('resize', scheduleUpdate)
   }
 
   const unbind = () => {
-    window.removeEventListener('scroll', scheduleUpdate, true)
+    for (const root of boundScrollRoots) {
+      root.removeEventListener('scroll', scheduleUpdate, true)
+    }
+    boundScrollRoots = []
     window.removeEventListener('resize', scheduleUpdate)
     if (rafId) {
       cancelAnimationFrame(rafId)

@@ -146,8 +146,33 @@ export function resolveUrlHoverTarget(editor: Editor, event: MouseEvent): UrlHov
   }
 }
 
+/** @deprecated 使用 {@link resolveUrlHoverTargetAnchorRect} 以在滚动时获得实时坐标 */
 export function urlHoverTargetAnchorRect(target: UrlHoverTarget | null): DOMRect | null {
   return target?.anchorRect ?? null
+}
+
+/** 按当前视口重新测量锚点，供派生 UI 随滚动/布局变化跟贴触发源 */
+export function resolveUrlHoverTargetAnchorRect(
+  editor: Editor | null | undefined,
+  target: UrlHoverTarget | null,
+): DOMRect | null {
+  if (!target) return null
+
+  if (target.kind === 'inline' && editor) {
+    const live = rectFromRange(editor, target.from, target.to)
+    if (live) return live
+  }
+
+  if (target.kind === 'iframe' && target.blockId) {
+    const editorDom = editor?.view.dom
+    const blockEl = editorDom?.querySelector<HTMLElement>(
+      `[data-block-id="${CSS.escape(target.blockId)}"]`,
+    )
+    const root = (blockEl?.querySelector('.url-embed-block-nv') as HTMLElement | null) ?? blockEl
+    if (root) return root.getBoundingClientRect()
+  }
+
+  return target.anchorRect
 }
 
 export function urlHoverTargetsEqual(a: UrlHoverTarget | null, b: UrlHoverTarget | null): boolean {

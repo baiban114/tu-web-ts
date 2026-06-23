@@ -1,14 +1,16 @@
 <script setup lang="ts">
+import type { Editor } from '@tiptap/core'
 import { computed, nextTick, ref, watch } from 'vue'
 import { ElButton, ElDivider } from 'element-plus'
 import { useAnchoredFloating } from '@/composables/useAnchoredFloating'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
-import { urlHoverTargetAnchorRect } from '@/editor/urlHoverTarget'
+import { resolveUrlHoverTargetAnchorRect } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
 
 interface Props {
   visible: boolean
   target: UrlHoverTarget | null
+  editor?: Editor | null
   suppressed?: boolean
   pinning?: boolean
 }
@@ -29,11 +31,18 @@ const measuredSize = ref({ width: 280, height: 76 })
 
 const toolbarVisible = computed(() => props.visible && !props.suppressed && Boolean(props.target))
 
-const getAnchorRect = () => urlHoverTargetAnchorRect(props.target)
+const getAnchorRect = () => resolveUrlHoverTargetAnchorRect(props.editor, props.target)
+
+const getScrollRoots = () => {
+  const editorDom = props.editor?.view.dom
+  const scrollRoot = editorDom?.closest('.content-scroll') as HTMLElement | null
+  return scrollRoot ? [scrollRoot] : []
+}
 
 const { position, updatePosition } = useAnchoredFloating({
   visible: toolbarVisible,
   getAnchorRect,
+  getScrollRoots,
   placement: 'top',
   offset: 8,
   zIndex: 26,

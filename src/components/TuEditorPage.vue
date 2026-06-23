@@ -1689,6 +1689,7 @@ onBeforeUnmount(() => {
     <UrlHoverToolbar
       :visible="urlHoverToolbarVisible"
       :target="urlHoverTarget"
+      :editor="tiptapEditor"
       :suppressed="urlHoverToolbarSuppressed"
       :pinning="urlHoverToolbarPinned"
       @select-mode="handleUrlDisplayModeSelect"
