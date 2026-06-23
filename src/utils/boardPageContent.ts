@@ -42,14 +42,19 @@ function normalizeCanvasEmbed(embed: EmbeddedObject, pageType: PageType): Embedd
 
 /** Normalize API-loaded content: restore stripped mindmap blueprint metadata on embeds. */
 export function normalizePageContentFromApi(content: PageContent): PageContent {
-  const embeds = content.embeds.map((embed) => {
+  const embeds = (content.embeds ?? []).map((embed) => {
     if (!isMindmapEmbedCandidate(embed) || !embed.graphData) return embed
     return {
       ...embed,
       graphData: ensureMindmapBlueprintMeta(embed.graphData),
     }
   })
-  return { ...content, embeds }
+  return {
+    ...content,
+    embeds,
+    content: content.content ?? '',
+    annotations: content.annotations ?? [],
+  }
 }
 
 /** Infer canvas page type from stored PageContent when tree item lacks pageType. */

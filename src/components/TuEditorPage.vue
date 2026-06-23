@@ -2,10 +2,13 @@
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import { useRouter } from 'vue-router'
 import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
-import { pageContentToTipTap, tipTapToPageContent } from '@/editor/converters'
+import type { JSONContent } from '@tiptap/core'
+import { tipTapToBlocks } from '@/editor/converters'
+import { resolvePageDocument, toV2PageContent } from '@/editor/pageDocument'
 import TuEditor from './TuEditor.vue'
 import TocTreeList from './TocTreeList.vue'
 import SelectionToolbar from './SelectionToolbar.vue'
+import UrlHoverToolbar from './UrlHoverToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
@@ -34,8 +37,8 @@ import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { GraphData } from '@/api/types'
-
-type LinkDisplayMode = 'link' | 'image'
+import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
+import type { UrlDisplayMode } from '@/utils/urlDisplay'
 
 type TocItem = TocTreeItem
 const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock']
@@ -308,8 +311,7 @@ const emit = defineEmits<{
 }>()
 
 // --- Core state ---
-const localContent = ref('')
-const localEmbeds = ref<EmbeddedObject[]>([])
+const localDocument = ref<JSONContent | null>(null)
 const localAnnotations = ref<TextAnnotation[]>([])
 const pageTitleDraft = ref('')
 const pageTitleEditing = ref(false)
@@ -322,36 +324,10 @@ const pendingResourceExcerptTitle = ref('')
 const highlightedBlockId = ref<string | null>(null)
 const tocExpanded = ref(true)
 
-// Backward compat: convert PageContent → Block[] for template/TuEditor
+// TOC / tags: derive legacy Block[] from document for compatibility
 const localBlocks = computed<Block[]>(() => {
-  const blocks: Block[] = []
-  if ((localContent.value || '').trim()) {
-    blocks.push({
-      id: 'page-content',
-      type: 'richtext',
-      content: localContent.value,
-      metadata: { annotations: localAnnotations.value as unknown as any[] },
-    })
-  }
-  for (const embed of localEmbeds.value || []) {
-    blocks.push({
-      id: embed.id,
-      type: embed.type,
-      title: embed.title,
-      graphData: embed.graphData,
-      tableData: embed.tableData,
-      multiTableData: embed.multiTableData,
-      timelineData: embed.timelineData,
-      refId: embed.refId,
-      refType: embed.refType,
-      externalResource: embed.externalResource,
-      spacerHeight: embed.spacerHeight,
-      width: embed.width,
-      height: embed.height,
-      metadata: { ...embed.metadata, annotations: localAnnotations.value as unknown as any[] },
-    })
-  }
-  return blocks
+  if (!localDocument.value) return []
+  return tipTapToBlocks(localDocument.value, [])
 })
 
 // --- Selection state ---
@@ -431,19 +407,13 @@ const {
   offset: 10,
 })
 
-// --- Inserted link toolbar ---
-const insertedLinkToolbarVisible = ref(false)
-const insertedLinkToolbar = ref({ url: '', label: '', display: 'link' as LinkDisplayMode, canShowAsImage: false })
+// --- URL hover toolbar ---
+const urlHoverTarget = ref<UrlHoverTarget | null>(null)
+const urlHoverToolbarPinned = ref(false)
+let urlHoverPinTimer: ReturnType<typeof setTimeout> | null = null
+let urlHoverToolbarHovering = false
 
-const {
-  position: insertedLinkToolbarPosition,
-  updatePosition: updateInsertedLinkToolbarPosition,
-} = useAnchoredFloating({
-  visible: insertedLinkToolbarVisible,
-  getAnchorRect: getSelectionAnchor,
-  placement: 'top',
-  offset: 44,
-})
+const urlHoverToolbarVisible = computed(() => Boolean(urlHoverTarget.value))
 
 // --- Tag editor ---
 const tagEditorState = ref({ visible: false, blockId: '', top: 0, left: 0 })
@@ -461,6 +431,18 @@ const pendingNoteTo = ref(0)
 const pendingNoteSpannedBlockIds = ref<string[]>([])
 const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
+
+const urlHoverToolbarSuppressed = computed(() => (
+  !props.editable
+  || linkPopoverVisible.value
+  || nodeViewToolbar.visible
+  || showResourcePicker.value
+  || noteEditorVisible.value
+))
+
+watch([urlHoverToolbarSuppressed, urlHoverToolbarPinned], ([suppressed, pinned]) => {
+  tuEditorRef.value?.setUrlHoverSuppressed?.(suppressed || pinned)
+}, { immediate: true })
 
 interface PendingBasisTarget {
   selectedText: string
@@ -481,6 +463,7 @@ const selectionToolbarSuppressed = computed(() => (
   nodeViewToolbar.visible
   || showResourcePicker.value
   || noteEditorVisible.value
+  || urlHoverToolbarVisible.value
 ))
 
 const notePopoverVisible = ref(false)
@@ -501,17 +484,25 @@ const {
 })
 
 // --- Watchers ---
-const emitLocalContentChange = (content: string, embeds: EmbeddedObject[], annotations: TextAnnotation[]) => {
-  emit('content-change', { content, embeds, annotations })
+const emitLocalContentChange = () => {
+  if (!localDocument.value) return
+  emit('content-change', toV2PageContent(
+    localDocument.value,
+    localAnnotations.value,
+    props.contentList.metadata,
+  ))
 }
 
 watch(
   () => props.contentList,
-  (val) => {
+  (val, oldVal) => {
     if (!val) return
-    localContent.value = val.content
-    localEmbeds.value = val.embeds
-    localAnnotations.value = val.annotations
+    if (val !== oldVal || !val.document) {
+      localDocument.value = resolvePageDocument(val)
+    } else if (JSON.stringify(val.document) !== JSON.stringify(localDocument.value)) {
+      localDocument.value = val.document
+    }
+    localAnnotations.value = val.annotations ?? []
   },
   { immediate: true, deep: true },
 )
@@ -557,39 +548,9 @@ const removeToast = (id: string) => {
 }
 
 // --- Block sync ---
-const handleBlocksChange = (blocks: Block[]) => {
-  // Legacy: TuEditor still emits Block[], convert back to PageContent
-  const tempPc: PageContent = { content: '', embeds: [], annotations: localAnnotations.value }
-  let contentParts: string[] = []
-  const embeds: EmbeddedObject[] = []
-
-  for (const block of blocks) {
-    if (block.type === 'richtext' || block.type === 'richText') {
-      if (block.content) contentParts.push(block.content)
-    } else {
-      embeds.push({
-        id: block.id,
-        type: block.type as EmbeddedObject['type'],
-        title: block.title,
-        graphData: block.graphData,
-        tableData: block.tableData,
-        multiTableData: block.multiTableData,
-        timelineData: block.timelineData,
-        refId: block.refId,
-        refType: block.refType,
-        externalResource: block.externalResource,
-        spacerHeight: block.spacerHeight,
-        width: block.width,
-        height: block.height,
-        metadata: block.metadata,
-      })
-      contentParts.push(`<!--tu:embed id="${block.id}" type="${block.type}"-->`)
-    }
-  }
-
-  localContent.value = contentParts.join('\n\n').replace(/\n{3,}/g, '\n\n').trim()
-  localEmbeds.value = embeds
-  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+const handleDocumentChange = (document: JSONContent) => {
+  localDocument.value = document
+  emitLocalContentChange()
 }
 
 // --- Focus editor from title ---
@@ -822,7 +783,7 @@ const saveExcerptBasisAnnotation = (binding: HeadingSourceBinding) => {
     spannedBlockMetadata: hasSpannedBlocks ? target.spannedBlockMetadata : undefined,
   }
   localAnnotations.value = [...localAnnotations.value, annotation]
-  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+  emitLocalContentChange()
   pendingBasisTarget.value = null
   showToast(`已设置依据：${binding.snapshot.excerptTitle || binding.snapshot.resourceTitle || '外部资源'}`)
 }
@@ -1170,13 +1131,90 @@ const handleTocItemClick = (item: TocItem) => {
 }
 
 // --- Link insertion ---
-const isImageUrl = (url: string): boolean => {
-  try {
-    const parsed = new URL(url)
-    return /\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(parsed.pathname + parsed.search)
-  } catch {
-    return /\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(url)
+const URL_HOVER_DISMISS_MS = 320
+
+const clearUrlHoverPinTimer = () => {
+  if (urlHoverPinTimer !== null) {
+    clearTimeout(urlHoverPinTimer)
+    urlHoverPinTimer = null
   }
+}
+
+let urlHoverDismissTimer: ReturnType<typeof setTimeout> | null = null
+
+const clearUrlHoverDismissTimer = () => {
+  if (urlHoverDismissTimer !== null) {
+    clearTimeout(urlHoverDismissTimer)
+    urlHoverDismissTimer = null
+  }
+}
+
+const scheduleUrlHoverDismiss = () => {
+  if (urlHoverToolbarPinned.value || urlHoverToolbarHovering) return
+  clearUrlHoverDismissTimer()
+  urlHoverDismissTimer = setTimeout(() => {
+    urlHoverDismissTimer = null
+    if (!urlHoverToolbarHovering && !urlHoverToolbarPinned.value) {
+      urlHoverTarget.value = null
+    }
+  }, URL_HOVER_DISMISS_MS)
+}
+
+const pinUrlHoverToolbar = (durationMs = 3000) => {
+  clearUrlHoverPinTimer()
+  urlHoverToolbarPinned.value = true
+  tuEditorRef.value?.setUrlHoverSuppressed?.(true)
+  urlHoverPinTimer = setTimeout(() => {
+    urlHoverPinTimer = null
+    urlHoverToolbarPinned.value = false
+    tuEditorRef.value?.setUrlHoverSuppressed?.(urlHoverToolbarSuppressed.value)
+    if (!urlHoverToolbarHovering) {
+      urlHoverTarget.value = null
+    }
+  }, durationMs)
+}
+
+const handleUrlHoverChange = (target: UrlHoverTarget | null) => {
+  if (urlHoverToolbarPinned.value && !target) return
+  if (!target) {
+    scheduleUrlHoverDismiss()
+    return
+  }
+  clearUrlHoverDismissTimer()
+  urlHoverTarget.value = target
+}
+
+const handleUrlHoverToolbarEnter = () => {
+  urlHoverToolbarHovering = true
+  clearUrlHoverDismissTimer()
+}
+
+const handleUrlHoverToolbarLeave = () => {
+  urlHoverToolbarHovering = false
+  if (!urlHoverToolbarPinned.value) {
+    scheduleUrlHoverDismiss()
+  }
+}
+
+const handleUrlDisplayModeSelect = async (mode: UrlDisplayMode) => {
+  const target = urlHoverTarget.value
+  if (!target || !tuEditorRef.value) return
+  const updated = await tuEditorRef.value.applyUrlDisplayMode(target, mode)
+  if (!updated) return
+  urlHoverTarget.value = updated
+  registerExternalLinkResource(updated.url, updated.label || updated.url)
+  pinUrlHoverToolbar()
+}
+
+const showUrlHoverAfterInsert = (url: string, label: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  nextTick(() => {
+    const { from, to, empty } = editor.state.selection
+    if (empty) return
+    tuEditorRef.value?.showUrlHoverForInline?.(from, to, url, 'link', label)
+    pinUrlHoverToolbar()
+  })
 }
 
 const handleInsertLinkButtonClick = () => {
@@ -1213,7 +1251,7 @@ const submitLinkPopover = () => {
   editor.chain().focus().setLink({ href: url }).run()
   const excerptText = label.trim() && label.trim() !== url ? label.trim() : undefined
   registerExternalLinkResource(url, label, excerptText)
-  showInsertedLinkToolbar(url, label)
+  showUrlHoverAfterInsert(url, label)
   closeLinkPopover()
 }
 
@@ -1234,26 +1272,6 @@ const registerExternalLinkResource = (url: string, label: string, excerptText?: 
       console.warn('Failed to register external link resource:', error)
       showToast('链接已插入，但外部资源登记失败')
     })
-}
-
-const showInsertedLinkToolbar = (url: string, label: string) => {
-  const display: LinkDisplayMode = isImageUrl(url) ? 'image' : 'link'
-  insertedLinkToolbar.value = {
-    url,
-    label,
-    display,
-    canShowAsImage: isImageUrl(url),
-  }
-  insertedLinkToolbarVisible.value = true
-  updateInsertedLinkToolbarPosition()
-}
-
-const closeInsertedLinkToolbar = () => {
-  insertedLinkToolbarVisible.value = false
-}
-
-const updateInsertedLinkDisplay = (display: LinkDisplayMode) => {
-  insertedLinkToolbar.value.display = display
 }
 
 // --- Paste URL detection ---
@@ -1367,7 +1385,7 @@ const handleSaveAnnotation = (note: string) => {
   }
 
   localAnnotations.value = [...annotations]
-  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+  emitLocalContentChange()
 
   noteEditorVisible.value = false
   editingAnnotation.value = undefined
@@ -1460,18 +1478,33 @@ const getBlockDisplayType = (block: Block | undefined, fallback: string): string
   return block.type || fallback
 }
 
+function findBlockMetaInEditor(blockId: string): { blockType?: string; title?: string } | undefined {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return undefined
+  let found: { blockType?: string; title?: string } | undefined
+  editor.state.doc.descendants((node) => {
+    if (node.attrs?.blockId !== blockId) return true
+    found = {
+      blockType: node.type.name,
+      title: typeof node.attrs.title === 'string' ? node.attrs.title : undefined,
+    }
+    return false
+  })
+  return found
+}
+
 const normalizeSpannedBlockMetadata = (
   blockIds: string[],
   metadata: SpannedBlockInfo[],
 ): SpannedBlockInfo[] => {
   const byId = new Map(metadata.map(item => [item.blockId, item]))
   return blockIds.map((blockId) => {
-    const embed = localEmbeds.value.find(e => e.id === blockId)
+    const fromEditor = findBlockMetaInEditor(blockId)
     const existing = byId.get(blockId)
     return {
       blockId,
-      blockType: embed?.type || existing?.blockType || 'block',
-      title: existing?.title || embed?.title,
+      blockType: existing?.blockType || fromEditor?.blockType || 'block',
+      title: existing?.title || fromEditor?.title,
     }
   })
 }
@@ -1488,7 +1521,7 @@ const handleAnnotationsMapped = (mappedAnnotations: TextAnnotation[]) => {
     })
     if (changed) {
       localAnnotations.value = next
-      emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+      emitLocalContentChange()
     }
   }, 400)
 }
@@ -1530,7 +1563,7 @@ const handleDeleteAnnotation = (annotation?: TextAnnotation) => {
   if (!target) return
 
   localAnnotations.value = localAnnotations.value.filter(a => a.id !== target.id)
-  emitLocalContentChange(localContent.value, localEmbeds.value, localAnnotations.value)
+  emitLocalContentChange()
 
   notePopoverAnnotations.value = notePopoverAnnotations.value.filter(item => item.id !== target.id)
   notePopoverAnnotation.value = notePopoverAnnotations.value[0] ?? null
@@ -1580,6 +1613,8 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  clearUrlHoverPinTimer()
+  clearUrlHoverDismissTimer()
   if (annotationPersistTimer) {
     clearTimeout(annotationPersistTimer)
     annotationPersistTimer = null
@@ -1651,33 +1686,15 @@ onBeforeUnmount(() => {
       </div>
     </form>
 
-    <!-- 插入链接后工具栏 -->
-    <div
-      v-if="insertedLinkToolbarVisible"
-      class="inserted-link-toolbar"
-      :style="{ top: `${insertedLinkToolbarPosition.top}px`, left: `${insertedLinkToolbarPosition.left}px`, zIndex: insertedLinkToolbarPosition.zIndex }"
-      @mousedown.stop
-      @click.stop
-    >
-      <span class="inserted-link-toolbar__url">{{ insertedLinkToolbar.url }}</span>
-      <div class="inserted-link-toolbar__actions">
-        <button
-          type="button"
-          :class="{ active: insertedLinkToolbar.display === 'link' }"
-          @click="updateInsertedLinkDisplay('link')"
-        >
-          显示为链接
-        </button>
-        <button
-          type="button"
-          :disabled="!insertedLinkToolbar.canShowAsImage"
-          :class="{ active: insertedLinkToolbar.display === 'image' }"
-          @click="updateInsertedLinkDisplay('image')"
-        >
-          显示为图片
-        </button>
-      </div>
-    </div>
+    <UrlHoverToolbar
+      :visible="urlHoverToolbarVisible"
+      :target="urlHoverTarget"
+      :suppressed="urlHoverToolbarSuppressed"
+      :pinning="urlHoverToolbarPinned"
+      @select-mode="handleUrlDisplayModeSelect"
+      @mouseenter="handleUrlHoverToolbarEnter"
+      @mouseleave="handleUrlHoverToolbarLeave"
+    />
 
     <section class="page-title-row">
       <input
@@ -1699,10 +1716,10 @@ onBeforeUnmount(() => {
       <div class="content-container">
         <TuEditor
           ref="tuEditorRef"
-          :blocks="localBlocks"
+          :document="localDocument"
           :editable="editable"
           :annotations="editorAnnotations"
-          @update:blocks="handleBlocksChange"
+          @update:document="handleDocumentChange"
           @selection-change="handleSelectionChange"
           @annotation-click="handleAnnotationClick"
           @annotations-mapped="handleAnnotationsMapped"
@@ -1714,6 +1731,7 @@ onBeforeUnmount(() => {
           @mark-block-excerpt="handleMarkBlockExcerpt"
           @set-block-basis="handleSetBlockBasis"
           @heading-source-click="handleHeadingSourceClick"
+          @url-hover-change="handleUrlHoverChange"
         />
       </div>
 

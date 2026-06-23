@@ -40,6 +40,8 @@ export async function getPageContent(pageId: string): Promise<PageContent> {
     embeds: data.embeds || [],
     annotations: data.annotations || [],
     metadata: data.metadata,
+    document: data.document,
+    schemaVersion: data.schemaVersion,
   });
 }
 

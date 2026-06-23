@@ -10,6 +10,14 @@ import {
   parseHeadingFoldComment,
   serializeHeadingFoldComment,
 } from '@/utils/headingSection'
+import {
+  LINK_DISPLAY_COMMENT_RE,
+  URL_EMBED_COMMENT_RE,
+  parseLinkDisplayComment,
+  parseUrlEmbedComment,
+  serializeLinkDisplayComment,
+  serializeUrlEmbedComment,
+} from '@/utils/urlDisplay'
 
 // ─── Embed placeholder regex ───────────────────────────────────────────────
 const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
@@ -70,9 +78,7 @@ export function pageContentToTipTap(pc: PageContent): JSONContent {
 
 /**
  * Convert a Tiptap/ProseMirror document back to PageContent.
- * - Node view nodes (x6Block, tableBlock, etc.) are extracted as EmbeddedObject[]
- *   and replaced with <!--tu:embed...--> placeholders in the markdown content
- * - Rich text nodes are serialized to markdown
+ * @deprecated 主路径已改为 JSON 真源；仅用于 v1 迁移与测试 roundtrip。
  */
 export function tipTapToPageContent(doc: JSONContent): Pick<PageContent, 'content' | 'embeds'> {
   const embeds: EmbeddedObject[] = []
@@ -509,8 +515,48 @@ function parseMarkdown(markdown: string): JSONContent[] {
     let pendingHeadingBlockId: string | undefined
     let pendingHeadingSource: { blockId: string; binding: HeadingSourceBinding } | null = null
     let pendingSectionCollapsed = false
+    let pendingLinkDisplayMode: 'link' | 'title' | null = null
 
     for (const line of innerLines) {
+      const urlEmbedMatch = line.match(URL_EMBED_COMMENT_RE)
+      if (urlEmbedMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n'), pendingLinkDisplayMode),
+          })
+          currentLines = []
+          pendingLinkDisplayMode = null
+        }
+        const parsedEmbed = parseUrlEmbedComment(urlEmbedMatch[1])
+        if (parsedEmbed) {
+          nodes.push({
+            type: 'urlEmbedBlock',
+            attrs: {
+              blockId: parsedEmbed.blockId,
+              url: parsedEmbed.url,
+              height: parsedEmbed.height,
+            },
+          })
+        }
+        continue
+      }
+
+      const linkDisplayMatch = line.match(LINK_DISPLAY_COMMENT_RE)
+      if (linkDisplayMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n'), pendingLinkDisplayMode),
+          })
+          currentLines = []
+        }
+        pendingLinkDisplayMode = parseLinkDisplayComment(linkDisplayMatch[1])
+        continue
+      }
+
       const headingFoldMatch = line.match(HEADING_FOLD_COMMENT_RE)
       if (headingFoldMatch) {
         flushCurrentQuote()
@@ -667,8 +713,9 @@ function parseMarkdown(markdown: string): JSONContent[] {
       } else {
         nodes.push({
           type: 'paragraph',
-          content: text ? parseInlineMarkdown(text) : [],
+          content: text ? parseInlineMarkdown(text, pendingLinkDisplayMode) : [],
         })
+        pendingLinkDisplayMode = null
       }
     }
   }
@@ -678,9 +725,13 @@ function parseMarkdown(markdown: string): JSONContent[] {
 
 // ─── Inline markdown parsing (same as before, no changes needed) ───────────
 
-export function parseInlineMarkdown(text: string): JSONContent[] {
+export function parseInlineMarkdown(
+  text: string,
+  linkDisplayMode: 'link' | 'title' | null = null,
+): JSONContent[] {
   const parts: JSONContent[] = []
   let remaining = text
+  let appliedLinkDisplayMode = false
 
   while (remaining.length > 0) {
     const escapedCharMatch = remaining.match(/^\\([\\*`[\]()~_!#>\-+.])/)
@@ -713,10 +764,15 @@ export function parseInlineMarkdown(text: string): JSONContent[] {
 
     const linkMatch = remaining.match(/^\[(.+?)\]\((.+?)\)/)
     if (linkMatch) {
+      const linkAttrs: Record<string, unknown> = { href: linkMatch[2] }
+      if (linkDisplayMode === 'title' && !appliedLinkDisplayMode) {
+        linkAttrs.displayMode = 'title'
+        appliedLinkDisplayMode = true
+      }
       parts.push({
         type: 'text',
         text: linkMatch[1],
-        marks: [{ type: 'link', attrs: { href: linkMatch[2] } }],
+        marks: [{ type: 'link', attrs: linkAttrs }],
       })
       remaining = remaining.slice(linkMatch[0].length)
       continue
@@ -772,8 +828,24 @@ function nodeToMarkdown(node: JSONContent): string {
       parts.push('#'.repeat(node.attrs?.level || 1) + ' ' + contentToMarkdown(node.content || []))
       return parts.join('\n')
     }
-    case 'paragraph':
-      return contentToMarkdown(node.content || [])
+    case 'paragraph': {
+      const md = contentToMarkdown(node.content || [])
+      const hasTitleLink = (node.content || []).some((item) => (
+        item.type === 'text'
+        && item.marks?.some((mark) => mark.type === 'link' && mark.attrs?.displayMode === 'title')
+      ))
+      if (hasTitleLink) {
+        return `${serializeLinkDisplayComment('title')}\n${md}`
+      }
+      return md
+    }
+    case 'urlEmbedBlock': {
+      const blockId = String(node.attrs?.blockId || '')
+      const url = String(node.attrs?.url || '')
+      const height = Number(node.attrs?.height) || 360
+      if (!blockId || !url) return ''
+      return serializeUrlEmbedComment(blockId, url, height)
+    }
     case 'bulletList':
       return (node.content || []).map((item) => '- ' + contentToMarkdown(item.content || [])).join('\n')
     case 'orderedList':
@@ -805,7 +877,10 @@ function contentToMarkdown(content: JSONContent[]): string {
           if (mark.type === 'bold') text = '**' + text + '**'
           else if (mark.type === 'italic') text = '*' + text + '*'
           else if (mark.type === 'code') text = '`' + text + '`'
-          else if (mark.type === 'link') text = '[' + text + '](' + (mark.attrs?.href || '') + ')'
+          else if (mark.type === 'link') {
+            const href = mark.attrs?.href || ''
+            text = '[' + text + '](' + href + ')'
+          }
           else if (mark.type === 'underline') text = '<u>' + text + '</u>'
           else if (mark.type === 'strike') text = '~~' + text + '~~'
         }

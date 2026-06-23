@@ -229,14 +229,21 @@ export interface EmbeddedObject {
   metadata?: Record<string, unknown>
 }
 
+import type { JSONContent } from '@tiptap/core'
+
 /**
  * 页面级内容模型 — 取代 Block[]。
- * - content: 整页富文本，一段连续 markdown，嵌入对象用占位符标记位置
- * - embeds: 非文本嵌入对象
+ * - document (schemaVersion 2+): Tiptap doc JSON，含 x6Block 等嵌入节点
+ * - content/embeds: v1 兼容；v2 文档页保存时置空
  * - annotations: 页面级别划选标注
  */
 export interface PageContent {
+  /** Tiptap ProseMirror document（schemaVersion 2+ 真源） */
+  document?: JSONContent
+  schemaVersion?: number
+  /** @deprecated v1 markdown；v2 文档页为空 */
   content: string
+  /** @deprecated v1 旁路嵌入；v2 文档页为空（嵌入在 document 内） */
   embeds: EmbeddedObject[]
   annotations: TextAnnotation[]
   metadata?: Record<string, unknown>

@@ -2,37 +2,22 @@
 import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide, inject, type ComputedRef } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import StarterKit from '@tiptap/starter-kit'
-import Image from '@tiptap/extension-image'
-import Link from '@tiptap/extension-link'
-import Highlight from '@tiptap/extension-highlight'
-import Placeholder from '@tiptap/extension-placeholder'
-import Underline from '@tiptap/extension-underline'
-import TextAlign from '@tiptap/extension-text-align'
-import TaskList from '@tiptap/extension-task-list'
-import TaskItem from '@tiptap/extension-task-item'
 import type { Block, HeadingSourceBinding, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import type { JSONContent } from '@tiptap/core'
 import { uploadFile } from '@/api/fileStorage'
 import {
-  AnnotationDecorations,
   annotationDecorationsKey,
-  BlockActions,
-  SelectionDecorations,
-  SlashCommand,
-  X6BlockNode,
-  TimelineBlockNode,
-  RefBlockNode,
-  ExternalResourceBlockNode,
-  SpacerBlockNode,
-  TableBlockNode,
-  MultiTableBlockNode,
-  ParagraphNode,
-  HeadingNode,
-  HeadingSourceDecorations,
-  HeadingSectionFold,
   blocksToTipTap,
   tipTapToBlocks,
+  getTuEditorExtensions,
+  getTuEditorSchemaExtensions,
 } from '@/editor'
+import {
+  findClipboardImageFileOnly,
+  insertHtmlFromClipboard,
+  sanitizePastedHtml,
+} from '@/editor/pasteHtmlContent'
+import { resolveClipboardHtmlSource } from '@/editor/extensions/HtmlInlineRender'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
 import { createMindmapStarterGraphData } from '@/components/x6'
@@ -44,23 +29,41 @@ import { getSectionFoldRevision } from '@/stores/sectionFoldSession'
 import { useWorkspaceStore } from '@/stores/workspace'
 import HoverHandle from './HoverHandle.vue'
 import HeadingSectionFoldGutter from './HeadingSectionFoldGutter.vue'
+import { fetchResourcePageTitle } from '@/api/externalResource'
+import {
+  createUrlEmbedBlockId,
+  fallbackPageTitleFromUrl,
+  type UrlDisplayMode,
+} from '@/utils/urlDisplay'
+import {
+  resolveUrlHoverTarget,
+  urlHoverTargetsEqual,
+  type UrlHoverTarget,
+} from '@/editor/urlHoverTarget'
 
 interface Props {
-  blocks: Block[]
+  /** Tiptap document JSON（schema v2 主路径） */
+  document?: JSONContent | null
+  /** @deprecated 使用 document 替代 */
+  blocks?: Block[]
   editable?: boolean
   annotations?: Record<string, TextAnnotation[]>
   hoverHandle?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  document: null,
+  blocks: () => [],
   editable: true,
   annotations: () => ({}),
   hoverHandle: true,
 })
 
 const emit = defineEmits<{
+  'update:document': [document: JSONContent]
+  'content-change': [document: JSONContent]
+  /** @deprecated */
   'update:blocks': [blocks: Block[]]
-  'content-change': [blocks: Block[]]
   'selection-change': [hasSelection: boolean, text: string, from?: number, to?: number, blockId?: string, spannedBlockIds?: string[], spannedBlockMetadata?: SpannedBlockInfo[]]
   'selection-pointer-change': [active: boolean]
   'annotation-click': [payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }]
@@ -73,6 +76,7 @@ const emit = defineEmits<{
   'heading-source-click': [binding: HeadingSourceBinding]
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
+  'url-hover-change': [target: UrlHoverTarget | null]
 }>()
 
 type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
@@ -97,6 +101,10 @@ let pendingRefInsertPos: number | null = null
 let pendingExternalResourceInsertPos: number | null = null
 let selectionPointerDown = false
 let lastDocSignature = ''
+let urlHoverTimer: ReturnType<typeof setTimeout> | null = null
+let urlHoverClearTimer: ReturnType<typeof setTimeout> | null = null
+let lastUrlHoverTarget: UrlHoverTarget | null = null
+let urlHoverSuppressed = false
 
 // --- Hover Handle ---
 const LINE_NODE_TYPES = ['paragraph', 'heading', 'list_item', 'blockquote', 'bullet_list', 'ordered_list', 'task_list', 'task_item']
@@ -305,11 +313,12 @@ function deleteLassoSelected() {
     debounceTimer = null
   }
   if (isMounted && editor.value) {
-    const json = editor.value.getJSON()
-    const blocks = tipTapToBlocks(json, props.blocks)
-    skipNextContentSync = true
-    emit('update:blocks', blocks)
-    emit('content-change', blocks)
+    if (debounceTimer) {
+      clearTimeout(debounceTimer)
+      debounceTimer = null
+    }
+    lastDocSignature = getDocSignature()
+    emitEditorContent()
   }
 }
 
@@ -379,6 +388,53 @@ const getDocSignature = (): string => {
   return JSON.stringify(editor.value.getJSON())
 }
 
+function resolveEditorContent(): JSONContent {
+  if (props.document?.type === 'doc') {
+    return props.document
+  }
+  return blocksToTipTap(props.blocks ?? [])
+}
+
+function emitEditorContent() {
+  if (!editor.value) return
+  const json = editor.value.getJSON()
+  skipNextContentSync = true
+  emit('update:document', json)
+  emit('content-change', json)
+  if ((props.blocks?.length ?? 0) > 0) {
+    emit('update:blocks', tipTapToBlocks(json, props.blocks))
+  }
+}
+
+function applyExternalDocument(nextDoc: JSONContent) {
+  if (!editor.value) return
+  isInternalUpdate = true
+  try {
+    const liveDocJson = editor.value.getJSON()
+    if (JSON.stringify(nextDoc) === JSON.stringify(liveDocJson)) {
+      lastDocSignature = JSON.stringify(liveDocJson)
+      return
+    }
+    const prevSelection = editor.value.state.selection
+    const wasFocused = editor.value.isFocused
+    editor.value.commands.setContent(nextDoc, { emitUpdate: false })
+    const docSize = editor.value.state.doc.content.size
+    const from = Math.min(prevSelection.from, docSize)
+    const to = Math.min(prevSelection.to, docSize)
+    if (from <= docSize && to <= docSize && from >= 0) {
+      try {
+        editor.value.commands.setTextSelection({ from, to })
+      } catch {
+        // ignore invalid selection after rebuild
+      }
+    }
+    if (wasFocused) editor.value.commands.focus(undefined, { scrollIntoView: false })
+    lastDocSignature = JSON.stringify(nextDoc)
+  } finally {
+    isInternalUpdate = false
+  }
+}
+
 const flushContentChange = () => {
   if (debounceTimer) {
     clearTimeout(debounceTimer)
@@ -386,11 +442,7 @@ const flushContentChange = () => {
   }
   if (!isMounted || !editor.value) return
   lastDocSignature = getDocSignature()
-  const json = editor.value.getJSON()
-  const blocks = tipTapToBlocks(json, props.blocks)
-  skipNextContentSync = true
-  emit('update:blocks', blocks)
-  emit('content-change', blocks)
+  emitEditorContent()
 }
 
 provide('flushEditorContentChange', flushContentChange)
@@ -800,127 +852,104 @@ const selectSlashOption = (option: InsertOption) => {
 let currentSlashRange: { from: number; to: number } | null = null
 
 function findClipboardImageFile(clipboard: DataTransfer | null): File | null {
-  if (!clipboard) return null
-  const fromFiles = Array.from(clipboard.files).find((file) => file.type.startsWith('image/'))
-  if (fromFiles) return fromFiles
-  for (const item of Array.from(clipboard.items ?? [])) {
-    if (!item.type.startsWith('image/')) continue
-    const file = item.getAsFile()
-    if (file) return file
-  }
-  return null
+  return findClipboardImageFileOnly(clipboard)
 }
 
 const editor = useEditor({
-  content: blocksToTipTap(props.blocks),
+  content: resolveEditorContent(),
   editable: props.editable,
   autofocus: false,
-  extensions: [
-    StarterKit.configure({
-      heading: false,
-      paragraph: false,
-      codeBlock: false,
-    }),
-    HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
-    Image.configure({ inline: false }),
-    Link.configure({ openOnClick: false }),
-    Highlight.configure({ multicolor: true }),
-    Underline,
-    TaskList,
-    TaskItem.configure({ nested: true }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
-    Placeholder.configure({
-      placeholder: '输入 / 查看更多选项...',
-    }),
-    AnnotationDecorations.configure({
-      annotations: flattenedAnnotations.value,
-      onAnnotationClick: (payload) => emit('annotation-click', payload),
-      onAnnotationsMapped: (annotations) => emit('annotations-mapped', annotations),
-    }),
-    HeadingSourceDecorations.configure({
-      onSourceClick: (binding) => emit('heading-source-click', binding),
-    }),
-    HeadingSectionFold.configure({
-      getTocContext: () => tocCollectContext?.value ?? null,
-      getFoldRevision: () => getSectionFoldRevision(),
-    }),
-    SelectionDecorations,
-    BlockActions,
-    SlashCommand.configure({
-      suggestion: {
-        items: ({ query }: { query: string }) => {
-          const keyword = query.trim().toLowerCase()
-          if (!keyword) return insertOptions
-          return insertOptions.filter((option) => (
-            option.label.toLowerCase().includes(keyword)
-            || option.key.includes(keyword)
-            || option.keywords.some((item) => item.includes(keyword))
-          ))
+  extensions: getTuEditorExtensions({
+    annotations: flattenedAnnotations.value,
+    onAnnotationClick: (payload) => emit('annotation-click', payload),
+    onAnnotationsMapped: (annotations) => emit('annotations-mapped', annotations),
+    onHeadingSourceClick: (binding) => emit('heading-source-click', binding),
+    getTocContext: () => tocCollectContext?.value ?? null,
+    getFoldRevision: () => getSectionFoldRevision(),
+    getSchemaExtensions: () => getTuEditorSchemaExtensions(),
+    insertOptions,
+    slashSuggestion: {
+      items: ({ query }: { query: string }) => {
+        const keyword = query.trim().toLowerCase()
+        if (!keyword) return insertOptions
+        return insertOptions.filter((option) => (
+          option.label.toLowerCase().includes(keyword)
+          || option.key.includes(keyword)
+          || option.keywords.some((item) => item.includes(keyword))
+        ))
+      },
+      render: () => ({
+        onStart: (props: any) => {
+          currentSlashRange = props.range
+          slashQuery.value = props.query ?? ''
+          slashMenuVisible.value = true
+          getSlashClientRect(props)
         },
-        render: () => ({
-          onStart: (props: any) => {
-            currentSlashRange = props.range
-            slashQuery.value = props.query ?? ''
-            slashMenuVisible.value = true
-            getSlashClientRect(props)
-          },
-          onUpdate: (props: any) => {
-            currentSlashRange = props.range
-            slashQuery.value = props.query ?? ''
-            slashMenuVisible.value = true
-            getSlashClientRect(props)
-          },
-          onKeyDown: (props: any) => {
-            if (props.event.key === 'Escape') {
-              slashMenuVisible.value = false
-              slashQuery.value = ''
-              currentSlashRange = null
-              return true
-            }
-            if (props.event.key === 'Enter' && filteredSlashOptions.value[0]) {
-              selectSlashOption(filteredSlashOptions.value[0])
-              return true
-            }
-            return false
-          },
-          onExit: () => {
+        onUpdate: (props: any) => {
+          currentSlashRange = props.range
+          slashQuery.value = props.query ?? ''
+          slashMenuVisible.value = true
+          getSlashClientRect(props)
+        },
+        onKeyDown: (props: any) => {
+          if (props.event.key === 'Escape') {
             slashMenuVisible.value = false
             slashQuery.value = ''
             currentSlashRange = null
-          },
-        }),
-      },
-    }),
-    X6BlockNode,
-    TimelineBlockNode,
-    RefBlockNode,
-    ExternalResourceBlockNode,
-    SpacerBlockNode,
-    TableBlockNode,
-    MultiTableBlockNode,
-    ParagraphNode,
-  ],
+            return true
+          }
+          if (props.event.key === 'Enter' && filteredSlashOptions.value[0]) {
+            selectSlashOption(filteredSlashOptions.value[0])
+            return true
+          }
+          return false
+        },
+        onExit: () => {
+          slashMenuVisible.value = false
+          slashQuery.value = ''
+          currentSlashRange = null
+        },
+      }),
+    },
+  }),
   editorProps: {
     attributes: {
       class: 'tu-editor-content',
       spellcheck: 'false',
     },
+    transformPastedHTML(html) {
+      return sanitizePastedHtml(html)
+    },
     handlePaste: (_view, event) => {
-      if (!props.editable) return false
-      const imageFile = findClipboardImageFile(event.clipboardData)
-      if (!imageFile) return false
+      if (!props.editable || !editor.value) return false
 
-      event.preventDefault()
-      void uploadFile(imageFile)
-        .then((result) => {
-          if (result.url) {
-            editor.value?.chain().focus().setImage({ src: result.url }).run()
-          }
-        })
-        .catch((error: unknown) => {
-          console.error('[TuEditor] image upload failed', error)
-        })
-      return true
+      const html = event.clipboardData?.getData('text/html') ?? ''
+      const plain = event.clipboardData?.getData('text/plain') ?? ''
+      if (html.trim() || (plain.trim() && /<[a-z][\s\S]*>/i.test(plain))) {
+        const sourceHtml = html.trim()
+          ? resolveClipboardHtmlSource(html, plain)
+          : plain.trim()
+        const handled = insertHtmlFromClipboard(editor.value, sourceHtml, getTuEditorSchemaExtensions())
+        if (handled) {
+          return true
+        }
+        return false
+      }
+
+      const imageFile = findClipboardImageFile(event.clipboardData)
+      if (imageFile) {
+        void uploadFile(imageFile)
+          .then((result) => {
+            if (result.url) {
+              editor.value?.chain().focus().setImage({ src: result.url }).run()
+            }
+          })
+          .catch((error: unknown) => {
+            console.error('[TuEditor] image upload failed', error)
+          })
+        return true
+      }
+      return false
     },
     handleKeyDown: (view, event) => {
       if ((event.key === 'Delete' || event.key === 'Backspace') && lassoSelectedBlockIds.value.size > 0) {
@@ -934,7 +963,9 @@ const editor = useEditor({
     isInternalUpdate = false
     if (editor.value) {
       editor.value.view.dom.addEventListener('mousemove', handleEditorMouseMove)
+      editor.value.view.dom.addEventListener('mousemove', handleEditorUrlMouseMove)
       editor.value.view.dom.addEventListener('mouseleave', handleEditorMouseLeave)
+      editor.value.view.dom.addEventListener('mouseleave', handleEditorUrlMouseLeave)
       editor.value.view.dom.addEventListener('mousedown', handleEditorMouseDown)
       document.addEventListener('mouseup', handleDocumentMouseUp, true)
       document.addEventListener('keydown', handleDocumentKeyDown)
@@ -961,11 +992,7 @@ const editor = useEditor({
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
       if (!isMounted || !editor.value) return
-      const json = editor.value.getJSON()
-      const blocks = tipTapToBlocks(json, props.blocks)
-      skipNextContentSync = true
-      emit('update:blocks', blocks)
-      emit('content-change', blocks)
+      emitEditorContent()
     }, 300)
   },
   onSelectionUpdate: () => {
@@ -979,9 +1006,24 @@ const editor = useEditor({
 })
 
 watch(
+  () => props.document,
+  (newDoc, oldDoc) => {
+    if (!editor.value) return
+    if (newDoc === oldDoc) return
+    if (!newDoc || newDoc.type !== 'doc') return
+    if (skipNextContentSync) {
+      skipNextContentSync = false
+      return
+    }
+    applyExternalDocument(newDoc)
+  },
+)
+
+watch(
   () => props.blocks,
   (newBlocks, oldBlocks) => {
     if (!editor.value) return
+    if (props.document?.type === 'doc') return
     if (newBlocks === oldBlocks) return
     // If the change originated from our own emit, skip redundant setContent
     // (the editor already has the correct content)
@@ -1075,7 +1117,9 @@ onBeforeUnmount(() => {
       const view = (editor.value as any).view
       if (view) {
         view.dom.removeEventListener('mousemove', handleEditorMouseMove)
+        view.dom.removeEventListener('mousemove', handleEditorUrlMouseMove)
         view.dom.removeEventListener('mouseleave', handleEditorMouseLeave)
+        view.dom.removeEventListener('mouseleave', handleEditorUrlMouseLeave)
         view.dom.removeEventListener('mousedown', handleEditorMouseDown)
         document.removeEventListener('mouseup', handleDocumentMouseUp, true)
         document.removeEventListener('keydown', handleDocumentKeyDown)
@@ -1095,6 +1139,205 @@ function findBlockPos(doc: any, blockId: string): number | null {
     return true
   })
   return pos
+}
+
+function clearUrlHoverTimer() {
+  if (urlHoverTimer !== null) {
+    clearTimeout(urlHoverTimer)
+    urlHoverTimer = null
+  }
+}
+
+function clearUrlHoverClearTimer() {
+  if (urlHoverClearTimer !== null) {
+    clearTimeout(urlHoverClearTimer)
+    urlHoverClearTimer = null
+  }
+}
+
+function emitUrlHoverTarget(target: UrlHoverTarget | null) {
+  if (urlHoverTargetsEqual(lastUrlHoverTarget, target)) return
+  lastUrlHoverTarget = target
+  emit('url-hover-change', target)
+}
+
+function handleEditorUrlMouseMove(event: MouseEvent) {
+  if (!props.editable || !editor.value || urlHoverSuppressed) return
+  const resolved = resolveUrlHoverTarget(editor.value, event)
+  if (!resolved) {
+    clearUrlHoverTimer()
+    if (!urlHoverClearTimer) {
+      urlHoverClearTimer = setTimeout(() => {
+        urlHoverClearTimer = null
+        emitUrlHoverTarget(null)
+      }, 200)
+    }
+    return
+  }
+
+  clearUrlHoverClearTimer()
+  if (urlHoverTargetsEqual(lastUrlHoverTarget, resolved)) return
+
+  clearUrlHoverTimer()
+  urlHoverTimer = setTimeout(() => {
+    urlHoverTimer = null
+    emitUrlHoverTarget(resolved)
+  }, 300)
+}
+
+function handleEditorUrlMouseLeave() {
+  clearUrlHoverTimer()
+  if (urlHoverClearTimer !== null) return
+  urlHoverClearTimer = setTimeout(() => {
+    urlHoverClearTimer = null
+    emitUrlHoverTarget(null)
+  }, 280)
+}
+
+function setUrlHoverSuppressed(value: boolean) {
+  urlHoverSuppressed = value
+  if (value) {
+    clearUrlHoverTimer()
+    clearUrlHoverClearTimer()
+    emitUrlHoverTarget(null)
+  }
+}
+
+async function resolvePageTitle(url: string): Promise<string> {
+  try {
+    const title = await fetchResourcePageTitle(url)
+    if (title?.trim()) return title.trim()
+  } catch {
+    // ignore
+  }
+  return fallbackPageTitleFromUrl(url)
+}
+
+function buildInlineHoverTarget(
+  ed: NonNullable<typeof editor.value>,
+  from: number,
+  to: number,
+  url: string,
+  displayMode: UrlDisplayMode,
+  label?: string,
+): UrlHoverTarget | null {
+  try {
+    const start = ed.view.coordsAtPos(from)
+    const end = ed.view.coordsAtPos(to)
+    const left = Math.min(start.left, end.left)
+    const right = Math.max(start.right, end.right)
+    const top = Math.min(start.top, end.top)
+    const bottom = Math.max(start.bottom, end.bottom)
+    return {
+      kind: 'inline',
+      url,
+      displayMode: displayMode === 'title' ? 'title' : 'link',
+      from,
+      to,
+      label: label ?? ed.state.doc.textBetween(from, to, ''),
+      anchorRect: new DOMRect(left, top, right - left, bottom - top),
+    }
+  } catch {
+    return null
+  }
+}
+
+function buildIframeHoverTarget(
+  ed: NonNullable<typeof editor.value>,
+  blockId: string,
+  url: string,
+): UrlHoverTarget | null {
+  const pos = findBlockPos(ed.state.doc, blockId)
+  if (pos === null) return null
+  const dom = ed.view.nodeDOM(pos)
+  if (!(dom instanceof HTMLElement)) return null
+  const root = dom.querySelector('.url-embed-block-nv') as HTMLElement | null || dom
+  return {
+    kind: 'iframe',
+    url,
+    displayMode: 'iframe',
+    from: 0,
+    to: 0,
+    blockId,
+    anchorRect: root.getBoundingClientRect(),
+  }
+}
+
+async function applyUrlDisplayMode(
+  target: UrlHoverTarget,
+  mode: UrlDisplayMode,
+): Promise<UrlHoverTarget | null> {
+  const ed = editor.value
+  if (!ed || !props.editable) return null
+
+  if (mode === 'iframe') {
+    if (target.kind === 'iframe') return target
+    const blockId = createUrlEmbedBlockId()
+    ed.chain().focus()
+      .deleteRange({ from: target.from, to: target.to })
+      .insertContentAt(target.from, {
+        type: 'urlEmbedBlock',
+        attrs: { blockId, url: target.url, height: 360 },
+      })
+      .run()
+    flushContentChange()
+    return buildIframeHoverTarget(ed, blockId, target.url)
+  }
+
+  if (target.kind === 'iframe') {
+    if (!target.blockId) return null
+    const pos = findBlockPos(ed.state.doc, target.blockId)
+    if (pos === null) return null
+    const node = ed.state.doc.nodeAt(pos)
+    if (!node) return null
+    const titleText = mode === 'title'
+      ? await resolvePageTitle(target.url)
+      : target.url
+    ed.chain().focus()
+      .deleteRange({ from: pos, to: pos + node.nodeSize })
+      .insertContentAt(pos, {
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text: titleText,
+          marks: [{
+            type: 'link',
+            attrs: {
+              href: target.url,
+              displayMode: mode === 'title' ? 'title' : 'link',
+            },
+          }],
+        }],
+      })
+      .run()
+    flushContentChange()
+    const from = pos + 1
+    const to = from + titleText.length
+    return buildInlineHoverTarget(ed, from, to, target.url, mode, titleText)
+  }
+
+  const titleText = mode === 'title'
+    ? await resolvePageTitle(target.url)
+    : target.url
+
+  ed.chain().focus()
+    .deleteRange({ from: target.from, to: target.to })
+    .insertContentAt(target.from, {
+      type: 'text',
+      text: titleText,
+      marks: [{
+        type: 'link',
+        attrs: {
+          href: target.url,
+          displayMode: mode === 'title' ? 'title' : 'link',
+        },
+      }],
+    })
+    .run()
+  flushContentChange()
+  const from = target.from
+  const to = from + titleText.length
+  return buildInlineHoverTarget(ed, from, to, target.url, mode, titleText)
 }
 
 function duplicateBlock(blockId: string) {
@@ -1213,6 +1456,14 @@ defineExpose({
     }).run()
     return true
   },
+  applyUrlDisplayMode,
+  setUrlHoverSuppressed,
+  showUrlHoverForInline: (from: number, to: number, url: string, displayMode: UrlDisplayMode = 'link', label?: string) => {
+    const ed = editor.value
+    if (!ed) return
+    const target = buildInlineHoverTarget(ed, from, to, url, displayMode, label)
+    if (target) emitUrlHoverTarget(target)
+  },
 })
 </script>
 
@@ -1283,6 +1534,27 @@ defineExpose({
 
 .tu-editor-wrapper :deep(.tu-editor-content p) {
   margin: 0.5em 0;
+}
+
+/* Global reset in base.css sets * { font-weight: normal } — restore rich-text marks */
+.tu-editor-wrapper :deep(.tu-editor-content strong),
+.tu-editor-wrapper :deep(.tu-editor-content b) {
+  font-weight: 700;
+}
+
+.tu-editor-wrapper :deep(.tu-editor-content em),
+.tu-editor-wrapper :deep(.tu-editor-content i) {
+  font-style: italic;
+}
+
+.tu-editor-wrapper :deep(.tu-editor-content u) {
+  text-decoration: underline;
+}
+
+.tu-editor-wrapper :deep(.tu-editor-content s),
+.tu-editor-wrapper :deep(.tu-editor-content strike),
+.tu-editor-wrapper :deep(.tu-editor-content del) {
+  text-decoration: line-through;
 }
 
 .tu-editor-wrapper :deep(.tu-editor-content h1),

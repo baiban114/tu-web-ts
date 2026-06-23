@@ -1,4 +1,4 @@
-import { onBeforeUnmount, reactive, ref, watch, type Ref } from 'vue'
+import { onBeforeUnmount, reactive, ref, unref, watch, type MaybeRef, type Ref } from 'vue'
 
 export type FloatingPlacement = 'top' | 'right' | 'below'
 
@@ -24,9 +24,9 @@ export interface AnchoredFloatingOptions {
   offset?: number
   zIndex?: number
   /** 预估浮层宽度，用于视口内定位 */
-  floatingWidth?: number
+  floatingWidth?: MaybeRef<number>
   /** 预估浮层高度，用于视口内定位 */
-  floatingHeight?: number
+  floatingHeight?: MaybeRef<number>
   viewportPadding?: number
 }
 
@@ -89,8 +89,8 @@ export function useAnchoredFloating(options: AnchoredFloatingOptions) {
     }
     const offset = options.offset ?? 10
     const padding = options.viewportPadding ?? DEFAULT_VIEWPORT_PADDING
-    const floatWidth = options.floatingWidth ?? 0
-    const floatHeight = options.floatingHeight ?? 0
+    const floatWidth = unref(options.floatingWidth) ?? 0
+    const floatHeight = unref(options.floatingHeight) ?? 0
 
     const placement = options.placement ?? 'top'
 
