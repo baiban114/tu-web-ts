@@ -238,6 +238,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', handlePageDeleteKeydown, true);
+  document.removeEventListener('click', closeContextMenu);
+  document.removeEventListener('keydown', closeContextMenuOnEscape);
 });
 
 async function onSelectKb(kbId: string) {
@@ -295,6 +297,23 @@ function onNodeContextMenu(event: Event, data: unknown) {
 function closeContextMenu() {
   contextMenu.value.visible = false;
 }
+
+function closeContextMenuOnEscape(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeContextMenu();
+}
+
+watch(
+  () => contextMenu.value.visible,
+  (visible) => {
+    if (visible) {
+      document.addEventListener('click', closeContextMenu);
+      document.addEventListener('keydown', closeContextMenuOnEscape);
+    } else {
+      document.removeEventListener('click', closeContextMenu);
+      document.removeEventListener('keydown', closeContextMenuOnEscape);
+    }
+  },
+);
 
 function onNodeClick(data: PageItem, _node: unknown, _instance: unknown, event: MouseEvent) {
   const multi = event.ctrlKey || event.metaKey;
@@ -391,10 +410,6 @@ async function onNodeDrop(draggingNode: any, dropNode: any, dropType: 'before' |
   await store.reorderPage(dragging.id, newParentId, 0);
 }
 
-function onDocumentClick() {
-  closeContextMenu();
-}
-
 function expandAllTree() {
   const nodesMap = treeRef.value?.store?.nodesMap
   if (!nodesMap) return
@@ -421,7 +436,7 @@ function collapseAllTree() {
 </script>
 
 <template>
-  <div class="left-panel" @click="onDocumentClick">
+  <div class="left-panel">
     <AuthPanel />
 
     <div class="search-section">
@@ -597,6 +612,7 @@ function collapseAllTree() {
         v-if="contextMenu.visible && contextMenu.node"
         class="context-menu"
         :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        @mousedown.stop
         @click.stop
       >
         <div class="context-menu-item" @click="onCreateChild(contextMenu.node!.id, 'document')">

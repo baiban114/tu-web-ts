@@ -1,10 +1,13 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import type { BlockTag } from '@/api/types'
 import type { TocTreeItem } from '@/utils/toc/headings'
 import { headingSourceBadgeLabel } from '@/utils/headingSource'
 
-defineProps<{
+const props = defineProps<{
   items: TocTreeItem[]
   highlightedBlockId: string | null
+  sectionTagsByItemId?: Record<string, BlockTag[]>
   isExpanded: (item: TocTreeItem) => boolean
 }>()
 
@@ -14,6 +17,8 @@ const emit = defineEmits<{
   'context-menu': [item: TocTreeItem, event: MouseEvent]
   'source-click': [item: TocTreeItem]
 }>()
+
+const sectionTagsMap = computed(() => props.sectionTagsByItemId ?? {})
 
 const onItemClick = (item: TocTreeItem) => {
   emit('click', item)
@@ -40,6 +45,15 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
     : `page-toc__item--level-${item.level}`,
   { 'page-toc__item--active': highlightedBlockId === item.blockId },
 ]
+
+function visibleSectionTags(item: TocTreeItem): BlockTag[] {
+  return sectionTagsMap.value[item.id] ?? []
+}
+
+function extraSectionTagCount(item: TocTreeItem): number {
+  const total = visibleSectionTags(item).length
+  return total > 2 ? total - 2 : 0
+}
 </script>
 
 <template>
@@ -61,6 +75,19 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
           {{ isExpanded(item) ? '▼' : '▶' }}
         </span>
         <span class="page-toc__text">{{ item.text }}</span>
+        <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
+          <span
+            v-for="tag in visibleSectionTags(item).slice(0, 2)"
+            :key="tag.id"
+            class="page-toc__tag-chip"
+            :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
+          >
+            {{ tag.label }}
+          </span>
+          <span v-if="extraSectionTagCount(item) > 0" class="page-toc__tag-more">
+            +{{ extraSectionTagCount(item) }}
+          </span>
+        </span>
         <button
           v-if="item.sourceBinding"
           type="button"
@@ -78,6 +105,7 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
         <TocTreeList
           :items="item.children"
           :highlighted-block-id="highlightedBlockId"
+          :section-tags-by-item-id="sectionTagsMap"
           :is-expanded="isExpanded"
           @click="emit('click', $event)"
           @toggle="emit('toggle', $event)"
@@ -96,8 +124,22 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
           [`page-toc__item--level-${item.level}`]: true,
         }"
         @click="onItemClick(item)"
+        @contextmenu="onContextMenu(item, $event)"
       >
         <span class="page-toc__text">{{ item.text }}</span>
+        <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
+          <span
+            v-for="tag in visibleSectionTags(item).slice(0, 2)"
+            :key="tag.id"
+            class="page-toc__tag-chip"
+            :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
+          >
+            {{ tag.label }}
+          </span>
+          <span v-if="extraSectionTagCount(item) > 0" class="page-toc__tag-more">
+            +{{ extraSectionTagCount(item) }}
+          </span>
+        </span>
       </button>
     </div>
 
@@ -113,6 +155,19 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
       @contextmenu="onContextMenu(item, $event)"
     >
       <span class="page-toc__text">{{ item.text }}</span>
+      <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
+        <span
+          v-for="tag in visibleSectionTags(item).slice(0, 2)"
+          :key="tag.id"
+          class="page-toc__tag-chip"
+          :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
+        >
+          {{ tag.label }}
+        </span>
+        <span v-if="extraSectionTagCount(item) > 0" class="page-toc__tag-more">
+          +{{ extraSectionTagCount(item) }}
+        </span>
+      </span>
       <span
         v-if="item.sourceBinding"
         class="page-toc__source"
@@ -150,5 +205,36 @@ export default {
 
 .page-toc__source:hover {
   background: #dbeafe;
+}
+
+.page-toc__tags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.page-toc__tag-chip {
+  --tag-chip-color: #1677ff;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--tag-chip-color) 30%, white);
+  background: color-mix(in srgb, var(--tag-chip-color) 12%, white);
+  color: color-mix(in srgb, var(--tag-chip-color) 85%, black);
+  padding: 0 6px;
+  font-size: 10px;
+  line-height: 1.6;
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.page-toc__tag-more {
+  font-size: 10px;
+  color: #6b7280;
+  line-height: 1.6;
 }
 </style>

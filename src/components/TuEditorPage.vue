@@ -12,6 +12,7 @@ import UrlHoverToolbar from './UrlHoverToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
+import PageTagsBar from './PageTagsBar.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
@@ -19,7 +20,18 @@ import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
-import { collectBlockTags, getBlockTags, setBlockTags } from '@/utils/blockMetadata'
+import { normalizeBlockTags } from '@/utils/blockMetadata'
+import { getPageTags } from '@/utils/pageMetadata'
+import {
+  buildSectionTagsByEntryId,
+  collectSectionTagsFromMetadata,
+  getSectionTagKey,
+  getSectionTags,
+  pruneOrphanSectionTags,
+  setSectionTagsInMetadata,
+} from '@/utils/sectionMetadata'
+import { collectAvailableTags, fetchKbTagPool } from '@/utils/tagPool'
+import { createHeadingBlockId } from '@/utils/headingSource'
 import { registerExternalUrlFromPaste } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
@@ -29,9 +41,11 @@ import { clearSectionFoldSession } from '@/stores/sectionFoldSession'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import {
   buildHeadingTree,
+  type FlatTocEntry,
   type TocTreeItem,
 } from '@/utils/toc/headings'
 import { collectFlatTocEntries, type TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import { resolveRefGroupSectionEntry, resolveSectionEntryAtEditor } from '@/utils/sectionTocResolve'
 import { getBlockExcerptContent, getTocEntryExcerptContent, collectBasisBlockIds, collectTocEntryBasisBlockIds } from '@/utils/blockExcerptContent'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
@@ -313,6 +327,7 @@ const emit = defineEmits<{
 // --- Core state ---
 const localDocument = ref<JSONContent | null>(null)
 const localAnnotations = ref<TextAnnotation[]>([])
+const localPageMetadata = ref<Record<string, unknown>>({})
 const pageTitleDraft = ref('')
 const pageTitleEditing = ref(false)
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
@@ -416,8 +431,17 @@ let urlHoverToolbarHovering = false
 const urlHoverToolbarVisible = computed(() => Boolean(urlHoverTarget.value))
 
 // --- Tag editor ---
-const tagEditorState = ref({ visible: false, blockId: '', top: 0, left: 0 })
+type TagEditorScope = 'page' | 'block' | 'section'
+const tagEditorState = ref({
+  visible: false,
+  scope: 'page' as TagEditorScope,
+  blockId: '',
+  sectionKey: '',
+  top: 0,
+  left: 0,
+})
 const tagEditorBlockTags = ref<BlockTag[]>([])
+const kbTagPool = ref<BlockTag[]>([])
 
 // --- Note / Annotation ---
 const noteEditorVisible = ref(false)
@@ -489,9 +513,51 @@ const emitLocalContentChange = () => {
   emit('content-change', toV2PageContent(
     localDocument.value,
     localAnnotations.value,
-    props.contentList.metadata,
+    localPageMetadata.value,
   ))
 }
+
+const pageTags = computed(() => getPageTags({
+  content: '',
+  embeds: [],
+  annotations: localAnnotations.value,
+  metadata: localPageMetadata.value,
+}))
+
+const tagEditorTitle = computed(() => {
+  if (tagEditorState.value.scope === 'page') return '编辑页面标签'
+  if (tagEditorState.value.scope === 'section') return '编辑节标签'
+  return '编辑块标签'
+})
+
+const currentSectionTags = computed(() => collectSectionTagsFromMetadata(localPageMetadata.value))
+
+const sectionTagsByItemId = computed(() => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return {} as Record<string, BlockTag[]>
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  return buildSectionTagsByEntryId(flat, localPageMetadata.value)
+})
+
+const availableTags = computed(() => collectAvailableTags(
+  localBlocks.value,
+  pageTags.value,
+  [kbTagPool.value],
+  currentSectionTags.value,
+))
+
+async function refreshKbTagPool() {
+  const kbId = workspaceStore.currentKbId
+  kbTagPool.value = await fetchKbTagPool(kbId)
+}
+
+watch(
+  () => workspaceStore.currentKbId,
+  () => {
+    void refreshKbTagPool()
+  },
+  { immediate: true },
+)
 
 watch(
   () => props.contentList,
@@ -503,6 +569,7 @@ watch(
       localDocument.value = val.document
     }
     localAnnotations.value = val.annotations ?? []
+    localPageMetadata.value = { ...(val.metadata ?? {}) }
   },
   { immediate: true, deep: true },
 )
@@ -861,7 +928,6 @@ const closeTocContextMenu = () => {
 }
 
 const handleTocContextMenu = (item: TocItem, event: MouseEvent) => {
-  if (item.sourceType !== 'local' && item.sourceType !== 'ref-group') return
   event.preventDefault()
   tocContextMenu.value = {
     visible: true,
@@ -1296,26 +1362,191 @@ const handleExtractSelectionButtonClick = () => {
 }
 
 // --- Tag editor ---
-const handleOpenTagEditor = (_blockId: string) => {
-  tagEditorBlockTags.value = []
+const openTagEditorAtCenter = (scope: TagEditorScope, blockId = '', sectionKey = '') => {
   tagEditorState.value = {
     visible: true,
-    blockId: '',
+    scope,
+    blockId,
+    sectionKey,
     top: window.innerHeight / 2 - 160,
     left: window.innerWidth / 2 - 160,
   }
 }
 
+const ensureLocalHeadingBlockId = (entry: FlatTocEntry): string => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || entry.sourceType !== 'local') {
+    return entry.blockId
+  }
+
+  const node = editor.state.doc.nodeAt(entry.pos)
+  if (!node || node.type.name !== 'heading') {
+    return entry.blockId
+  }
+
+  const existing = String(node.attrs.blockId || '').trim()
+  if (existing && !existing.startsWith('heading-')) {
+    return existing
+  }
+
+  const blockId = createHeadingBlockId()
+  editor.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    tr.setNodeMarkup(entry.pos, undefined, {
+      ...node.attrs,
+      blockId,
+    })
+    return true
+  }).run()
+
+  localDocument.value = editor.getJSON()
+  return blockId
+}
+
+const openSectionTagEditorFromEntry = (found: FlatTocEntry) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  let entry = found
+  if (entry.sourceType === 'local') {
+    const blockId = ensureLocalHeadingBlockId(entry)
+    entry = { ...entry, blockId }
+  }
+
+  const sectionKey = getSectionTagKey(entry)
+  tagEditorBlockTags.value = [...getSectionTags(localPageMetadata.value, sectionKey)]
+  openTagEditorAtCenter('section', '', sectionKey)
+}
+
+const openSectionTagEditor = (item: TocItem) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const found = flat.find((entry) => entry.id === item.id)
+  if (!found) return
+  openSectionTagEditorFromEntry(found)
+}
+
+const handleEditSectionTagsFromSelection = () => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const entry = resolveSectionEntryAtEditor(editor, tocCollectContext.value)
+  if (!entry) return
+  openSectionTagEditorFromEntry(entry)
+}
+
+const handleEditSectionTagsFromNodeView = () => {
+  const editor = tuEditorRef.value?.editor
+  const blockId = nodeViewToolbar.blockId
+  if (!editor || !blockId) return
+  if (!EMBED_TOC_SOURCE_TYPES.has(nodeViewToolbar.sourceType)) return
+
+  const entry = resolveRefGroupSectionEntry(editor, tocCollectContext.value, blockId) ?? {
+    id: `ref-group-${blockId}`,
+    blockId,
+    level: 1,
+    text: '',
+    pos: 0,
+    sortIndex: 0,
+    sourceType: 'ref-group' as const,
+  }
+  openSectionTagEditorFromEntry(entry)
+}
+
+const handleTocEditTags = () => {
+  const item = tocContextMenu.value.item
+  if (!item) return
+  openSectionTagEditor(item)
+  closeTocContextMenu()
+}
+
+const handleOpenPageTagEditor = () => {
+  tagEditorBlockTags.value = [...pageTags.value]
+  openTagEditorAtCenter('page')
+}
+
+const handleOpenTagEditor = (blockId: string) => {
+  const found = findEmbedNodeByBlockId(blockId)
+  const metadata = (found?.node.attrs?.metadata || {}) as { tags?: BlockTag[] }
+  tagEditorBlockTags.value = normalizeBlockTags(metadata.tags)
+  openTagEditorAtCenter('block', blockId)
+}
+
 const closeTagEditor = () => {
   tagEditorState.value.visible = false
   tagEditorState.value.blockId = ''
+  tagEditorState.value.sectionKey = ''
+  tagEditorState.value.scope = 'page'
 }
 
-const updateBlockTags = (_tags: BlockTag[]) => {
-  // Tags are page-level in the new model — handled by metadata
+const applyBlockTags = (blockId: string, tags: BlockTag[]) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor || !blockId) return
+
+  const found = findEmbedNodeByBlockId(blockId)
+  if (!found) return
+
+  const existingMetadata = { ...(found.node.attrs?.metadata as Record<string, unknown> || {}) }
+  const normalizedTags = normalizeBlockTags(tags)
+
+  editor.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    const nextMetadata = { ...existingMetadata }
+    if (normalizedTags.length > 0) {
+      nextMetadata.tags = normalizedTags
+    } else {
+      delete nextMetadata.tags
+    }
+    tr.setNodeMarkup(found!.pos, undefined, {
+      ...found!.node.attrs,
+      metadata: nextMetadata,
+    })
+    return true
+  }).run()
+
+  localDocument.value = editor.getJSON()
+  emitLocalContentChange()
 }
 
-const availableTags = computed(() => collectBlockTags(localBlocks.value))
+const updateBlockTags = (tags: BlockTag[]) => {
+  tagEditorBlockTags.value = tags
+  if (tagEditorState.value.scope === 'page') {
+    const normalizedTags = normalizeBlockTags(tags)
+    const metadata = { ...localPageMetadata.value }
+    if (normalizedTags.length > 0) {
+      metadata.tags = normalizedTags
+    } else {
+      delete metadata.tags
+    }
+    localPageMetadata.value = metadata
+    emitLocalContentChange()
+    void refreshKbTagPool()
+    return
+  }
+
+  if (tagEditorState.value.scope === 'section') {
+    const key = tagEditorState.value.sectionKey
+    if (!key) return
+    let metadata = setSectionTagsInMetadata(localPageMetadata.value, key, tags)
+    const editor = tuEditorRef.value?.editor
+    if (editor) {
+      const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+      metadata = pruneOrphanSectionTags(metadata, flat.map(getSectionTagKey))
+    }
+    localPageMetadata.value = metadata
+    emitLocalContentChange()
+    void refreshKbTagPool()
+    return
+  }
+
+  if (tagEditorState.value.blockId) {
+    applyBlockTags(tagEditorState.value.blockId, tags)
+    void refreshKbTagPool()
+  }
+}
+
 const editorAnnotations = computed(() => {
   // All annotations apply to the entire page content
   if ((localAnnotations.value || []).length) {
@@ -1711,6 +1942,13 @@ onBeforeUnmount(() => {
         @keydown.enter="focusEditorFromStart"
       />
       <h1 v-else class="page-title-heading">{{ pageTitleDraft || '未命名页面' }}</h1>
+      <PageTagsBar
+        v-if="editable || pageTags.length > 0"
+        class="page-title-row__tags"
+        :tags="pageTags"
+        :editable="editable"
+        @edit="handleOpenPageTagEditor"
+      />
     </section>
 
     <div class="content-shell" :class="{ 'content-shell--toc-open': tocExpanded && tocItems.length > 0 }">
@@ -1763,6 +2001,7 @@ onBeforeUnmount(() => {
             <TocTreeList
               :items="tocItems"
               :highlighted-block-id="highlightedBlockId"
+              :section-tags-by-item-id="sectionTagsByItemId"
               :is-expanded="isTocItemExpanded"
               @click="handleTocItemClick"
               @toggle="toggleTocItem"
@@ -1810,6 +2049,15 @@ onBeforeUnmount(() => {
           class="nodeview-toolbar__btn"
           @click="handleSetNodeViewBlockBasis"
         >设置依据</button>
+        <button
+          class="nodeview-toolbar__btn"
+          @click="handleOpenTagEditor(nodeViewToolbar.blockId)"
+        >标签</button>
+        <button
+          v-if="supportsEmbedTocSettings(nodeViewToolbar.sourceType)"
+          class="nodeview-toolbar__btn"
+          @click="handleEditSectionTagsFromNodeView"
+        >节标签</button>
         <button class="nodeview-toolbar__btn" @click="deleteSelectedNodeView">删除</button>
         <button class="nodeview-toolbar__btn" @click="duplicateSelectedNodeView">复制</button>
         <button
@@ -1871,6 +2119,7 @@ onBeforeUnmount(() => {
       @set-excerpt-basis="handleSetExcerptBasisFromSelection"
       @mark-heading-source="handleMarkHeadingSourceFromSelection"
       @clear-heading-source="handleClearHeadingSourceFromSelection"
+      @edit-section-tags="handleEditSectionTagsFromSelection"
     />
 
     <!-- 引用块选择器 -->
@@ -1899,8 +2148,17 @@ onBeforeUnmount(() => {
       :style="{ top: `${tocContextMenu.top}px`, left: `${tocContextMenu.left}px` }"
       @mousedown.prevent
     >
-      <button type="button" @click="handleTocMarkExcerpt">标记节选</button>
-      <button type="button" @click="handleTocSetBasis">设置依据</button>
+      <button type="button" @click="handleTocEditTags">编辑标签</button>
+      <button
+        v-if="tocContextMenu.item?.sourceType === 'local' || tocContextMenu.item?.sourceType === 'ref-group'"
+        type="button"
+        @click="handleTocMarkExcerpt"
+      >标记节选</button>
+      <button
+        v-if="tocContextMenu.item?.sourceType === 'local' || tocContextMenu.item?.sourceType === 'ref-group'"
+        type="button"
+        @click="handleTocSetBasis"
+      >设置依据</button>
       <button
         v-if="tocContextMenu.item?.sourceType === 'local'"
         type="button"
@@ -1918,6 +2176,7 @@ onBeforeUnmount(() => {
     <!-- 标签编辑器 -->
     <BlockMetadataTagEditor
       :visible="tagEditorState.visible"
+      :title="tagEditorTitle"
       :selected-tags="tagEditorBlockTags"
       :available-tags="availableTags"
       :top="tagEditorState.top"
@@ -2007,6 +2266,11 @@ onBeforeUnmount(() => {
   padding: 8px 0 0;
   overflow: visible;
   cursor: text;
+}
+
+.page-title-row__tags {
+  margin-top: 8px;
+  cursor: default;
 }
 
 .page-title-input,

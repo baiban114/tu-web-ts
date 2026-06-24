@@ -1,5 +1,6 @@
 import type {
   Block,
+  BlockTag,
   BlockWithMeta,
   EmbeddedObject,
   ImportRoadmapPayload,
@@ -10,6 +11,11 @@ import type {
   RoadmapNode,
   TextAnnotation,
 } from '@/api/types';
+import { tipTapToBlocks } from '@/editor/converters';
+import { resolvePageDocument } from '@/editor/pageDocument';
+import { collectBlockTags } from '@/utils/blockMetadata';
+import { getPageTags, mergeTagPools } from '@/utils/pageMetadata';
+import { collectSectionTagsFromMetadata } from '@/utils/sectionMetadata';
 import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
 import type {
   BlockOutlineResponse,
@@ -1792,4 +1798,21 @@ export function patchContentTreeNodeHoursMock(
     }
   }
   throw new Error('content tree node not found');
+}
+
+export function collectKbTagsMock(kbId: string): BlockTag[] {
+  const pools: BlockTag[] = [];
+  for (const page of state.pages) {
+    if (page.kbId !== kbId) continue;
+    const pc = state.contents[page.id];
+    if (!pc) continue;
+    pools.push(...getPageTags(pc));
+    pools.push(...collectSectionTagsFromMetadata(pc.metadata));
+    if (pc.document) {
+      pools.push(...collectBlockTags(tipTapToBlocks(resolvePageDocument(pc), [])));
+    } else {
+      pools.push(...collectBlockTags(pageContentToBlocks(pc)));
+    }
+  }
+  return mergeTagPools(pools);
 }

@@ -20,6 +20,7 @@ const emit = defineEmits<{
   (e: 'set-excerpt-basis'): void
   (e: 'mark-heading-source'): void
   (e: 'clear-heading-source'): void
+  (e: 'edit-section-tags'): void
 }>()
 
 const menuRoot = ref<HTMLElement | null>(null)
@@ -72,6 +73,7 @@ const actions = computed(() => {
       canSetExcerptBasis: false,
       canMarkHeadingSource: false,
       canClearHeadingSource: false,
+      canEditSectionTags: false,
       canShow: false,
     }
   }
@@ -180,9 +182,25 @@ const bubbleFloatingOptions = computed(() => {
             解除来源
           </ElButton>
         </template>
-        <template v-if="actions.canMarkResourceExcerpt">
+        <template v-if="actions.canEditSectionTags">
           <ElDivider
             v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource"
+            direction="vertical"
+            class="selection-toolbar__divider"
+          />
+          <ElButton
+            size="small"
+            text
+            class="selection-toolbar__btn"
+            @mousedown.prevent.stop
+            @click="emit('edit-section-tags')"
+          >
+            节标签
+          </ElButton>
+        </template>
+        <template v-if="actions.canMarkResourceExcerpt">
+          <ElDivider
+            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canEditSectionTags"
             direction="vertical"
             class="selection-toolbar__divider"
           />
@@ -199,7 +217,7 @@ const bubbleFloatingOptions = computed(() => {
         </template>
         <template v-if="actions.canSetExcerptBasis">
           <ElDivider
-            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canMarkResourceExcerpt"
+            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canMarkResourceExcerpt || actions.canEditSectionTags"
             direction="vertical"
             class="selection-toolbar__divider"
           />

@@ -7,11 +7,13 @@ interface Props {
   visible: boolean;
   selectedTags: BlockTag[];
   availableTags: BlockTag[];
+  title?: string;
   top?: number;
   left?: number;
 }
 
 const props = withDefaults(defineProps<Props>(), {
+  title: '编辑标签',
   top: 0,
   left: 0,
 });
@@ -123,7 +125,7 @@ watch(
         @mousedown.stop
       >
         <div class="tag-editor-header">
-          <span class="tag-editor-title">编辑标签</span>
+          <span class="tag-editor-title">{{ title }}</span>
           <button class="tag-editor-close" type="button" @click="emit('close')">关闭</button>
         </div>
 

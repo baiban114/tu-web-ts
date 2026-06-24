@@ -113,3 +113,21 @@ export function collectBlockTags(blocks: Block[]): BlockTag[] {
 export function blockHasTags(block: Block): boolean {
   return getBlockTags(block).length > 0;
 }
+
+export function collectTagsFromBlocksAndPage(
+  blocks: Block[],
+  pageTags: BlockTag[] | undefined | null,
+): BlockTag[] {
+  const blockTags = collectBlockTags(blocks);
+  if (!pageTags?.length) return blockTags;
+  const deduped = new Map<string, BlockTag>();
+  for (const tag of pageTags) {
+    const key = normalizeTagLabel(tag.label).toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, tag);
+  }
+  for (const tag of blockTags) {
+    const key = normalizeTagLabel(tag.label).toLowerCase();
+    if (!deduped.has(key)) deduped.set(key, tag);
+  }
+  return Array.from(deduped.values()).sort((left, right) => left.label.localeCompare(right.label, 'zh-CN'));
+}

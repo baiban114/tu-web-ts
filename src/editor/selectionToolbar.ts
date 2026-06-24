@@ -22,6 +22,7 @@ export interface SelectionToolbarActions {
   canSetExcerptBasis: boolean
   canMarkHeadingSource: boolean
   canClearHeadingSource: boolean
+  canEditSectionTags: boolean
   canShow: boolean
 }
 
@@ -79,7 +80,8 @@ export function getSelectionToolbarActions(
   const canSetExcerptBasis = hasText && !inHeading
   const canMarkHeadingSource = inHeading
   const canClearHeadingSource = inHeading && Boolean(sourceBinding)
-  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource
+  const canEditSectionTags = inHeading
+  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource || canEditSectionTags
 
   return {
     canAddNote,
@@ -87,6 +89,7 @@ export function getSelectionToolbarActions(
     canSetExcerptBasis,
     canMarkHeadingSource,
     canClearHeadingSource,
+    canEditSectionTags,
     canShow,
   }
 }
@@ -108,7 +111,12 @@ export function shouldShowSelectionBubbleMenu(
   const isChildOfMenu = menuElement?.contains(document.activeElement) ?? false
   const hasEditorFocus = view.hasFocus() || isChildOfMenu
 
-  if (!hasEditorFocus || empty || isEmptyTextBlock) return false
+  if (!hasEditorFocus || suppressed) return false
 
-  return getSelectionToolbarActions(editor, from, to).canShow
+  const actions = getSelectionToolbarActions(editor, from, to)
+  if (empty || isEmptyTextBlock) {
+    return actions.canEditSectionTags
+  }
+
+  return actions.canShow
 }

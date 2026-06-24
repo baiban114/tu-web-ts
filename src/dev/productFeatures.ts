@@ -58,6 +58,14 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Editor',
   },
   {
+    id: 'page-block-tags',
+    module: '编辑器',
+    name: '页面、块与节标签',
+    description: '页面级 metadata.tags；块级 embed metadata.tags；目录节级 metadata.sectionTags（local / ref-group / ref-child），目录右键、标题选区工具栏「节标签」、引用/外部资源块 NodeView「节标签」与侧栏 chip 展示；候选标签在知识库内复用。',
+    status: 'testing',
+    owner: 'Editor',
+  },
+  {
     id: 'table-block',
     module: '编辑器',
     name: '表格块',
