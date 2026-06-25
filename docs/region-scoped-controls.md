@@ -58,6 +58,7 @@
 - [ ] 是否误放在 `.content-scroll` 内仅首屏可见的位置？
 - [ ] 只读与编辑模式是否分别考虑展示（如筛选在只读仍可用）？
 - [ ] 是否与对象级工具栏（NodeView、划选条）职责重复？
+- [ ] 弹窗内列表是否分页/滚动受限，底部操作是否始终可见？（详见 SKILL §6）
 
 ## 6. 参考实现
 
@@ -68,3 +69,13 @@
 | 块标签 / 升级画板 | NodeView 顶栏 | `ResizableBlockWrapper` / `nodeview-toolbar` |
 | 划选标注 / 文字标签 | 选区浮层 | `SelectionToolbar.vue` |
 | 节标签编辑 | TOC 右键 | `TuEditorPage.vue` TOC context menu |
+| 标注 / 标签候选 | 弹窗内分页 + 固定 footer | `NoteEditor.vue`、`BlockMetadataTagEditor.vue` |
+
+## 7. 弹窗内无上限列表（摘要）
+
+本规范侧重**区域锚点**；弹窗、气泡内长度不受固定上限的列表另见 [`tu-frontend-ui` SKILL §6](../../.cursor/skills/tu-frontend-ui/SKILL.md)：
+
+- 面板 `flex` + 受限高度，footer（取消/保存）`flex-shrink: 0`
+- 列表区 `min-height: 0` + 内部滚动
+- 默认每页 10 条：后端 `PageResponse` 或前端 `paginateSlice`（`src/utils/clientPagination.ts`）
+- 关闭弹窗时重置页码与查询

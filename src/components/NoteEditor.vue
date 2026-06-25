@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue';
+import { ElPagination } from 'element-plus';
 import type { BlockTag, TextAnnotation } from '@/api/types';
+import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 import { createTagColor, normalizeBlockTag, normalizeTagLabel } from '@/utils/blockMetadata';
+import { clampPage, paginateSlice } from '@/utils/clientPagination';
 import { resolveTagEditorEnterAction } from '@/utils/tagEditorEnter';
 
 interface Props {
@@ -24,6 +27,7 @@ const emit = defineEmits<{
 const noteText = ref('');
 const tags = ref<BlockTag[]>([]);
 const tagQuery = ref('');
+const candidatePage = ref(0);
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const tagInputRef = ref<HTMLInputElement | null>(null);
 
@@ -37,6 +41,18 @@ const filteredCandidates = computed(() => {
     if (!keyword) return true;
     return tag.label.toLowerCase().includes(keyword);
   });
+});
+
+const candidatePageData = computed(() => paginateSlice(
+  filteredCandidates.value,
+  candidatePage.value,
+  DEFAULT_PAGE_SIZE,
+));
+
+const pagedCandidates = computed(() => candidatePageData.value.items);
+
+watch(filteredCandidates, (list) => {
+  candidatePage.value = clampPage(candidatePage.value, list.length, DEFAULT_PAGE_SIZE);
 });
 
 const canCreateTag = computed(() => {
@@ -57,15 +73,21 @@ watch(
       noteText.value = '';
       tags.value = [];
       tagQuery.value = '';
+      candidatePage.value = 0;
       return;
     }
     noteText.value = props.annotation?.note ?? '';
     tags.value = [...props.selectedTags];
+    candidatePage.value = 0;
     void nextTick(() => {
       textareaRef.value?.focus();
     });
   },
 );
+
+watch(tagQuery, () => {
+  candidatePage.value = 0;
+});
 
 const addTag = (tag: BlockTag) => {
   if (selectedKeys.value.has(tag.label.toLowerCase())) return;
@@ -140,70 +162,95 @@ const handleKeydown = (event: KeyboardEvent) => {
     emit('cancel');
   }
 };
+
+const handleCandidatePageChange = (page: number) => {
+  candidatePage.value = Math.max(0, page - 1);
+};
 </script>
 
 <template>
   <Teleport to="body">
     <div v-if="visible" class="note-editor-mask" @mousedown.self="emit('cancel')">
-      <div class="note-editor-popover" @mousedown.stop>
+      <div class="note-editor-popover tu-dialog-viewport-panel" @mousedown.stop>
         <div class="note-editor-header">
           <span class="note-editor-title">{{ editorTitle }}</span>
           <button type="button" class="note-editor-close" @click="emit('cancel')">关闭</button>
         </div>
 
-        <label class="note-editor-label">笔记（可选）</label>
-        <textarea
-          ref="textareaRef"
-          v-model="noteText"
-          class="note-editor-textarea"
-          placeholder="输入笔记内容..."
-          @keydown="handleKeydown"
-        />
+        <div class="note-editor-body">
+          <label class="note-editor-label">笔记（可选）</label>
+          <textarea
+            ref="textareaRef"
+            v-model="noteText"
+            class="note-editor-textarea"
+            placeholder="输入笔记内容..."
+            @keydown="handleKeydown"
+          />
 
-        <label class="note-editor-label">文字标签（可选）</label>
-        <div v-if="tags.length > 0" class="note-editor-tags">
-          <button
-            v-for="tag in tags"
-            :key="tag.id"
-            type="button"
-            class="tag-chip tag-chip--selected"
-            :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
-            @click="removeTag(tag.id)"
-          >
-            <span>{{ tag.label }}</span>
-            <span class="tag-chip-remove">×</span>
-          </button>
-        </div>
+          <label class="note-editor-label">文字标签（可选）</label>
+          <div v-if="tags.length > 0" class="note-editor-tags">
+            <button
+              v-for="tag in tags"
+              :key="tag.id"
+              type="button"
+              class="tag-chip tag-chip--selected"
+              :style="{ '--tag-chip-color': tag.color || '#1677ff' }"
+              @click="removeTag(tag.id)"
+            >
+              <span>{{ tag.label }}</span>
+              <span class="tag-chip-remove">×</span>
+            </button>
+          </div>
 
-        <input
-          ref="tagInputRef"
-          v-model="tagQuery"
-          class="note-editor-tag-input"
-          type="text"
-          placeholder="搜索或新建标签"
-          @keydown="handleTagKeydown"
-        />
+          <input
+            ref="tagInputRef"
+            v-model="tagQuery"
+            class="note-editor-tag-input"
+            type="text"
+            placeholder="搜索或新建标签"
+            @keydown="handleTagKeydown"
+          />
 
-        <div class="note-editor-tag-section">
-          <button
-            v-if="canCreateTag"
-            type="button"
-            class="note-editor-tag-option note-editor-tag-option--create"
-            @click="createAndAddTag"
-          >
-            新建标签 “{{ normalizeTagLabel(tagQuery) }}”
-          </button>
-          <button
-            v-for="tag in filteredCandidates"
-            :key="tag.id"
-            type="button"
-            class="note-editor-tag-option"
-            @click="addTag(tag)"
-          >
-            <span class="tag-chip tag-chip--preview" :style="{ '--tag-chip-color': tag.color || '#1677ff' }">
-              {{ tag.label }}
-            </span>
-          </button>
+          <div class="note-editor-tag-section">
+            <button
+              v-if="canCreateTag"
+              type="button"
+              class="note-editor-tag-option note-editor-tag-option--create"
+              @click="createAndAddTag"
+            >
+              新建标签 “{{ normalizeTagLabel(tagQuery) }}”
+            </button>
+            <template v-if="pagedCandidates.length > 0">
+              <button
+                v-for="tag in pagedCandidates"
+                :key="tag.id"
+                type="button"
+                class="note-editor-tag-option"
+                @click="addTag(tag)"
+              >
+                <span class="tag-chip tag-chip--preview" :style="{ '--tag-chip-color': tag.color || '#1677ff' }">
+                  {{ tag.label }}
+                </span>
+              </button>
+            </template>
+            <div
+              v-else-if="!canCreateTag"
+              class="note-editor-tag-empty"
+            >
+              没有更多可选标签
+            </div>
+          </div>
+
+          <ElPagination
+            v-if="candidatePageData.total > DEFAULT_PAGE_SIZE"
+            class="note-editor-tag-pagination"
+            layout="prev, pager, next, total"
+            small
+            :total="candidatePageData.total"
+            :page-size="DEFAULT_PAGE_SIZE"
+            :current-page="candidatePageData.page + 1"
+            @current-change="handleCandidatePageChange"
+          />
         </div>
 
         <div class="note-editor-footer">
@@ -235,8 +282,10 @@ const handleKeydown = (event: KeyboardEvent) => {
   left: 50%;
   transform: translate(-50%, -50%);
   width: min(420px, calc(100vw - 48px));
-  max-height: min(560px, calc(100vh - 48px));
-  overflow: auto;
+  max-height: min(560px, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   background: #fff;
   border: 1px solid #e8e8e8;
   border-radius: 12px;
@@ -246,10 +295,19 @@ const handleKeydown = (event: KeyboardEvent) => {
 }
 
 .note-editor-header {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
+}
+
+.note-editor-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .note-editor-title {
@@ -268,6 +326,7 @@ const handleKeydown = (event: KeyboardEvent) => {
 
 .note-editor-label {
   display: block;
+  flex-shrink: 0;
   margin-bottom: 6px;
   font-size: 13px;
   font-weight: 500;
@@ -277,7 +336,9 @@ const handleKeydown = (event: KeyboardEvent) => {
 .note-editor-textarea {
   width: 100%;
   box-sizing: border-box;
+  flex-shrink: 0;
   min-height: 100px;
+  max-height: 160px;
   padding: 10px 12px;
   border: 1px solid #d9d9d9;
   border-radius: 8px;
@@ -295,13 +356,17 @@ const handleKeydown = (event: KeyboardEvent) => {
 }
 
 .note-editor-tags {
+  flex-shrink: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  max-height: 88px;
+  overflow-y: auto;
   margin-bottom: 8px;
 }
 
 .note-editor-tag-input {
+  flex-shrink: 0;
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #d9d9d9;
@@ -317,16 +382,19 @@ const handleKeydown = (event: KeyboardEvent) => {
 }
 
 .note-editor-tag-section {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 6px;
   margin-top: 10px;
-  margin-bottom: 4px;
+  overflow-y: auto;
 }
 
 .note-editor-tag-option {
   display: flex;
   align-items: center;
+  flex-shrink: 0;
   width: 100%;
   border: none;
   border-radius: 8px;
@@ -345,11 +413,26 @@ const handleKeydown = (event: KeyboardEvent) => {
   font-weight: 500;
 }
 
+.note-editor-tag-empty {
+  color: #8c8c8c;
+  font-size: 13px;
+  padding: 8px 4px;
+}
+
+.note-editor-tag-pagination {
+  flex-shrink: 0;
+  margin-top: 8px;
+  justify-content: flex-end;
+}
+
 .note-editor-footer {
+  flex-shrink: 0;
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f0f0f0;
 }
 
 .note-editor-cancel-btn {
