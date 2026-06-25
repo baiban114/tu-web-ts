@@ -25,6 +25,13 @@ export const CodeBlockNode = CodeBlock.extend({
   addNodeView() {
     return VueNodeViewRenderer(CodeBlockView, {
       stopEvent: ({ event }) => shouldStopCodeBlockChromeEvent(event),
+      update: ({ oldNode, newNode, updateProps }) => {
+        if (!oldNode.sameMarkup(newNode)) return false
+        if (oldNode.attrs.language !== newNode.attrs.language) {
+          updateProps()
+        }
+        return true
+      },
       ignoreMutation: ({ mutation }) => {
         if (shouldIgnoreCodeBlockContentMutation(mutation)) return true
         if (mutation.type === 'selection') return false

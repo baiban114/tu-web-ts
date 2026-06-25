@@ -45,7 +45,6 @@ const codeLanguageClass = computed(() => {
           </ElSelect>
         </template>
       </TuBlockChromeHeader>
-      <!-- pre is contentDOM so padding/clicks stay inside ProseMirror editable surface -->
       <pre
         data-node-view-content
         spellcheck="false"

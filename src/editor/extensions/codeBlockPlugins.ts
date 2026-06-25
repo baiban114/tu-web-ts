@@ -36,6 +36,7 @@ export function createCodeBlockNormalizePlugin(nodeName = CODE_BLOCK_NAME) {
       for (const update of updates.reverse()) {
         tr = tr.replaceWith(update.from, update.to, newState.schema.text(update.text))
       }
+      tr.setSelection(newState.selection.map(tr.doc, tr.mapping))
       return tr
     },
   })
@@ -126,6 +127,9 @@ export function createCodeBlockEmptyPlaceholderPlugin(nodeName = CODE_BLOCK_NAME
         tr = tr.insert(pos + 1, newState.schema.text(CODE_BLOCK_EMPTY_CHAR))
         changed = true
       })
+      if (changed) {
+        tr.setSelection(newState.selection.map(tr.doc, tr.mapping))
+      }
       return changed ? tr : null
     },
   })
