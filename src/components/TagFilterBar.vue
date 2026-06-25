@@ -6,6 +6,8 @@ import { normalizeTagLabel } from '@/utils/blockMetadata'
 const props = defineProps<{
   tags: BlockTag[]
   activeTag: BlockTag | null
+  /** Compact layout for sticky page toolbar chrome */
+  embedded?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -32,8 +34,8 @@ function onTagClick(tag: BlockTag) {
 </script>
 
 <template>
-  <div v-if="hasTags" class="tag-filter-bar">
-    <div v-if="activeTag" class="tag-filter-bar__banner">
+  <div v-if="hasTags" class="tag-filter-bar" :class="{ 'tag-filter-bar--embedded': embedded }">
+    <div v-if="activeTag && !embedded" class="tag-filter-bar__banner">
       <span class="tag-filter-bar__banner-text">
         正在查看标签：<strong>{{ activeTag.label }}</strong>
       </span>
@@ -42,7 +44,8 @@ function onTagClick(tag: BlockTag) {
       </button>
     </div>
     <div class="tag-filter-bar__chips">
-      <span class="tag-filter-bar__label">按标签查看</span>
+      <span v-if="!embedded" class="tag-filter-bar__label">按标签查看</span>
+      <span v-else class="tag-filter-bar__label">标签</span>
       <button
         v-for="tag in tags"
         :key="tag.id"
@@ -55,7 +58,7 @@ function onTagClick(tag: BlockTag) {
         {{ tag.label }}
       </button>
       <button
-        v-if="activeTag"
+        v-if="activeTag && !embedded"
         type="button"
         class="tag-filter-bar__chip tag-filter-bar__chip--reset"
         @click="emit('clear')"
@@ -72,6 +75,26 @@ function onTagClick(tag: BlockTag) {
   flex-direction: column;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.tag-filter-bar--embedded {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.tag-filter-bar--embedded .tag-filter-bar__chips {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag-filter-bar--embedded .tag-filter-bar__label {
+  font-size: 11px;
+}
+
+.tag-filter-bar--embedded .tag-filter-bar__chip {
+  padding: 3px 8px;
+  font-size: 11px;
 }
 
 .tag-filter-bar__banner {

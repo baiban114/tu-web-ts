@@ -77,7 +77,7 @@ test('hides untagged section body when filtering by section tag', async ({ page 
   await expect(visibleParagraph).toBeVisible()
 
   await page.locator('.tag-filter-bar__chip', { hasText: '设计' }).click()
-  await expect(page.locator('.tag-filter-bar__banner')).toContainText('设计')
+  await expect(page.locator('.tag-filter-bar__chip--active', { hasText: '设计' })).toBeVisible()
 
   await expect(visibleParagraph).toBeVisible()
   await expect(hiddenParagraph).toBeHidden({ timeout: 10_000 })

@@ -594,6 +594,8 @@ const filterableTags = computed(() => {
   )
 })
 
+const showPageChrome = computed(() => props.editable || filterableTags.value.length > 0)
+
 provide('activeTagFilter', activeTagFilter)
 provide('sectionTagsMap', sectionTagsMap)
 provide('sectionTagAnchors', sectionTagAnchors)
@@ -2232,30 +2234,45 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="tu-editor-page">
-    <!-- 工具栏 -->
-    <div class="page-toolbar" v-if="editable">
-      <button
-        class="toolbar-button"
-        @click="handleInsertLinkButtonClick"
-        title="在当前选中文字位置插入链接"
-      >
-        插入链接
-      </button>
-      <button
-        class="toolbar-button"
-        @click="handleOpenResourcePicker"
-        title="插入外部资源或图书节选"
-      >
-        插入资源
-      </button>
-      <button
-        class="toolbar-button"
-        @click="handleExtractSelectionButtonClick"
-        title="提取选中文本为新块"
-      >
-        提取成块
-      </button>
-    </div>
+    <!-- 页面级固定顶栏：编辑操作 + 作用于整页的筛选等 -->
+    <header v-if="showPageChrome" class="page-chrome">
+      <div v-if="editable" class="page-chrome__actions">
+        <button
+          class="toolbar-button"
+          @click="handleInsertLinkButtonClick"
+          title="在当前选中文字位置插入链接"
+        >
+          插入链接
+        </button>
+        <button
+          class="toolbar-button"
+          @click="handleOpenResourcePicker"
+          title="插入外部资源或图书节选"
+        >
+          插入资源
+        </button>
+        <button
+          class="toolbar-button"
+          @click="handleExtractSelectionButtonClick"
+          title="提取选中文本为新块"
+        >
+          提取成块
+        </button>
+      </div>
+      <span
+        v-if="editable && filterableTags.length > 0"
+        class="page-chrome__sep"
+        aria-hidden="true"
+      />
+      <TagFilterBar
+        v-if="filterableTags.length > 0"
+        embedded
+        :tags="filterableTags"
+        :active-tag="activeTagFilter"
+        @select="handleTagFilterSelect"
+        @clear="handleTagFilterClear"
+      />
+    </header>
 
     <!-- 链接插入弹窗 -->
     <form
@@ -2324,13 +2341,6 @@ onBeforeUnmount(() => {
         @edit="handleOpenPageTagEditor"
       />
     </section>
-
-    <TagFilterBar
-      :tags="filterableTags"
-      :active-tag="activeTagFilter"
-      @select="handleTagFilterSelect"
-      @clear="handleTagFilterClear"
-    />
 
     <div class="content-shell" :class="{ 'content-shell--toc-open': tocExpanded && tocItems.length > 0 }">
       <div class="content-container">
@@ -2613,29 +2623,48 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
-.page-toolbar {
+.page-chrome {
   position: sticky;
   top: 0;
   z-index: 30;
   display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
-  padding: 10px 20px;
+  gap: 8px 12px;
+  margin: 0 -48px 16px;
+  padding: 8px 48px;
   background-color: rgba(245, 245, 245, 0.96);
   backdrop-filter: blur(8px);
   border-bottom: 1px solid #e0e0e0;
-  margin-bottom: 20px;
-  border-radius: 4px 4px 0 0;
   box-shadow: 0 2px 8px rgba(31, 35, 40, 0.06);
 }
 
+.page-chrome__actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.page-chrome__sep {
+  width: 1px;
+  align-self: stretch;
+  min-height: 24px;
+  margin: 2px 4px;
+  background: #d9d9d9;
+  flex-shrink: 0;
+}
+
 .toolbar-button {
-  padding: 6px 12px;
+  padding: 5px 10px;
   background-color: #1890ff;
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 13px;
   transition: background-color 0.3s;
 }
 
