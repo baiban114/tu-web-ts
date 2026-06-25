@@ -252,3 +252,21 @@ onBeforeUnmount(() => {
     {{ toggle.collapsed ? '▶' : '▼' }}
   </button>
 </template>
+
+<style scoped>
+.heading-section-fold-gutter__btn {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.heading-section-fold-gutter__btn--visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.heading-section-fold-gutter__btn--visible:hover {
+  background: rgba(22, 119, 255, 0.08);
+  border-radius: 6px;
+}
+</style>

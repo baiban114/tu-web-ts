@@ -2,7 +2,13 @@
 import { ref, watch } from 'vue';
 import type { KnowledgeAnchor, KnowledgeRelation } from '@/api/types';
 import { listKnowledgeRelationsByAnchor } from '@/api/knowledgeRelation';
-import { anchorLabel, navigateKnowledgeAnchor, type KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor';
+import {
+  anchorLabel,
+  navigateKnowledgeAnchor,
+  navigateKnowledgePoint,
+  relationEndpointLabel,
+  type KnowledgeAnchorNavigateHandlers,
+} from '@/utils/knowledgeAnchor';
 
 const props = defineProps<{
   kbId: string;
@@ -39,12 +45,15 @@ watch(
 
 defineExpose({ refresh });
 
-function otherAnchor(relation: KnowledgeRelation, direction: 'out' | 'in'): KnowledgeAnchor {
-  return direction === 'out' ? relation.to : relation.from;
-}
-
-function onNavigate(anchor: KnowledgeAnchor) {
-  void navigateKnowledgeAnchor(anchor, props.navigate).finally(() => {
+function onNavigate(relation: KnowledgeRelation, direction: 'out' | 'in') {
+  const pointId = direction === 'out' ? relation.toPointId : relation.fromPointId;
+  const anchor = direction === 'out' ? relation.to : relation.from;
+  const task = pointId
+    ? navigateKnowledgePoint(pointId, props.navigate)
+    : anchor
+      ? navigateKnowledgeAnchor(anchor, props.navigate)
+      : Promise.resolve();
+  void task.finally(() => {
     props.afterNavigate?.();
   });
 }
@@ -61,10 +70,10 @@ function onNavigate(anchor: KnowledgeAnchor) {
           :key="relation.id"
           type="button"
           class="krl-item"
-          @click="onNavigate(otherAnchor(relation, 'out'))"
+          @click="onNavigate(relation, 'out')"
         >
           <span class="krl-type" :style="{ color: relation.relationTypeColor || '#1677ff' }">{{ relation.relationTypeLabel }}</span>
-          <span class="krl-label">{{ anchorLabel(otherAnchor(relation, 'out')) }}</span>
+          <span class="krl-label">{{ relationEndpointLabel(relation, 'out') }}</span>
         </button>
       </div>
       <div v-if="incoming.length" class="krl-section">
@@ -74,10 +83,10 @@ function onNavigate(anchor: KnowledgeAnchor) {
           :key="relation.id"
           type="button"
           class="krl-item"
-          @click="onNavigate(otherAnchor(relation, 'in'))"
+          @click="onNavigate(relation, 'in')"
         >
           <span class="krl-type" :style="{ color: relation.relationTypeColor || '#1677ff' }">{{ relation.relationTypeLabel }}</span>
-          <span class="krl-label">{{ anchorLabel(otherAnchor(relation, 'in')) }}</span>
+          <span class="krl-label">{{ relationEndpointLabel(relation, 'in') }}</span>
         </button>
       </div>
     </template>

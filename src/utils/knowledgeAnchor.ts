@@ -1,8 +1,8 @@
 import type { Router } from 'vue-router';
-import type { KnowledgeAnchor, KnowledgeAnchorKind } from '@/api/types';
-import type { TextAnnotation } from '@/api/types';
+import type { KnowledgeAnchor, KnowledgeAnchorKind, KnowledgeRelation, TextAnnotation } from '@/api/types';
 import { getAnnotationSelectionPayload } from '@/editor/annotationText';
 import type { Editor } from '@tiptap/core';
+import { listKnowledgePointAnchors } from '@/api/knowledgePoint';
 
 export interface KnowledgeAnchorNavigateHandlers {
   router: Router;
@@ -189,4 +189,28 @@ export async function navigateKnowledgeAnchor(
 export function annotationToAnchor(pageId: string, annotation: TextAnnotation): KnowledgeAnchor {
   const title = annotation.selectedText?.trim() || annotation.note?.trim();
   return annotationAnchor(pageId, annotation.id, title || undefined);
+}
+
+export async function navigateKnowledgePoint(
+  pointId: string,
+  handlers: KnowledgeAnchorNavigateHandlers,
+): Promise<void> {
+  const anchors = await listKnowledgePointAnchors(pointId);
+  const primary = anchors.find((item) => item.primary) ?? anchors[0];
+  if (!primary) return;
+  await navigateKnowledgeAnchor(
+    { kind: primary.kind, locator: primary.locator, snapshot: primary.snapshot },
+    handlers,
+  );
+}
+
+export function relationEndpointLabel(
+  relation: KnowledgeRelation,
+  direction: 'out' | 'in',
+): string {
+  const pointTitle = direction === 'out' ? relation.toPointTitle : relation.fromPointTitle;
+  if (pointTitle) return pointTitle;
+  const anchor = direction === 'out' ? relation.to : relation.from;
+  if (anchor) return anchorLabel(anchor);
+  return '未知知识点';
 }

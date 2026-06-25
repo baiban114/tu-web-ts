@@ -1,4 +1,4 @@
-import type { KnowledgeAnchor, KnowledgeRelation, RelationTypeDef, RelationsByAnchor } from '@/api/types';
+import type { KnowledgeAnchor, KnowledgeRelation, RelationTypeDef, RelationsByAnchor, RelationsByPoint } from '@/api/types';
 import { request } from './http';
 import { isMockDataSource } from '@/dev/dataSource';
 import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
@@ -7,12 +7,14 @@ import {
   createKnowledgeRelationMock,
   deleteKnowledgeRelationMock,
   listKnowledgeRelationsByAnchorMock,
+  listKnowledgeRelationsByPointMock,
   listKnowledgeRelationsMock,
   listRelationTypesMock,
 } from '@/mock/knowledgeRelation';
 
 export interface ListKnowledgeRelationsParams {
   locator?: string;
+  pointId?: string;
   relationTypeKey?: string;
   q?: string;
   page?: number;
@@ -33,6 +35,7 @@ export async function listKnowledgeRelations(
   }
   const query = new URLSearchParams();
   if (params.locator) query.set('locator', params.locator);
+  if (params.pointId) query.set('pointId', params.pointId);
   if (params.relationTypeKey) query.set('relationTypeKey', params.relationTypeKey);
   if (params.q) query.set('q', params.q);
   query.set('page', String(params.page ?? 0));
@@ -51,12 +54,25 @@ export async function listKnowledgeRelationsByAnchor(
   return request<RelationsByAnchor>(`/api/kbs/${kbId}/relations/by-anchor?${query.toString()}`);
 }
 
+export async function listKnowledgeRelationsByPoint(
+  kbId: string,
+  pointId: string,
+): Promise<RelationsByPoint> {
+  if (isMockDataSource()) {
+    return listKnowledgeRelationsByPointMock(kbId, pointId);
+  }
+  const query = new URLSearchParams({ kbId });
+  return request<RelationsByPoint>(`/api/knowledge-points/${pointId}/relations?${query.toString()}`);
+}
+
 export async function createKnowledgeRelation(
   kbId: string,
   payload: {
     relationTypeKey: string;
-    from: KnowledgeAnchor;
-    to: KnowledgeAnchor;
+    fromPointId: string;
+    toPointId: string;
+    from?: KnowledgeAnchor;
+    to?: KnowledgeAnchor;
     note?: string;
   },
 ): Promise<KnowledgeRelation> {

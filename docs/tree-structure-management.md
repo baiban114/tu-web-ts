@@ -23,6 +23,7 @@
 - 将 `ResourceItemRelation`（图关系）并入父子树
 - AI 自动建树、多用户树共识
 - **知识关联边**（`knowledge_relation`）不进入父子树；与 `ResourceItemRelation` 同层，见 [knowledge-relations.md](./knowledge-relations.md)，Phase 2 投影到 X6 图谱
+- **知识点软分类树**（`knowledge_point.parent_id`）与 `PageItem` 页面目录**并列**，非子集；页面/节选仅作证据 locator，见 [knowledge-relations.md](./knowledge-relations.md) §2
 
 ---
 

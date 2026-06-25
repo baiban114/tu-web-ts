@@ -40,6 +40,18 @@ import {
   type UrlDisplayMode,
 } from '@/utils/urlDisplay'
 import {
+  buildEditorLineHandleItems,
+  buildSectionHandleItems,
+  insertOptions,
+  isInsertBlockAction,
+  type InsertBlockType,
+  type LineHandleAction,
+} from '@/editor/lineHandleMenu'
+import { collectFlatTocEntries } from '@/utils/toc/collectFlatTocEntries'
+import { getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
+import { resolveFoldSectionEntryIdAtPos } from '@/utils/toc/resolveFoldSectionEntry'
+import type { ResolvedPos } from '@tiptap/pm/model'
+import {
   resolveUrlHoverTarget,
   urlHoverTargetsEqual,
   type UrlHoverTarget,
@@ -80,20 +92,13 @@ const emit = defineEmits<{
   'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
+  'section-annotate': [entryId: string]
+  'section-mark-excerpt': [entryId: string]
+  'section-set-basis': [entryId: string]
   'url-hover-change': [target: UrlHoverTarget | null]
   'text-tag-span-click': [spanId: string]
   'text-tag-spans-mapped': [spans: TextTagSpan[]]
 }>()
-
-type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
-type HandleAction = InsertBlockType | 'mark-excerpt' | 'set-basis' | 'cut' | 'copy' | 'duplicate' | 'clear-formatting' | 'delete'
-
-interface InsertOption {
-  key: InsertBlockType
-  label: string
-  icon: string
-  keywords: string[]
-}
 
 const editorEl = ref<HTMLElement | null>(null)
 const hoverHandleRef = ref<InstanceType<typeof HoverHandle> | null>(null)
@@ -128,6 +133,7 @@ const handleMenuVisible = ref(false)
 let hideHandleTimer: ReturnType<typeof setTimeout> | null = null
 
 const handleFixedLeft = ref(0)
+const hoveredSectionEntryId = ref<string | null>(null)
 let hoveredLineEl: HTMLElement | null = null
 let scrollContainer: HTMLElement | null = null
 
@@ -139,31 +145,10 @@ const handlePositionStyle = computed<CSSProperties>(() => ({
   transform: 'translateX(-50%)',
 }))
 
-const insertOptions: InsertOption[] = [
-  { key: 'richtext', label: '文本', icon: '📝', keywords: ['text', 'richtext', 'wenben'] },
-  { key: 'ref', label: '引用', icon: '🔖', keywords: ['ref', 'reference', 'yinyong'] },
-  { key: 'externalResource', label: '外部资源', icon: '▣', keywords: ['resource', 'external', 'book', 'ziyuan', 'tushu'] },
-  { key: 'line', label: '时间轴', icon: '🕒', keywords: ['timeline', 'line', 'shijianzhou'] },
-  { key: 'x6', label: 'X6 画板', icon: '🧩', keywords: ['x6', 'graph', 'draw', 'huaban'] },
-  { key: 'x6-mindmap', label: '思维导图', icon: '◇', keywords: ['mindmap', '思维导图', '脑图', 'tree'] },
-  { key: 'knowledge-roadmap', label: '知识库路线图', icon: '🗺️', keywords: ['roadmap', 'knowledge', 'kb', 'zhishiku'] },
-  { key: 'table', label: '表格', icon: '▦', keywords: ['table', 'biaoge'] },
-  { key: 'multiTable', label: '多维表格', icon: '▤', keywords: ['multi', 'database', 'kanban', 'duowei'] },
-  { key: 'spacer', label: '分割空白', icon: '↕', keywords: ['spacer', 'blank', 'kongbai'] },
-]
-
-const handleItems = [
-  { key: 'insert-divider', label: '插入', divider: true },
-  ...insertOptions.map((option) => ({ key: option.key, label: option.label, icon: option.icon })),
-  { key: 'action-divider', label: '操作', divider: true },
-  { key: 'mark-excerpt', label: '标记节选', icon: '▣' },
-  { key: 'set-basis', label: '设置依据', icon: '◎' },
-  { key: 'cut', label: '剪切行', icon: '✂️' },
-  { key: 'copy', label: '复制', icon: '📋' },
-  { key: 'duplicate', label: '复制行', icon: '📄' },
-  { key: 'clear-formatting', label: '清除格式', icon: '🧹' },
-  { key: 'delete', label: '删除行', icon: '🗑️', danger: true },
-]
+const baseHandleItems = buildEditorLineHandleItems()
+const activeHandleItems = computed(() => (
+  hoveredSectionEntryId.value ? buildSectionHandleItems() : baseHandleItems
+))
 
 const slashQuery = ref('')
 const slashMenuVisible = ref(false)
@@ -646,6 +631,7 @@ const scheduleHideHandle = () => {
     if (!handleMenuVisible.value) {
       handleVisible.value = false
       hoveredPos.value = null
+      hoveredSectionEntryId.value = null
       hoveredLineEl = null
     }
     hideHandleTimer = null
@@ -701,6 +687,9 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   hoveredLineEl = domPos
   handleFixedLeft.value = gutter?.hoverLeft ?? (wrapperRect.left - 24)
   hoveredPos.value = pos.pos
+  hoveredSectionEntryId.value = tocCollectContext?.value
+    ? resolveFoldSectionEntryIdAtPos(editor.value.state.doc, pos.pos, tocCollectContext.value)
+    : null
   handleTop.value = lineRect.top
   handleHeight.value = height
   handleVisible.value = true
@@ -769,18 +758,50 @@ const handleHandleMenuVisibilityChange = (visible: boolean) => {
   if (!visible) scheduleHideHandle()
 }
 
-const handleHandleSelect = (key: HandleAction) => {
+const handleHandleSelect = (key: LineHandleAction) => {
   if (!editor.value || hoveredPos.value == null) return
 
   const resolved = editor.value.state.doc.resolve(hoveredPos.value)
   if (resolved.depth < 1) return
 
+  const sectionEntryId = hoveredSectionEntryId.value
+  if (sectionEntryId) {
+    runSectionHandleAction(sectionEntryId, key)
+  } else {
+    runLineHandleAction(key, resolved, hoveredPos.value)
+  }
+
+  handleVisible.value = false
+  hoveredPos.value = null
+  hoveredSectionEntryId.value = null
+}
+
+function resolveSectionEntry(entryId: string) {
+  const ed = editor.value
+  const ctx = tocCollectContext?.value
+  if (!ed || !ctx) return null
+  const flat = collectFlatTocEntries(ed.state.doc, ctx)
+  const entryIndex = flat.findIndex((item) => item.id === entryId)
+  if (entryIndex < 0) return null
+  return { flat, entry: flat[entryIndex], entryIndex }
+}
+
+function getSectionRange(entryId: string): { from: number; to: number } | null {
+  const resolved = resolveSectionEntry(entryId)
+  const ed = editor.value
+  if (!resolved || !ed) return null
+  const { flat, entry, entryIndex } = resolved
+  const to = getTocSectionBoundaryPos(flat, entryIndex, ed.state.doc)
+  if (to <= entry.pos) return null
+  return { from: entry.pos, to }
+}
+
+function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, cursorPos: number) {
+  if (!editor.value) return
   const { from, to } = getBlockRange(resolved)
 
-  if (insertOptions.some((option) => option.key === key)) {
-    insertExternalBlockAfterPos(key as InsertBlockType, hoveredPos.value)
-    handleVisible.value = false
-    hoveredPos.value = null
+  if (isInsertBlockAction(key)) {
+    insertExternalBlockAfterPos(key, cursorPos)
     return
   }
 
@@ -832,9 +853,63 @@ const handleHandleSelect = (key: HandleAction) => {
       editor.value.chain().focus().deleteRange({ from, to }).run()
       break
   }
+}
 
-  handleVisible.value = false
-  hoveredPos.value = null
+function runSectionHandleAction(entryId: string, key: LineHandleAction) {
+  if (!editor.value) return
+
+  if (isInsertBlockAction(key)) {
+    const resolved = resolveSectionEntry(entryId)
+    if (!resolved) return
+    const insertPos = Math.min(resolved.entry.pos + 1, editor.value.state.doc.content.size - 1)
+    insertExternalBlockAfterPos(key, insertPos)
+    return
+  }
+
+  switch (key) {
+    case 'add-note':
+      emit('section-annotate', entryId)
+      break
+    case 'mark-excerpt':
+      emit('section-mark-excerpt', entryId)
+      break
+    case 'set-basis':
+      emit('section-set-basis', entryId)
+      break
+    case 'cut':
+    case 'copy':
+    case 'duplicate':
+    case 'clear-formatting':
+    case 'delete': {
+      const range = getSectionRange(entryId)
+      if (!range) return
+      const { from, to } = range
+      if (key === 'cut') {
+        const text = editor.value.state.doc.textBetween(from, to)
+        navigator.clipboard.writeText(text).catch(() => {})
+        editor.value.chain().focus().deleteRange({ from, to }).run()
+      } else if (key === 'copy') {
+        const text = editor.value.state.doc.textBetween(from, to)
+        navigator.clipboard.writeText(text).catch(() => {})
+      } else if (key === 'duplicate') {
+        const slice = editor.value.state.doc.slice(from, to)
+        const json = slice.toJSON()
+        if (json) {
+          const assignNewId = (node: Record<string, any>) => {
+            if (node.attrs?.blockId) node.attrs.blockId = generateBlockId()
+            if (node.content) node.content.forEach((child: Record<string, any>) => assignNewId(child))
+          }
+          assignNewId(json)
+        }
+        editor.value.chain().focus().insertContentAt(to, json).run()
+      } else if (key === 'clear-formatting') {
+        editor.value.chain().focus().setTextSelection({ from, to }).clearNodes().unsetAllMarks().run()
+      } else if (key === 'delete') {
+        editor.value.chain().focus().deleteRange({ from, to }).run()
+      }
+      break
+    }
+  }
 }
 
 const getSlashClientRect = (props: any) => {
@@ -848,7 +923,7 @@ const getSlashClientRect = (props: any) => {
   slashMenuLeft.value = 120
 }
 
-const selectSlashOption = (option: InsertOption) => {
+const selectSlashOption = (option: (typeof insertOptions)[number]) => {
   if (!editor.value) return
   const range = currentSlashRange
   slashMenuVisible.value = false
@@ -1558,11 +1633,11 @@ defineExpose({
     <HoverHandle
       v-if="hoverHandle && handleVisible && editor"
       ref="hoverHandleRef"
-      :items="handleItems"
+      :items="activeHandleItems"
       :style="handlePositionStyle"
       :menu-min-width="'140px'"
       :menu-gap="4"
-      @select="(key: string) => handleHandleSelect(key as HandleAction)"
+      @select="(key: string) => handleHandleSelect(key as LineHandleAction)"
       @menu-visibility-change="handleHandleMenuVisibilityChange"
       @mouseenter="clearHideHandle"
     />

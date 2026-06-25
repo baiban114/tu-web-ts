@@ -389,8 +389,12 @@ export interface KnowledgeRelation {
   relationTypeLabel: string;
   relationTypeColor?: string | null;
   bidirectional: boolean;
-  from: KnowledgeAnchor;
-  to: KnowledgeAnchor;
+  fromPointId?: string | null;
+  toPointId?: string | null;
+  fromPointTitle?: string | null;
+  toPointTitle?: string | null;
+  from?: KnowledgeAnchor | null;
+  to?: KnowledgeAnchor | null;
   note?: string | null;
   sourceProvenance: string;
   status: string;
@@ -400,4 +404,32 @@ export interface RelationsByAnchor {
   locator: string;
   outgoing: KnowledgeRelation[];
   incoming: KnowledgeRelation[];
+}
+
+export interface RelationsByPoint {
+  pointId: string;
+  outgoing: KnowledgeRelation[];
+  incoming: KnowledgeRelation[];
+}
+
+export interface KnowledgePoint {
+  id: string;
+  kbId: string;
+  parentId?: string | null;
+  title: string;
+  summary?: string | null;
+  status: string;
+  estimatedHours?: number | null;
+  sortOrder: number;
+  children?: KnowledgePoint[];
+}
+
+export interface KnowledgePointAnchor {
+  id: string;
+  knowledgePointId: string;
+  kind: KnowledgeAnchorKind;
+  locator: string;
+  snapshot?: Record<string, unknown>;
+  role: string;
+  primary: boolean;
 }

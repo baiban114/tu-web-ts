@@ -70,8 +70,13 @@ import {
   listKnowledgeRelations,
   deleteKnowledgeRelation,
 } from '@/api/knowledgeRelation';
-import type { KnowledgeAnchor, KnowledgeRelation } from '@/api/types';
-import { anchorLabel, navigateKnowledgeAnchor } from '@/utils/knowledgeAnchor';
+import type { KnowledgeRelation } from '@/api/types';
+import {
+  anchorLabel,
+  navigateKnowledgeAnchor,
+  navigateKnowledgePoint,
+} from '@/utils/knowledgeAnchor';
+import KnowledgePointManagerPanel from '@/components/KnowledgePointManagerPanel.vue';
 import {
   resourcesToTreeNodes,
   resourceWorksToTreeNodes,
@@ -80,14 +85,14 @@ import {
   type TreeNode,
 } from '@/utils/tree';
 
-type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned' | 'knowledgeRelations';
+type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned' | 'knowledgePoints' | 'knowledgeRelations';
 type ReferenceCategoryFilter = 'all' | 'internal' | 'external' | 'annotation';
 type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
 
 const route = useRoute();
 const router = useRouter();
 const workspaceStore = useWorkspaceStore();
-const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned', 'knowledgeRelations']);
+const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned', 'knowledgePoints', 'knowledgeRelations']);
 
 const TAB_LABELS: Record<ResourceTab, string> = {
   references: '引用管理',
@@ -97,6 +102,7 @@ const TAB_LABELS: Record<ResourceTab, string> = {
   urlRules: 'URL 聚类规则',
   objects: '对象管理',
   orphaned: '孤立标注',
+  knowledgePoints: '知识点',
   knowledgeRelations: '知识关联',
 };
 
@@ -911,14 +917,23 @@ function onKnowledgeRelationPageChange(page: number) {
   void refreshKnowledgeRelations();
 }
 
-async function navigateRelationAnchor(anchor: KnowledgeAnchor) {
-  await navigateKnowledgeAnchor(anchor, {
+async function navigateRelationEndpoint(relation: KnowledgeRelation, direction: 'from' | 'to') {
+  const pointId = direction === 'from' ? relation.fromPointId : relation.toPointId;
+  const anchor = direction === 'from' ? relation.from : relation.to;
+  const handlers = {
     router,
-    selectPage: async (pageId) => {
+    selectPage: async (pageId: string) => {
       await router.push({ path: '/', query: { pageId } });
     },
     currentPageId: workspaceStore.currentPageId,
-  });
+  };
+  if (pointId) {
+    await navigateKnowledgePoint(pointId, handlers);
+    return;
+  }
+  if (anchor) {
+    await navigateKnowledgeAnchor(anchor, handlers);
+  }
 }
 
 async function removeKnowledgeRelationRow(relation: KnowledgeRelation) {
@@ -1865,8 +1880,13 @@ watch(
           </span>
         </template>
       </el-tab-pane>
+      <el-tab-pane label="知识点" name="knowledgePoints" />
       <el-tab-pane label="知识关联" name="knowledgeRelations" />
     </el-tabs>
+
+    <section v-if="activeTab === 'knowledgePoints'" class="resource-layout knowledge-points-layout">
+      <KnowledgePointManagerPanel :kb-id="knowledgeRelationsKbId" />
+    </section>
 
     <section v-if="activeTab === 'knowledgeRelations'" class="resource-layout knowledge-relations-layout">
       <div class="resource-panel resource-panel--full">
@@ -1892,17 +1912,17 @@ watch(
               <span :style="{ color: row.relationTypeColor || '#1677ff' }">{{ row.relationTypeLabel }}</span>
             </template>
           </el-table-column>
-          <el-table-column label="源" min-width="180" show-overflow-tooltip>
+          <el-table-column label="源知识点" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-button link type="primary" @click="navigateRelationAnchor(row.from)">
-                {{ anchorLabel(row.from) }}
+              <el-button link type="primary" @click="navigateRelationEndpoint(row, 'from')">
+                {{ row.fromPointTitle || (row.from ? anchorLabel(row.from) : '—') }}
               </el-button>
             </template>
           </el-table-column>
-          <el-table-column label="目标" min-width="180" show-overflow-tooltip>
+          <el-table-column label="目标知识点" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">
-              <el-button link type="primary" @click="navigateRelationAnchor(row.to)">
-                {{ anchorLabel(row.to) }}
+              <el-button link type="primary" @click="navigateRelationEndpoint(row, 'to')">
+                {{ row.toPointTitle || (row.to ? anchorLabel(row.to) : '—') }}
               </el-button>
             </template>
           </el-table-column>

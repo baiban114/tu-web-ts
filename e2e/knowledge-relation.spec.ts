@@ -8,6 +8,8 @@ test.beforeEach(async ({ page }) => {
     if (!window.sessionStorage.getItem('tu:knowledge-relation-e2e-init')) {
       window.localStorage.removeItem('tu:mock-state')
       window.localStorage.removeItem('tu-mock-knowledge-relations')
+      window.localStorage.removeItem('tu-mock-knowledge-points')
+      window.localStorage.removeItem('tu-mock-knowledge-point-anchors')
       window.sessionStorage.setItem('tu:knowledge-relation-e2e-init', '1')
     }
   })
@@ -37,18 +39,18 @@ test('creates case relation from selection and shows reverse lookup in resource 
   const dialog = page.getByRole('dialog', { name: '建立知识关联' })
   await expect(dialog).toBeVisible()
 
-  await dialog.getByText('基础概念').click()
+  await dialog.getByLabel('知识点树').getByText('基础概念').click()
   await dialog.getByRole('button', { name: '建立关联' }).click()
   await expect(dialog).toBeHidden()
 
   const stored = await page.evaluate(() => {
     const raw = window.localStorage.getItem('tu-mock-knowledge-relations')
     if (!raw) return null
-    const relations = JSON.parse(raw) as Array<{ relationTypeKey: string; to: { snapshot?: { title?: string } } }>
+    const relations = JSON.parse(raw) as Array<{ relationTypeKey: string; toPointTitle?: string }>
     return relations.find((item) => item.relationTypeKey === 'case') ?? null
   })
   expect(stored).toBeTruthy()
-  expect(stored?.to.snapshot?.title).toContain('基础概念')
+  expect(stored?.toPointTitle).toBe('基础概念')
 
   await page.goto('/resources?tab=knowledgeRelations')
   await expect(page.getByRole('tab', { name: '知识关联' })).toBeVisible()

@@ -17,7 +17,7 @@ import TagFilterBar from './TagFilterBar.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
-import KnowledgeAnchorPicker from './KnowledgeAnchorPicker.vue'
+import KnowledgePointPicker from './KnowledgePointPicker.vue'
 import KnowledgeRelationList from './KnowledgeRelationList.vue'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
@@ -1069,23 +1069,34 @@ const handleTocContextMenu = (item: TocItem, event: MouseEvent) => {
 
 const handleTocMarkExcerpt = () => {
   const item = tocContextMenu.value.item
-  const editor = tuEditorRef.value?.editor
-  if (!item || !editor) return
-  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
-  const payload = getTocEntryExcerptContent(editor.state.doc, flat, item.id, tocCollectContext.value)
-  if (!payload) return
-  openMarkBlockExcerptPicker(payload.text, payload.title)
+  if (!item) return
+  openMarkExcerptForTocEntry(item.id)
   closeTocContextMenu()
 }
 
 const handleTocSetBasis = () => {
   const item = tocContextMenu.value.item
+  if (!item) return
+  openSetBasisForTocEntry(item.id)
+  closeTocContextMenu()
+}
+
+function openMarkExcerptForTocEntry(entryId: string) {
   const editor = tuEditorRef.value?.editor
-  if (!item || !editor) return
+  if (!editor) return
   const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
-  const payload = getTocEntryExcerptContent(editor.state.doc, flat, item.id, tocCollectContext.value)
+  const payload = getTocEntryExcerptContent(editor.state.doc, flat, entryId, tocCollectContext.value)
   if (!payload) return
-  const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, item.id, tocCollectContext.value)
+  openMarkBlockExcerptPicker(payload.text, payload.title)
+}
+
+function openSetBasisForTocEntry(entryId: string) {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const payload = getTocEntryExcerptContent(editor.state.doc, flat, entryId, tocCollectContext.value)
+  if (!payload) return
+  const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, entryId, tocCollectContext.value)
   const scope = blockIds.length > 1 ? 'compound' : 'block'
   openSetBasisPicker({
     selectedText: payload.text,
@@ -1095,7 +1106,6 @@ const handleTocSetBasis = () => {
     spannedBlockIds: blockIds,
     spannedBlockMetadata: normalizeSpannedBlockMetadata(blockIds, []),
   })
-  closeTocContextMenu()
 }
 
 const handleTocMarkSource = () => {
@@ -1771,6 +1781,51 @@ const handleEditSectionTagsFromSelection = () => {
   const entry = resolveSectionEntryAtEditor(editor, tocCollectContext.value)
   if (!entry) return
   openSectionTagEditorFromEntry(entry)
+}
+
+const openSectionAnnotationFromTocEntry = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  let flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  let entry = flat.find((item) => item.id === entryId)
+  if (!entry) return
+
+  if (entry.sourceType === 'local') {
+    ensureLocalHeadingBlockId(entry)
+    flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  }
+
+  const payload = getTocEntryExcerptContent(editor.state.doc, flat, entryId, tocCollectContext.value)
+  if (!payload) return
+
+  const blockIds = collectTocEntryBasisBlockIds(editor.state.doc, flat, entryId, tocCollectContext.value)
+  if (blockIds.length === 0) return
+
+  pendingNoteBlockId.value = ''
+  pendingNoteSelectedText.value = payload.text
+  pendingNoteContextBefore.value = ''
+  pendingNoteContextAfter.value = ''
+  pendingNoteFrom.value = 0
+  pendingNoteTo.value = 0
+  pendingNoteSpannedBlockIds.value = blockIds
+  pendingNoteSpannedBlockMetadata.value = normalizeSpannedBlockMetadata(blockIds, [])
+  pendingNoteTags.value = []
+  pendingTextTagSpanId.value = ''
+  editingAnnotation.value = undefined
+  noteEditorVisible.value = true
+}
+
+const handleSectionAnnotateFromGutter = (entryId: string) => {
+  openSectionAnnotationFromTocEntry(entryId)
+}
+
+const handleSectionMarkExcerptFromGutter = (entryId: string) => {
+  openMarkExcerptForTocEntry(entryId)
+}
+
+const handleSectionSetBasisFromGutter = (entryId: string) => {
+  openSetBasisForTocEntry(entryId)
 }
 
 const handleEditSectionTagsFromNodeView = () => {
@@ -2460,6 +2515,9 @@ onBeforeUnmount(() => {
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
           @set-block-basis="handleSetBlockBasis"
+          @section-annotate="handleSectionAnnotateFromGutter"
+          @section-mark-excerpt="handleSectionMarkExcerptFromGutter"
+          @section-set-basis="handleSectionSetBasisFromGutter"
           @heading-source-click="handleHeadingSourceClick"
           @text-tag-span-click="handleTextTagSpanClick"
           @text-tag-spans-mapped="handleTextTagSpansMapped"
@@ -2616,11 +2674,10 @@ onBeforeUnmount(() => {
       @create-knowledge-relation="handleCreateKnowledgeRelationFromSelection"
     />
 
-    <KnowledgeAnchorPicker
+    <KnowledgePointPicker
       :visible="knowledgeAnchorPickerVisible"
       :kb-id="workspaceStore.currentKbId || ''"
       :source-anchor="knowledgeSourceAnchor"
-      :page-tree="workspaceStore.pageTree"
       @update:visible="knowledgeAnchorPickerVisible = $event"
       @created="handleKnowledgeRelationCreated"
     />

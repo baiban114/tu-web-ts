@@ -8,6 +8,7 @@ import { listResourceExcerpts, listResourceItems } from '@/api/externalResource'
 import type { ResourceExcerpt, ResourceItem } from '@/api/externalResource';
 import { anchorLabel, pageAnchor, resourceExcerptAnchor, resourceItemAnchor } from '@/utils/knowledgeAnchor';
 import { paginateSlice } from '@/utils/clientPagination';
+import { createKnowledgePoint, listKnowledgePointsByLocator } from '@/api/knowledgePoint';
 
 const props = defineProps<{
   visible: boolean;
@@ -96,12 +97,26 @@ function close() {
   emit('update:visible', false);
 }
 
+async function ensurePointForAnchor(anchor: KnowledgeAnchor): Promise<string> {
+  const existing = await listKnowledgePointsByLocator(props.kbId, anchor.locator);
+  if (existing[0]) return existing[0].id;
+  const created = await createKnowledgePoint(props.kbId, {
+    title: anchorLabel(anchor),
+    sourceAnchor: anchor,
+  });
+  return created.id;
+}
+
 async function handleSave() {
   if (!props.sourceAnchor || !selectedTarget.value || saving.value) return;
   saving.value = true;
   try {
+    const fromPointId = await ensurePointForAnchor(props.sourceAnchor);
+    const toPointId = await ensurePointForAnchor(selectedTarget.value);
     await createKnowledgeRelation(props.kbId, {
       relationTypeKey: selectedTypeKey.value,
+      fromPointId,
+      toPointId,
       from: props.sourceAnchor,
       to: selectedTarget.value,
     });
