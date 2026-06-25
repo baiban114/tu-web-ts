@@ -151,39 +151,42 @@ const canUseIframe = computed(() => {
   position: fixed;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  min-width: 220px;
+  gap: 2px;
+  min-width: 200px;
   max-width: min(420px, calc(100vw - 24px));
-  padding: 8px 10px;
+  padding: 4px 6px;
   border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border-radius: 3px;
   background: var(--el-bg-color);
   box-shadow: var(--el-box-shadow-light);
 }
 
 .url-hover-toolbar__url {
-  font-size: 12px;
+  font-size: 11px;
   color: #6b7280;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.3;
 }
 
 .url-hover-toolbar__group {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
 }
 
 .url-hover-toolbar__btn {
   margin: 0;
-  padding: 4px 10px;
-  font-size: 13px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
   font-weight: 500;
+  border-radius: 2px;
 }
 
 .url-hover-toolbar__divider {
-  height: 16px;
-  margin: 0 2px;
+  height: 14px;
+  margin: 0 1px;
 }
 </style>

@@ -297,9 +297,9 @@ const bubbleFloatingOptions = computed(() => {
 .selection-toolbar {
   display: flex;
   align-items: center;
-  padding: 2px 4px;
+  padding: 1px 2px;
   border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border-radius: 3px;
   background: var(--el-bg-color);
   box-shadow: var(--el-box-shadow-light);
 }
@@ -307,18 +307,20 @@ const bubbleFloatingOptions = computed(() => {
 .selection-toolbar__group {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
 }
 
 .selection-toolbar__btn {
   margin: 0;
-  padding: 4px 10px;
-  font-size: 13px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
   font-weight: 500;
+  border-radius: 2px;
 }
 
 .selection-toolbar__divider {
-  height: 16px;
-  margin: 0 2px;
+  height: 14px;
+  margin: 0 1px;
 }
 </style>
