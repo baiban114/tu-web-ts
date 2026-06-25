@@ -2,7 +2,7 @@
 import { watch, onBeforeUnmount, onMounted, nextTick, ref, computed, provide, inject, type ComputedRef } from 'vue'
 import type { CSSProperties } from 'vue'
 import { useEditor, EditorContent } from '@tiptap/vue-3'
-import type { Block, HeadingSourceBinding, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import type { Block, HeadingSourceBinding, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
 import { uploadFile } from '@/api/fileStorage'
 import {
@@ -25,7 +25,11 @@ import { createHeadingBlockId } from '@/utils/headingSource'
 import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
+import { textTagSpanDecorationsMetaKey } from '@/editor/extensions/TextTagSpanDecorations'
 import { getSectionFoldRevision } from '@/stores/sectionFoldSession'
+import { getActiveTagFilter, getTagFilterRevision } from '@/stores/tagFilterSession'
+import { dispatchTagFilterRefresh } from '@/utils/tagFilterRefresh'
+import type { SectionTagsMap, SectionTagAnchor } from '@/utils/sectionMetadata'
 import { useWorkspaceStore } from '@/stores/workspace'
 import HoverHandle from './HoverHandle.vue'
 import HeadingSectionFoldGutter from './HeadingSectionFoldGutter.vue'
@@ -77,6 +81,8 @@ const emit = defineEmits<{
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
   'url-hover-change': [target: UrlHoverTarget | null]
+  'text-tag-span-click': [spanId: string]
+  'text-tag-spans-mapped': [spans: TextTagSpan[]]
 }>()
 
 type InsertBlockType = 'richtext' | 'ref' | 'externalResource' | 'line' | 'x6' | 'x6-mindmap' | 'knowledge-roadmap' | 'table' | 'multiTable' | 'spacer'
@@ -93,6 +99,11 @@ const editorEl = ref<HTMLElement | null>(null)
 const hoverHandleRef = ref<InstanceType<typeof HoverHandle> | null>(null)
 const workspaceStore = useWorkspaceStore()
 const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
+const activeTagFilter = inject<ComputedRef<import('@/api/types').BlockTag | null> | undefined>('activeTagFilter', undefined)
+const sectionTagsMapRef = inject<ComputedRef<SectionTagsMap> | undefined>('sectionTagsMap', undefined)
+const sectionTagAnchorsRef = inject<ComputedRef<Record<string, SectionTagAnchor>> | undefined>('sectionTagAnchors', undefined)
+const textTagSpansRef = inject<ComputedRef<TextTagSpan[]> | undefined>('textTagSpans', undefined)
+const textTagSpanRevisionRef = inject<ComputedRef<number> | undefined>('textTagSpanRevision', undefined)
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 let isInternalUpdate = false
 let skipNextContentSync = false
@@ -866,6 +877,19 @@ const editor = useEditor({
     onHeadingSourceClick: (binding) => emit('heading-source-click', binding),
     getTocContext: () => tocCollectContext?.value ?? null,
     getFoldRevision: () => getSectionFoldRevision(),
+    getSectionTagsMap: () => sectionTagsMapRef?.value ?? {},
+    getSectionTagAnchors: () => sectionTagAnchorsRef?.value ?? {},
+    getTextTagSpans: () => textTagSpansRef?.value ?? [],
+    getActiveTagFilter: () => {
+      void getTagFilterRevision()
+      return getActiveTagFilter(workspaceStore.currentPageId)
+        ?? activeTagFilter?.value
+        ?? null
+    },
+    getFilterRevision: () => getTagFilterRevision() + (textTagSpanRevisionRef?.value ?? 0),
+    getTextTagSpanRevision: () => textTagSpanRevisionRef?.value ?? 0,
+    onTextTagSpanClick: (spanId) => emit('text-tag-span-click', spanId),
+    onTextTagSpansMapped: (spans) => emit('text-tag-spans-mapped', spans),
     getSchemaExtensions: () => getTuEditorSchemaExtensions(),
     insertOptions,
     slashSuggestion: {
@@ -1087,6 +1111,49 @@ watch(
     editor.value.view.dispatch(
       editor.value.state.tr.setMeta(annotationDecorationsKey, { annotations }),
     )
+  },
+  { deep: true },
+)
+
+watch(
+  () => textTagSpanRevisionRef?.value ?? 0,
+  () => {
+    if (!editor.value) return
+    editor.value.view.dispatch(
+      editor.value.state.tr.setMeta(textTagSpanDecorationsMetaKey, {
+        spans: textTagSpansRef?.value ?? [],
+      }),
+    )
+    editor.value.view.dispatch(editor.value.state.tr)
+  },
+)
+
+watch(
+  () => getTagFilterRevision(),
+  () => {
+    dispatchTagFilterRefresh(editor.value)
+  },
+)
+
+watch(
+  () => getActiveTagFilter(workspaceStore.currentPageId),
+  () => {
+    dispatchTagFilterRefresh(editor.value)
+  },
+)
+
+watch(
+  () => sectionTagsMapRef?.value,
+  () => {
+    dispatchTagFilterRefresh(editor.value)
+  },
+  { deep: true },
+)
+
+watch(
+  () => sectionTagAnchorsRef?.value,
+  () => {
+    dispatchTagFilterRefresh(editor.value)
   },
   { deep: true },
 )
@@ -1570,6 +1637,19 @@ defineExpose({
 
 .tu-editor-wrapper :deep(.heading-section--collapsed) {
   display: none !important;
+}
+
+.tu-editor-wrapper :deep(.tag-filter--hidden) {
+  display: none !important;
+}
+
+.tu-editor-wrapper :deep(.tag-filter--hidden-inline) {
+  display: none !important;
+}
+
+.tu-editor-wrapper :deep(.tu-text-tag-span) {
+  border-bottom: 2px solid var(--tu-text-tag-color, #1677ff);
+  border-radius: 2px;
 }
 
 .tu-editor-wrapper :deep(.heading-section--collapsed-embed .ref-page-content),

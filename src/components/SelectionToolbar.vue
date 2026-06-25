@@ -25,14 +25,30 @@ const emit = defineEmits<{
 
 const menuRoot = ref<HTMLElement | null>(null)
 const selectionRevision = ref(0)
+const isMouseSelecting = ref(false)
 const suppressedRef = toRef(props, 'suppressed')
 let detachEditorListeners: (() => void) | null = null
+let pointerDown = false
+
+/** BubbleMenu only re-runs shouldShow when selection/doc changes; mimic its focus handler after drag. */
+function requestBubbleMenuUpdate(editor: Editor) {
+  selectionRevision.value += 1
+  window.setTimeout(() => {
+    editor.emit('focus', {
+      editor,
+      event: new FocusEvent('focus'),
+      transaction: editor.state.tr,
+    })
+  }, 0)
+}
 
 watch(
   () => props.editor,
   (editor, _prev, onCleanup) => {
     detachEditorListeners?.()
     detachEditorListeners = null
+    isMouseSelecting.value = false
+    pointerDown = false
     if (!editor) return
 
     const bump = () => {
@@ -40,13 +56,45 @@ watch(
     }
     editor.on('selectionUpdate', bump)
     editor.on('transaction', bump)
+
+    const onMouseDown = (event: MouseEvent) => {
+      if (event.button !== 0) return
+      pointerDown = true
+    }
+
+    const onMouseMove = (event: MouseEvent) => {
+      if (!pointerDown || (event.buttons & 1) === 0) return
+      if (isMouseSelecting.value) return
+      isMouseSelecting.value = true
+      editor.view.dispatch(editor.state.tr.setMeta('bubbleMenu', 'hide'))
+    }
+
+    const onMouseUp = (event: MouseEvent) => {
+      if (event.button !== 0) return
+      const wasDraggingSelection = isMouseSelecting.value
+      pointerDown = false
+      isMouseSelecting.value = false
+      if (wasDraggingSelection) {
+        requestBubbleMenuUpdate(editor)
+      }
+    }
+
+    editor.view.dom.addEventListener('mousedown', onMouseDown)
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+
     detachEditorListeners = () => {
       editor.off('selectionUpdate', bump)
       editor.off('transaction', bump)
+      editor.view.dom.removeEventListener('mousedown', onMouseDown)
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
     }
     onCleanup(() => {
       detachEditorListeners?.()
       detachEditorListeners = null
+      isMouseSelecting.value = false
+      pointerDown = false
     })
   },
   { immediate: true },
@@ -60,7 +108,7 @@ watch(suppressedRef, () => {
   selectionRevision.value += 1
   const editor = props.editor
   if (!editor) return
-  editor.view.updateState(editor.state)
+  requestBubbleMenuUpdate(editor)
 })
 
 const actions = computed(() => {
@@ -87,15 +135,19 @@ const bubbleShouldShow = (ctx: {
   state: Editor['state']
   from: number
   to: number
-}) => shouldShowSelectionBubbleMenu(
-  ctx.editor,
-  ctx.view,
-  ctx.state,
-  ctx.from,
-  ctx.to,
-  suppressedRef.value,
-  menuRoot.value,
-)
+}) => {
+  selectionRevision.value
+  return shouldShowSelectionBubbleMenu(
+    ctx.editor,
+    ctx.view,
+    ctx.state,
+    ctx.from,
+    ctx.to,
+    suppressedRef.value,
+    isMouseSelecting.value,
+    menuRoot.value,
+  )
+}
 
 /** Anchor bubble menu inside the editor surface so it scrolls with content (not viewport-fixed). */
 const appendToEditorSurface = (): HTMLElement => {
@@ -150,7 +202,7 @@ const bubbleFloatingOptions = computed(() => {
           @mousedown.prevent.stop
           @click="emit('add-note')"
         >
-          添加笔记
+          标注
         </ElButton>
         <template v-if="actions.canMarkHeadingSource">
           <ElDivider v-if="actions.canAddNote" direction="vertical" class="selection-toolbar__divider" />

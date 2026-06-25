@@ -9,13 +9,13 @@ import type {
   PageContent,
   PageItem,
   RoadmapNode,
-  TextAnnotation,
 } from '@/api/types';
 import { tipTapToBlocks } from '@/editor/converters';
 import { resolvePageDocument } from '@/editor/pageDocument';
 import { collectBlockTags } from '@/utils/blockMetadata';
 import { getPageTags, mergeTagPools } from '@/utils/pageMetadata';
 import { collectSectionTagsFromMetadata } from '@/utils/sectionMetadata';
+import { collectTextTagSpanTags } from '@/utils/textTagSpanMetadata';
 import type { ReferenceItem, ListReferencesParams, ListReferencesResult } from '@/api/reference';
 import type {
   BlockOutlineResponse,
@@ -581,12 +581,11 @@ export function listResourceItemsMock(
   page = 0,
   pageSize = 10,
 ): { items: ResourceItem[]; total: number; page: number; pageSize: number } {
-  const filtered = state.resourceItems.filter((item) => {
-    if (params.typeId && item.typeId !== params.typeId) return false;
-    if (params.workId && item.workId !== params.workId) return false;
-    if (params.identityValue && item.identityValue !== params.identityValue) return false;
-    return true;
-  });
+  const filtered = state.resourceItems.filter((item) => (
+    (!params.typeId || item.typeId === params.typeId)
+    && (!params.workId || item.workId === params.workId)
+    && (!params.identityValue || item.identityValue === params.identityValue)
+  ));
   const all = cloneState(filtered.map(hydrateResourceItem));
   const from = page * pageSize;
   const items = from >= all.length ? [] : all.slice(from, from + pageSize);
@@ -1173,11 +1172,6 @@ function getPageOrThrow(pageId: string): Omit<PageItem, 'children'> {
   return page;
 }
 
-/** @deprecated embeds no longer have children */
-function visitBlocks(_blocks: PageContent | Block[], _visitor: (block: Block) => void): void {
-  // no-op in new model
-}
-
 function updateEmbedInPage(
   pageId: string,
   blockId: string,
@@ -1420,7 +1414,7 @@ export function listAllBlocksMock(): BlockWithMeta[] {
   return items;
 }
 
-export function updateBlockContentMock(pageId: string, blockId: string, content: string): void {
+export function updateBlockContentMock(pageId: string, blockId: string, _content: string): void {
   const updated = updateEmbedInPage(pageId, blockId, (embed) => {
     if (embed.type === 'x6') embed.graphData = undefined
   });
@@ -1475,7 +1469,6 @@ function findPageTitle(pageId: string): string {
 
 export function listReferencesMock(params: ListReferencesParams = {}): ListReferencesResult {
   const results: ReferenceItem[] = [];
-  const now = Date.now();
 
   const targetPages = params.pageId
     ? [params.pageId]
@@ -1733,7 +1726,6 @@ function getPageBlocksForOutline(pageId: string): Block[] {
 function resolveMockPageOutline(pageId: string): PageOutlineResponse | null {
   const page = state.pages.find((entry) => entry.id === pageId);
   if (!page) return null;
-  const kb = state.knowledgeBases.find((entry) => entry.id === page.kbId);
   return buildMockPageOutline(
     pageId,
     page.kbId,
@@ -1808,6 +1800,7 @@ export function collectKbTagsMock(kbId: string): BlockTag[] {
     if (!pc) continue;
     pools.push(...getPageTags(pc));
     pools.push(...collectSectionTagsFromMetadata(pc.metadata));
+    pools.push(...collectTextTagSpanTags(pc.metadata));
     if (pc.document) {
       pools.push(...collectBlockTags(tipTapToBlocks(resolvePageDocument(pc), [])));
     } else {

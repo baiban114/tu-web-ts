@@ -1,11 +1,19 @@
 import { describe, expect, it } from 'vitest'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { FlatTocEntry } from '@/utils/toc/headings'
 import {
   buildSectionTagsByEntryId,
   collectSectionTagsFromMetadata,
+  collectValidSectionTagKeys,
   getSectionTagKey,
+  getSectionTagAnchors,
   getSectionTags,
+  listSectionHeadingBlockIdSyncs,
   pruneOrphanSectionTags,
+  reconcileOrphanSectionTagKeys,
+  resolveEntrySectionTags,
+  sectionTagsMapFromMetadata,
+  setSectionTagAnchor,
   setSectionTagsInMetadata,
 } from './sectionMetadata'
 
@@ -80,6 +88,152 @@ describe('sectionMetadata', () => {
     const byId = buildSectionTagsByEntryId([localEntry], metadata)
     expect(byId['h-10']).toEqual([
       expect.objectContaining({ label: '节标签' }),
+    ])
+  })
+
+  it('retains stable section tag keys when flat entry uses pos fallback', () => {
+    const entry: FlatTocEntry = {
+      id: 'h-42',
+      blockId: 'heading-42',
+      level: 3,
+      text: 'B节',
+      pos: 42,
+      sortIndex: 1,
+      sourceType: 'local',
+    }
+    const doc = {
+      nodeAt: () => ({ attrs: { blockId: null }, type: { name: 'heading' } }),
+    } as unknown as ProseMirrorNode
+    let metadata = setSectionTagsInMetadata({}, 'local:hs-stable-b', ['B'])
+    const validKeys = collectValidSectionTagKeys([entry], doc, metadata)
+    metadata = pruneOrphanSectionTags(metadata, validKeys)
+    expect(getSectionTags(metadata, 'local:hs-stable-b')).toHaveLength(1)
+  })
+
+  it('reconciles a single orphan section tag key to an untagged heading', () => {
+    const entry: FlatTocEntry = {
+      id: 'h-42',
+      blockId: 'heading-42',
+      level: 3,
+      text: 'B节',
+      pos: 42,
+      sortIndex: 1,
+      sourceType: 'local',
+    }
+    const doc = {
+      nodeAt: (pos: number) => (
+        pos === 42
+          ? { attrs: { blockId: null }, type: { name: 'heading' } }
+          : null
+      ),
+    } as unknown as ProseMirrorNode
+    let metadata = setSectionTagsInMetadata({}, 'local:hs-stable-b', ['实现'])
+    metadata = reconcileOrphanSectionTagKeys(metadata, [entry], doc)
+    const syncs = listSectionHeadingBlockIdSyncs([entry], doc, metadata)
+    expect(syncs).toEqual([{ pos: 42, blockId: 'hs-stable-b' }])
+  })
+
+  it('reconciles multiple orphan section tag keys paired by document order', () => {
+    const entryA: FlatTocEntry = {
+      id: 'h-10',
+      blockId: 'heading-10',
+      level: 2,
+      text: 'A节',
+      pos: 10,
+      sortIndex: 0,
+      sourceType: 'local',
+    }
+    const entryB: FlatTocEntry = {
+      id: 'h-42',
+      blockId: 'heading-42',
+      level: 3,
+      text: 'B节',
+      pos: 42,
+      sortIndex: 1,
+      sourceType: 'local',
+    }
+    const doc = {
+      nodeAt: (pos: number) => (
+        pos === 10 || pos === 42
+          ? { attrs: { blockId: null }, type: { name: 'heading' } }
+          : null
+      ),
+    } as unknown as ProseMirrorNode
+    let metadata: Record<string, unknown> = {}
+    metadata = setSectionTagsInMetadata(metadata, 'local:hs-a', ['设计'])
+    metadata = setSectionTagsInMetadata(metadata, 'local:hs-b', ['实现'])
+    metadata = reconcileOrphanSectionTagKeys(metadata, [entryA, entryB], doc)
+    expect(getSectionTagAnchors(metadata)['local:hs-a']).toEqual({ text: 'A节', level: 2 })
+    expect(getSectionTagAnchors(metadata)['local:hs-b']).toEqual({ text: 'B节', level: 3 })
+  })
+
+  it('reconcileOrphanSectionTagKeys is idempotent when nothing changes', () => {
+    const entry: FlatTocEntry = {
+      id: 'h-10',
+      blockId: 'hs-abc',
+      level: 2,
+      text: 'A节',
+      pos: 10,
+      sortIndex: 0,
+      sourceType: 'local',
+    }
+    const doc = {
+      nodeAt: () => ({ attrs: { blockId: 'hs-abc' }, type: { name: 'heading' } }),
+    } as unknown as ProseMirrorNode
+    const metadata = setSectionTagsInMetadata({}, 'local:hs-abc', ['设计'])
+    const first = reconcileOrphanSectionTagKeys(metadata, [entry], doc)
+    const second = reconcileOrphanSectionTagKeys(first, [entry], doc)
+    expect(second).toBe(first)
+  })
+
+  it('resolves orphan section tags by label match without anchors', () => {
+    const entryA: FlatTocEntry = {
+      id: 'h-10',
+      blockId: 'heading-10',
+      level: 2,
+      text: 'A节',
+      pos: 10,
+      sortIndex: 0,
+      sourceType: 'local',
+    }
+    const entryB: FlatTocEntry = {
+      id: 'h-42',
+      blockId: 'heading-42',
+      level: 3,
+      text: 'B节',
+      pos: 42,
+      sortIndex: 1,
+      sourceType: 'local',
+    }
+    const doc = {
+      nodeAt: () => ({ attrs: { blockId: null }, type: { name: 'heading' } }),
+    } as unknown as ProseMirrorNode
+    let metadata: Record<string, unknown> = {}
+    metadata = setSectionTagsInMetadata(metadata, 'local:hs-random-b', ['B'])
+    metadata = setSectionTagsInMetadata(metadata, 'local:hs-random-a', ['A'])
+    const sectionMap = sectionTagsMapFromMetadata(metadata)
+    expect(resolveEntrySectionTags(entryA, sectionMap, doc).map((tag) => tag.label)).toEqual(['A'])
+    expect(resolveEntrySectionTags(entryB, sectionMap, doc).map((tag) => tag.label)).toEqual(['B'])
+  })
+
+  it('maps section tags by anchor when flat blockId differs from metadata key', () => {
+    const entry: FlatTocEntry = {
+      id: 'h-42',
+      blockId: 'heading-42',
+      level: 3,
+      text: 'B节',
+      pos: 42,
+      sortIndex: 1,
+      sourceType: 'local',
+    }
+    const doc = {
+      nodeAt: () => ({ attrs: { blockId: null }, type: { name: 'heading' } }),
+    } as unknown as ProseMirrorNode
+    let metadata = setSectionTagsInMetadata({}, 'local:hs-stable-b', ['B'])
+    metadata = setSectionTagAnchor(metadata, 'local:hs-stable-b', { text: 'B节', level: 3 })
+    const byId = buildSectionTagsByEntryId([entry], metadata, doc)
+    expect(byId['h-42']).toEqual([
+      expect.objectContaining({ label: 'B' }),
     ])
   })
 })

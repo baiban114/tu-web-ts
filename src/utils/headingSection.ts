@@ -1,6 +1,7 @@
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 
 export const HEADING_FOLD_COMMENT_RE = /<!--tu:heading-fold\s+([^>]+)-->/
+export const HEADING_ID_COMMENT_RE = /<!--tu:heading-id\s+([^>]+)-->/
 
 function escapeAttr(value: string): string {
   return value.replace(/"/g, '&quot;')
@@ -28,6 +29,17 @@ export function parseHeadingFoldComment(attrsStr: string): { blockId: string; se
 
 export function serializeHeadingFoldComment(blockId: string): string {
   return `<!--tu:heading-fold id="${escapeAttr(blockId)}" collapsed="true"-->`
+}
+
+export function parseHeadingIdComment(attrsStr: string): { blockId: string } | null {
+  const attrs = parseAttrString(attrsStr)
+  const blockId = attrs.id
+  if (!blockId) return null
+  return { blockId }
+}
+
+export function serializeHeadingIdComment(blockId: string): string {
+  return `<!--tu:heading-id id="${escapeAttr(blockId)}"-->`
 }
 
 export interface HeadingSectionContentRange {

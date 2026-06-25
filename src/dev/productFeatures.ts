@@ -61,7 +61,7 @@ export const productFeatureCatalog: ProductFeature[] = [
     id: 'page-block-tags',
     module: '编辑器',
     name: '页面、块与节标签',
-    description: '页面级 metadata.tags；块级 embed metadata.tags；目录节级 metadata.sectionTags（local / ref-group / ref-child），目录右键、标题选区工具栏「节标签」、引用/外部资源块 NodeView「节标签」与侧栏 chip 展示；候选标签在知识库内复用。',
+    description: '页面级 metadata.tags；块级 embed metadata.tags；目录节 metadata.sectionTags；划选文字 metadata.textTagSpans；划选「标注」统一编辑笔记与文字标签；标签筛选条按节/块/文字标签严格筛选；候选标签在知识库内复用。',
     status: 'testing',
     owner: 'Editor',
   },

@@ -70,6 +70,21 @@ export interface BlockTag {
   color?: string;
 }
 
+/** Page-level text-range tags stored in metadata.textTagSpans. */
+export interface TextTagSpan {
+  id: string;
+  tags: BlockTag[];
+  selectedText: string;
+  contextBefore: string;
+  contextAfter: string;
+  from?: number;
+  to?: number;
+  blockId?: string;
+  anchorVersion?: number;
+  lastResolvedAt?: number;
+  unresolved?: boolean;
+}
+
 export interface SpannedBlockInfo {
   blockId: string;
   blockType: string;

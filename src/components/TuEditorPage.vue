@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { ref, reactive, watch, computed, onMounted, onBeforeUnmount, nextTick, provide } from 'vue'
 import { useRouter } from 'vue-router'
-import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, SpannedBlockInfo } from '@/api/types'
+import type { Block, BlockTag, EmbeddedObject, ExternalResourceEmbedData, HeadingSourceBinding, PageContent, TextAnnotation, TextTagSpan, SpannedBlockInfo } from '@/api/types'
 import type { JSONContent } from '@tiptap/core'
 import { tipTapToBlocks } from '@/editor/converters'
 import { resolvePageDocument, toV2PageContent } from '@/editor/pageDocument'
@@ -13,6 +13,7 @@ import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
+import TagFilterBar from './TagFilterBar.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
@@ -23,14 +24,41 @@ import { useWorkspaceStore } from '@/stores/workspace'
 import { normalizeBlockTags } from '@/utils/blockMetadata'
 import { getPageTags } from '@/utils/pageMetadata'
 import {
-  buildSectionTagsByEntryId,
-  collectSectionTagsFromMetadata,
+  collectValidSectionTagKeys,
+  ensureSectionTagAnchorsForFlat,
+  findLocalSectionEntryForTagKey,
+  getLocalSectionTagLookupKeys,
+  getSectionTagAnchors,
   getSectionTagKey,
   getSectionTags,
+  listSectionHeadingBlockIdSyncs,
   pruneOrphanSectionTags,
+  reconcileOrphanSectionTagKeys,
+  setSectionTagAnchor,
   setSectionTagsInMetadata,
+  sectionTagsMapFromMetadata,
+  buildSectionTagsByEntryId,
+  collectSectionTagsFromMetadata,
 } from '@/utils/sectionMetadata'
+import { collectFilterableTagsOnPage } from '@/utils/tagFilter'
+import { dispatchTagFilterRefresh } from '@/utils/tagFilterRefresh'
+import {
+  collectTextTagSpanTags,
+  createTextTagSpanFromSelection,
+  findTextTagSpanAtRange,
+  getTextTagSpans,
+  removeTextTagSpan,
+  resolveTextTagSpan,
+  setTextTagSpansInMetadata,
+  upsertTextTagSpan,
+} from '@/utils/textTagSpanMetadata'
 import { collectAvailableTags, fetchKbTagPool } from '@/utils/tagPool'
+import {
+  clearTagFilterSession,
+  getActiveTagFilter,
+  getTagFilterRevision,
+  setActiveTagFilter,
+} from '@/stores/tagFilterSession'
 import { createHeadingBlockId } from '@/utils/headingSource'
 import { registerExternalUrlFromPaste } from '@/api/externalResource'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
@@ -431,17 +459,20 @@ let urlHoverToolbarHovering = false
 const urlHoverToolbarVisible = computed(() => Boolean(urlHoverTarget.value))
 
 // --- Tag editor ---
-type TagEditorScope = 'page' | 'block' | 'section'
+type TagEditorScope = 'page' | 'block' | 'section' | 'text-span'
 const tagEditorState = ref({
   visible: false,
   scope: 'page' as TagEditorScope,
   blockId: '',
   sectionKey: '',
+  textSpanId: '',
   top: 0,
   left: 0,
 })
 const tagEditorBlockTags = ref<BlockTag[]>([])
 const kbTagPool = ref<BlockTag[]>([])
+const pendingTextTagSpan = ref<TextTagSpan | null>(null)
+const textTagSpanRevision = ref(0)
 
 // --- Note / Annotation ---
 const noteEditorVisible = ref(false)
@@ -454,6 +485,8 @@ const pendingNoteFrom = ref(0)
 const pendingNoteTo = ref(0)
 const pendingNoteSpannedBlockIds = ref<string[]>([])
 const pendingNoteSpannedBlockMetadata = ref<SpannedBlockInfo[]>([])
+const pendingNoteTags = ref<BlockTag[]>([])
+const pendingTextTagSpanId = ref('')
 let annotationPersistTimer: ReturnType<typeof setTimeout> | null = null
 
 const urlHoverToolbarSuppressed = computed(() => (
@@ -488,6 +521,7 @@ const selectionToolbarSuppressed = computed(() => (
   || showResourcePicker.value
   || noteEditorVisible.value
   || urlHoverToolbarVisible.value
+  || tagEditorState.value.visible
 ))
 
 const notePopoverVisible = ref(false)
@@ -527,8 +561,11 @@ const pageTags = computed(() => getPageTags({
 const tagEditorTitle = computed(() => {
   if (tagEditorState.value.scope === 'page') return '编辑页面标签'
   if (tagEditorState.value.scope === 'section') return '编辑节标签'
+  if (tagEditorState.value.scope === 'text-span') return '编辑文字标签'
   return '编辑块标签'
 })
+
+const currentTextTagSpans = computed(() => getTextTagSpans(localPageMetadata.value))
 
 const currentSectionTags = computed(() => collectSectionTagsFromMetadata(localPageMetadata.value))
 
@@ -536,14 +573,38 @@ const sectionTagsByItemId = computed(() => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return {} as Record<string, BlockTag[]>
   const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
-  return buildSectionTagsByEntryId(flat, localPageMetadata.value)
+  return buildSectionTagsByEntryId(flat, localPageMetadata.value, editor.state.doc)
 })
+
+const sectionTagsMap = computed(() => sectionTagsMapFromMetadata(localPageMetadata.value))
+const sectionTagAnchors = computed(() => getSectionTagAnchors(localPageMetadata.value))
+
+const activeTagFilter = computed(() => {
+  void getTagFilterRevision()
+  return getActiveTagFilter(workspaceStore.currentPageId)
+})
+
+const filterableTags = computed(() => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return [] as BlockTag[]
+  return collectFilterableTagsOnPage(
+    localPageMetadata.value,
+    editor.state.doc,
+    tocCollectContext.value,
+  )
+})
+
+provide('activeTagFilter', activeTagFilter)
+provide('sectionTagsMap', sectionTagsMap)
+provide('sectionTagAnchors', sectionTagAnchors)
+provide('textTagSpans', currentTextTagSpans)
+provide('textTagSpanRevision', computed(() => textTagSpanRevision.value))
 
 const availableTags = computed(() => collectAvailableTags(
   localBlocks.value,
   pageTags.value,
   [kbTagPool.value],
-  currentSectionTags.value,
+  [...currentSectionTags.value, ...collectTextTagSpanTags(localPageMetadata.value)],
 ))
 
 async function refreshKbTagPool() {
@@ -572,6 +633,21 @@ watch(
     localPageMetadata.value = { ...(val.metadata ?? {}) }
   },
   { immediate: true, deep: true },
+)
+
+watch(
+  () => workspaceStore.currentPageId,
+  () => {
+    void nextTick(() => reconcileSectionTagsOnLoad())
+  },
+)
+
+watch(
+  () => tuEditorRef.value?.editor,
+  (editor) => {
+    if (!editor) return
+    void nextTick(() => reconcileSectionTagsOnLoad())
+  },
 )
 
 watch(
@@ -1093,6 +1169,7 @@ watch(
   () => workspaceStore.currentPageId,
   () => {
     clearSectionFoldSession()
+    clearTagFilterSession()
     void nextTick(() => void prefetchEditorRefOutlines())
   },
 )
@@ -1362,14 +1439,90 @@ const handleExtractSelectionButtonClick = () => {
 }
 
 // --- Tag editor ---
-const openTagEditorAtCenter = (scope: TagEditorScope, blockId = '', sectionKey = '') => {
+const openTagEditorAtCenter = (
+  scope: TagEditorScope,
+  blockId = '',
+  sectionKey = '',
+  textSpanId = '',
+) => {
   tagEditorState.value = {
     visible: true,
     scope,
     blockId,
     sectionKey,
+    textSpanId,
     top: window.innerHeight / 2 - 160,
     left: window.innerWidth / 2 - 160,
+  }
+}
+
+const syncHeadingBlockIdAtPos = (pos: number, blockId: string): boolean => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return false
+  const node = editor.state.doc.nodeAt(pos)
+  if (!node || node.type.name !== 'heading') return false
+  if (String(node.attrs.blockId || '').trim() === blockId) return false
+  editor.chain().focus().command(({ tr, dispatch }) => {
+    if (!dispatch) return true
+    tr.setNodeMarkup(pos, undefined, {
+      ...node.attrs,
+      blockId,
+    })
+    return true
+  }).run()
+  localDocument.value = editor.getJSON()
+  return true
+}
+
+const findPreferredSectionBlockId = (entry: FlatTocEntry, doc: ProseMirrorNode): string | null => {
+  const metadata = localPageMetadata.value
+  const anchors = getSectionTagAnchors(metadata)
+  for (const [key, anchor] of Object.entries(anchors)) {
+    if (anchor.text !== entry.text || anchor.level !== entry.level) continue
+    if (getSectionTags(metadata, key).length === 0) continue
+    return key.slice('local:'.length)
+  }
+  for (const key of getLocalSectionTagLookupKeys(entry, doc)) {
+    if (key.endsWith(`heading-${entry.pos}`)) continue
+    const blockId = key.slice('local:'.length)
+    if (blockId.startsWith('heading-')) continue
+    if (getSectionTags(metadata, key).length > 0) return blockId
+  }
+  return null
+}
+
+const reconcileSectionTagsOnLoad = () => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  let metadata = { ...localPageMetadata.value }
+  let metadataChanged = false
+
+  const withAnchors = ensureSectionTagAnchorsForFlat(metadata, flat, editor.state.doc)
+  if (withAnchors !== metadata) {
+    metadata = withAnchors
+    metadataChanged = true
+  }
+
+  const withOrphans = reconcileOrphanSectionTagKeys(metadata, flat, editor.state.doc)
+  if (withOrphans !== metadata) {
+    metadata = withOrphans
+    metadataChanged = true
+  }
+
+  if (metadataChanged) {
+    localPageMetadata.value = metadata
+  }
+
+  const syncs = listSectionHeadingBlockIdSyncs(flat, editor.state.doc, metadata)
+  let docChanged = false
+  for (const { pos, blockId } of syncs) {
+    if (syncHeadingBlockIdAtPos(pos, blockId)) docChanged = true
+  }
+
+  if (metadataChanged || docChanged) {
+    emitLocalContentChange()
   }
 }
 
@@ -1389,6 +1542,28 @@ const ensureLocalHeadingBlockId = (entry: FlatTocEntry): string => {
     return existing
   }
 
+  const preferredBlockId = findPreferredSectionBlockId(entry, editor.state.doc)
+  if (preferredBlockId) {
+    if (String(node.attrs.blockId || '').trim() !== preferredBlockId) {
+      editor.chain().focus().command(({ tr, dispatch }) => {
+        if (!dispatch) return true
+        tr.setNodeMarkup(entry.pos, undefined, {
+          ...node.attrs,
+          blockId: preferredBlockId,
+        })
+        return true
+      }).run()
+      localDocument.value = editor.getJSON()
+      emitLocalContentChange()
+    }
+    return preferredBlockId
+  }
+
+  const legacyIds = new Set<string>()
+  if (existing) legacyIds.add(existing)
+  if (entry.blockId) legacyIds.add(entry.blockId)
+  legacyIds.add(`heading-${entry.pos}`)
+
   const blockId = createHeadingBlockId()
   editor.chain().focus().command(({ tr, dispatch }) => {
     if (!dispatch) return true
@@ -1399,7 +1574,24 @@ const ensureLocalHeadingBlockId = (entry: FlatTocEntry): string => {
     return true
   }).run()
 
+  let metadata = { ...localPageMetadata.value }
+  let metadataChanged = false
+  for (const legacyId of legacyIds) {
+    if (legacyId === blockId) continue
+    const legacyKey = `local:${legacyId}`
+    const legacyTags = getSectionTags(metadata, legacyKey)
+    if (legacyTags.length === 0) continue
+    metadata = setSectionTagsInMetadata(metadata, `local:${blockId}`, legacyTags)
+    metadata = setSectionTagsInMetadata(metadata, legacyKey, [])
+    metadataChanged = true
+  }
+  if (metadataChanged) {
+    localPageMetadata.value = metadata
+    emitLocalContentChange()
+  }
+
   localDocument.value = editor.getJSON()
+  emitLocalContentChange()
   return blockId
 }
 
@@ -1426,6 +1618,48 @@ const openSectionTagEditor = (item: TocItem) => {
   const found = flat.find((entry) => entry.id === item.id)
   if (!found) return
   openSectionTagEditorFromEntry(found)
+}
+
+
+const handleTextTagSpanClick = (spanId: string) => {
+  const span = getTextTagSpans(localPageMetadata.value).find((item) => item.id === spanId)
+  if (!span) return
+
+  const rangeFrom = typeof span.from === 'number' ? span.from : selectionFrom.value
+  const rangeTo = typeof span.to === 'number' ? span.to : selectionTo.value
+  const overlappingAnnotation = localAnnotations.value.find((annotation) => (
+    annotation.kind !== 'basis'
+    && typeof annotation.from === 'number'
+    && typeof annotation.to === 'number'
+    && annotation.from < rangeTo
+    && rangeFrom < annotation.to
+  ))
+
+  pendingNoteBlockId.value = ''
+  pendingNoteSelectedText.value = span.selectedText
+  pendingNoteContextBefore.value = span.contextBefore
+  pendingNoteContextAfter.value = span.contextAfter
+  pendingNoteFrom.value = rangeFrom
+  pendingNoteTo.value = rangeTo
+  pendingNoteSpannedBlockIds.value = []
+  pendingNoteSpannedBlockMetadata.value = []
+  pendingNoteTags.value = [...span.tags]
+  pendingTextTagSpanId.value = span.id
+  editingAnnotation.value = overlappingAnnotation ? { ...overlappingAnnotation } : undefined
+  noteEditorVisible.value = true
+}
+
+const handleTextTagSpansMapped = (spans: TextTagSpan[]) => {
+  const nextMetadata = setTextTagSpansInMetadata(localPageMetadata.value, spans)
+  if (JSON.stringify(nextMetadata.textTagSpans ?? []) === JSON.stringify(localPageMetadata.value.textTagSpans ?? [])) {
+    return
+  }
+  localPageMetadata.value = nextMetadata
+  emitLocalContentChange()
+}
+
+const bumpTextTagSpanRevision = () => {
+  textTagSpanRevision.value += 1
 }
 
 const handleEditSectionTagsFromSelection = () => {
@@ -1467,6 +1701,25 @@ const handleOpenPageTagEditor = () => {
   openTagEditorAtCenter('page')
 }
 
+const handleTagFilterSelect = (tag: BlockTag) => {
+  const pageId = workspaceStore.currentPageId
+  if (!pageId) return
+  setActiveTagFilter(pageId, tag)
+  void nextTick(() => {
+    reconcileSectionTagsOnLoad()
+    dispatchTagFilterRefresh(tuEditorRef.value?.editor)
+  })
+}
+
+const handleTagFilterClear = () => {
+  const pageId = workspaceStore.currentPageId
+  if (!pageId) return
+  setActiveTagFilter(pageId, null)
+  void nextTick(() => {
+    dispatchTagFilterRefresh(tuEditorRef.value?.editor)
+  })
+}
+
 const handleOpenTagEditor = (blockId: string) => {
   const found = findEmbedNodeByBlockId(blockId)
   const metadata = (found?.node.attrs?.metadata || {}) as { tags?: BlockTag[] }
@@ -1478,7 +1731,9 @@ const closeTagEditor = () => {
   tagEditorState.value.visible = false
   tagEditorState.value.blockId = ''
   tagEditorState.value.sectionKey = ''
+  tagEditorState.value.textSpanId = ''
   tagEditorState.value.scope = 'page'
+  pendingTextTagSpan.value = null
 }
 
 const applyBlockTags = (blockId: string, tags: BlockTag[]) => {
@@ -1533,9 +1788,49 @@ const updateBlockTags = (tags: BlockTag[]) => {
     const editor = tuEditorRef.value?.editor
     if (editor) {
       const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
-      metadata = pruneOrphanSectionTags(metadata, flat.map(getSectionTagKey))
+      metadata = pruneOrphanSectionTags(
+        metadata,
+        collectValidSectionTagKeys(flat, editor.state.doc, metadata),
+      )
+      const entry = findLocalSectionEntryForTagKey(flat, editor.state.doc, key)
+      if (entry) {
+        metadata = setSectionTagAnchor(metadata, key, { text: entry.text, level: entry.level })
+        const blockId = key.slice('local:'.length)
+        if (syncHeadingBlockIdAtPos(entry.pos, blockId)) {
+          emitLocalContentChange()
+        }
+      }
     }
     localPageMetadata.value = metadata
+    emitLocalContentChange()
+    void refreshKbTagPool()
+    return
+  }
+
+  if (tagEditorState.value.scope === 'text-span') {
+    const normalizedTags = normalizeBlockTags(tags)
+    const spanId = tagEditorState.value.textSpanId
+    let metadata = { ...localPageMetadata.value }
+
+    if (normalizedTags.length === 0) {
+      if (spanId) {
+        metadata = removeTextTagSpan(metadata, spanId)
+      }
+    } else if (spanId) {
+      const existing = getTextTagSpans(metadata).find((item) => item.id === spanId)
+      if (existing) {
+        metadata = upsertTextTagSpan(metadata, { ...existing, tags: normalizedTags })
+      }
+    } else if (pendingTextTagSpan.value) {
+      metadata = upsertTextTagSpan(metadata, {
+        ...pendingTextTagSpan.value,
+        tags: normalizedTags,
+      })
+    }
+
+    localPageMetadata.value = metadata
+    pendingTextTagSpan.value = null
+    bumpTextTagSpanRevision()
     emitLocalContentChange()
     void refreshKbTagPool()
     return
@@ -1562,6 +1857,14 @@ const handleAddNoteFromSelection = () => {
   const hasText = !!payload.selectedText
   if (!hasText && selectionSpannedBlockIds.value.length === 0) return
 
+  const existingSpan = hasText
+    ? findTextTagSpanAtRange(
+      getTextTagSpans(localPageMetadata.value),
+      selectionFrom.value,
+      selectionTo.value,
+    )
+    : null
+
   pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = payload.selectedText
   pendingNoteContextBefore.value = payload.contextBefore
@@ -1570,22 +1873,94 @@ const handleAddNoteFromSelection = () => {
   pendingNoteTo.value = payload.to ?? selectionTo.value
   pendingNoteSpannedBlockIds.value = selectionSpannedBlockIds.value
   pendingNoteSpannedBlockMetadata.value = selectionSpannedBlockMetadata.value
+  pendingNoteTags.value = existingSpan ? [...existingSpan.tags] : []
+  pendingTextTagSpanId.value = existingSpan?.id ?? ''
 
   editingAnnotation.value = undefined
   noteEditorVisible.value = true
 }
 
-const handleSaveAnnotation = (note: string) => {
+const applyTextTagSpanFromMarking = (tags: BlockTag[]) => {
+  const normalizedTags = normalizeBlockTags(tags)
+  const spanId = pendingTextTagSpanId.value
+  let metadata = { ...localPageMetadata.value }
+  let changed = false
+
+  if (normalizedTags.length === 0) {
+    if (spanId) {
+      metadata = removeTextTagSpan(metadata, spanId)
+      changed = true
+    }
+  } else if (spanId) {
+    const existing = getTextTagSpans(metadata).find((item) => item.id === spanId)
+    if (existing) {
+      metadata = upsertTextTagSpan(metadata, { ...existing, tags: normalizedTags })
+      changed = true
+    }
+  } else if (pendingNoteSelectedText.value.trim()) {
+    const editor = tuEditorRef.value?.editor
+    const payload = editor
+      ? getSelectionAnnotationPayload(pendingNoteFrom.value, pendingNoteTo.value)
+      : {
+        selectedText: pendingNoteSelectedText.value,
+        contextBefore: pendingNoteContextBefore.value,
+        contextAfter: pendingNoteContextAfter.value,
+        from: pendingNoteFrom.value,
+        to: pendingNoteTo.value,
+      }
+    let span = createTextTagSpanFromSelection({
+      selectedText: payload.selectedText || pendingNoteSelectedText.value,
+      contextBefore: payload.contextBefore ?? pendingNoteContextBefore.value,
+      contextAfter: payload.contextAfter ?? pendingNoteContextAfter.value,
+      from: payload.from ?? pendingNoteFrom.value,
+      to: payload.to ?? pendingNoteTo.value,
+      blockId: payload.blockId,
+    }, normalizedTags)
+    if (editor) {
+      span = resolveTextTagSpan(editor.state.doc, span)
+    }
+    metadata = upsertTextTagSpan(metadata, span)
+    changed = true
+  }
+
+  if (changed) {
+    localPageMetadata.value = metadata
+    bumpTextTagSpanRevision()
+  }
+}
+
+const resetTextMarkingPending = () => {
+  noteEditorVisible.value = false
+  editingAnnotation.value = undefined
+  hasSelection.value = false
+  selectionBlockIndex.value = -1
+  selectionBlockId.value = ''
+  pendingNoteBlockId.value = ''
+  pendingNoteSelectedText.value = ''
+  pendingNoteFrom.value = 0
+  pendingNoteTo.value = 0
+  pendingNoteSpannedBlockIds.value = []
+  pendingNoteSpannedBlockMetadata.value = []
+  pendingNoteTags.value = []
+  pendingTextTagSpanId.value = ''
+}
+
+const handleSaveAnnotation = (payload: { note: string; tags: BlockTag[] }) => {
+  const note = payload.note.trim()
   const now = Date.now()
   const existing = editingAnnotation.value
-  const annotations = localAnnotations.value
+  let annotations = [...localAnnotations.value]
 
   if (existing) {
-    const idx = annotations.findIndex(a => a.id === existing.id)
+    const idx = annotations.findIndex((item) => item.id === existing.id)
     if (idx >= 0) {
-      annotations[idx] = { ...existing, note, updatedAt: now }
+      if (note) {
+        annotations[idx] = { ...existing, note, updatedAt: now }
+      } else {
+        annotations = annotations.filter((item) => item.id !== existing.id)
+      }
     }
-  } else {
+  } else if (note) {
     const hasText = !!pendingNoteSelectedText.value
     const hasSpannedBlocks = pendingNoteSpannedBlockIds.value.length > 0
     const isBlockOnly = !hasText && hasSpannedBlocks
@@ -1593,7 +1968,7 @@ const handleSaveAnnotation = (note: string) => {
     const spannedBlockMetadata = hasSpannedBlocks
       ? normalizeSpannedBlockMetadata(pendingNoteSpannedBlockIds.value, pendingNoteSpannedBlockMetadata.value)
       : undefined
-    const annotation: TextAnnotation = {
+    annotations.push({
       id: `annot-${now}-${Math.random().toString(36).substr(2, 6)}`,
       selectedText: pendingNoteSelectedText.value,
       contextBefore: pendingNoteContextBefore.value,
@@ -1611,24 +1986,13 @@ const handleSaveAnnotation = (note: string) => {
       scope,
       spannedBlockIds: hasSpannedBlocks ? pendingNoteSpannedBlockIds.value : undefined,
       spannedBlockMetadata,
-    }
-    annotations.push(annotation)
+    })
   }
 
-  localAnnotations.value = [...annotations]
+  localAnnotations.value = annotations
+  applyTextTagSpanFromMarking(payload.tags)
   emitLocalContentChange()
-
-  noteEditorVisible.value = false
-  editingAnnotation.value = undefined
-  hasSelection.value = false
-  selectionBlockIndex.value = -1
-  selectionBlockId.value = ''
-  pendingNoteBlockId.value = ''
-  pendingNoteSelectedText.value = ''
-  pendingNoteFrom.value = 0
-  pendingNoteTo.value = 0
-  pendingNoteSpannedBlockIds.value = []
-  pendingNoteSpannedBlockMetadata.value = []
+  resetTextMarkingPending()
 }
 
 const sortAnnotationsByTimeDesc = (annotations: TextAnnotation[]) => {
@@ -1773,10 +2137,20 @@ const handleEditAnnotation = (annotation?: TextAnnotation) => {
   const target = annotation ?? notePopoverAnnotation.value
   if (!target || target.kind === 'basis') return
 
+  const rangeFrom = typeof target.from === 'number' ? target.from : 0
+  const rangeTo = typeof target.to === 'number' ? target.to : 0
+  const existingSpan = (typeof target.from === 'number' && typeof target.to === 'number')
+    ? findTextTagSpanAtRange(getTextTagSpans(localPageMetadata.value), rangeFrom, rangeTo)
+    : null
+
   pendingNoteBlockId.value = ''
   pendingNoteSelectedText.value = target.selectedText
   pendingNoteContextBefore.value = target.contextBefore
   pendingNoteContextAfter.value = target.contextAfter
+  pendingNoteFrom.value = rangeFrom
+  pendingNoteTo.value = rangeTo
+  pendingNoteTags.value = existingSpan ? [...existingSpan.tags] : []
+  pendingTextTagSpanId.value = existingSpan?.id ?? ''
   editingAnnotation.value = { ...target }
   noteEditorVisible.value = true
   notePopoverVisible.value = false
@@ -1951,6 +2325,13 @@ onBeforeUnmount(() => {
       />
     </section>
 
+    <TagFilterBar
+      :tags="filterableTags"
+      :active-tag="activeTagFilter"
+      @select="handleTagFilterSelect"
+      @clear="handleTagFilterClear"
+    />
+
     <div class="content-shell" :class="{ 'content-shell--toc-open': tocExpanded && tocItems.length > 0 }">
       <div class="content-container">
         <TuEditor
@@ -1970,6 +2351,8 @@ onBeforeUnmount(() => {
           @mark-block-excerpt="handleMarkBlockExcerpt"
           @set-block-basis="handleSetBlockBasis"
           @heading-source-click="handleHeadingSourceClick"
+          @text-tag-span-click="handleTextTagSpanClick"
+          @text-tag-spans-mapped="handleTextTagSpansMapped"
           @url-hover-change="handleUrlHoverChange"
         />
       </div>
@@ -2040,7 +2423,7 @@ onBeforeUnmount(() => {
           v-if="nodeViewToolbar.canAddNote"
           class="nodeview-toolbar__btn"
           @click="handleAddNoteFromSelection"
-        >添加笔记</button>
+        >标注</button>
         <button
           class="nodeview-toolbar__btn"
           @click="handleMarkNodeViewBlockExcerpt"
@@ -2189,8 +2572,10 @@ onBeforeUnmount(() => {
     <NoteEditor
       :visible="noteEditorVisible"
       :annotation="editingAnnotation"
+      :selected-tags="pendingNoteTags"
+      :available-tags="availableTags"
       @save="handleSaveAnnotation"
-      @cancel="noteEditorVisible = false; editingAnnotation = undefined"
+      @cancel="resetTextMarkingPending"
     />
 
     <!-- 笔记弹窗 -->

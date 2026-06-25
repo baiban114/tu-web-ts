@@ -7,8 +7,11 @@ import {
 } from '@/utils/headingSource'
 import {
   HEADING_FOLD_COMMENT_RE,
+  HEADING_ID_COMMENT_RE,
   parseHeadingFoldComment,
+  parseHeadingIdComment,
   serializeHeadingFoldComment,
+  serializeHeadingIdComment,
 } from '@/utils/headingSection'
 import {
   LINK_DISPLAY_COMMENT_RE,
@@ -593,6 +596,23 @@ function parseMarkdown(markdown: string): JSONContent[] {
         continue
       }
 
+      const headingIdMatch = line.match(HEADING_ID_COMMENT_RE)
+      if (headingIdMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n')),
+          })
+          currentLines = []
+        }
+        const parsedId = parseHeadingIdComment(headingIdMatch[1])
+        if (parsedId) {
+          pendingHeadingBlockId = pendingHeadingBlockId || parsedId.blockId
+        }
+        continue
+      }
+
       const headingMatch = line.match(/^(#{1,6})\s+(.*)$/)
       if (headingMatch) {
         flushCurrentQuote()
@@ -819,11 +839,17 @@ function nodeToMarkdown(node: JSONContent): string {
       const blockId = node.attrs?.blockId as string | undefined
       const sectionCollapsed = Boolean(node.attrs?.sectionCollapsed)
       const sourceBinding = node.attrs?.sourceBinding as HeadingSourceBinding | null | undefined
+      let wroteBlockIdComment = false
       if (blockId && sectionCollapsed) {
         parts.push(serializeHeadingFoldComment(blockId))
+        wroteBlockIdComment = true
       }
       if (blockId && sourceBinding?.resourceItemId && sourceBinding.resourceExcerptId) {
         parts.push(serializeHeadingSourceComment(blockId, sourceBinding))
+        wroteBlockIdComment = true
+      }
+      if (blockId && !wroteBlockIdComment) {
+        parts.push(serializeHeadingIdComment(blockId))
       }
       parts.push('#'.repeat(node.attrs?.level || 1) + ' ' + contentToMarkdown(node.content || []))
       return parts.join('\n')

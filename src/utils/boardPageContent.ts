@@ -54,6 +54,7 @@ export function normalizePageContentFromApi(content: PageContent): PageContent {
     embeds,
     content: content.content ?? '',
     annotations: content.annotations ?? [],
+    metadata: content.metadata,
   }
 }
 

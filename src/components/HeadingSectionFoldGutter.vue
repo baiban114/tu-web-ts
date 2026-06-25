@@ -28,12 +28,58 @@ const props = defineProps<{
 const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
 
 const toggles = ref<FoldToggleLayout[]>([])
+const visibleEntryId = ref<string | null>(null)
 
 const boundEditors = new WeakSet<Editor>()
+const hoverCleanups: Array<() => void> = []
 
 let rafId = 0
+let hideVisibleTimer: ReturnType<typeof setTimeout> | null = null
 let scrollContainer: HTMLElement | null = null
 let resizeObserver: ResizeObserver | null = null
+
+function clearHideVisibleTimer() {
+  if (hideVisibleTimer) {
+    clearTimeout(hideVisibleTimer)
+    hideVisibleTimer = null
+  }
+}
+
+function showToggleForEntry(entryId: string) {
+  clearHideVisibleTimer()
+  visibleEntryId.value = entryId
+}
+
+function scheduleHideToggleForEntry(entryId: string) {
+  clearHideVisibleTimer()
+  hideVisibleTimer = setTimeout(() => {
+    hideVisibleTimer = null
+    if (visibleEntryId.value === entryId) {
+      visibleEntryId.value = null
+    }
+  }, 120)
+}
+
+function isToggleVisible(entryId: string): boolean {
+  return visibleEntryId.value === entryId
+}
+
+function clearHoverListeners() {
+  while (hoverCleanups.length > 0) {
+    hoverCleanups.pop()?.()
+  }
+}
+
+function bindToggleHover(anchor: HTMLElement, entryId: string) {
+  const onEnter = () => showToggleForEntry(entryId)
+  const onLeave = () => scheduleHideToggleForEntry(entryId)
+  anchor.addEventListener('mouseenter', onEnter)
+  anchor.addEventListener('mouseleave', onLeave)
+  hoverCleanups.push(() => {
+    anchor.removeEventListener('mouseenter', onEnter)
+    anchor.removeEventListener('mouseleave', onLeave)
+  })
+}
 
 function collectFlat(doc: import('@tiptap/pm/model').Node) {
   const ctx = tocCollectContext?.value
@@ -49,14 +95,18 @@ function syncToggles() {
     const wrapper = props.wrapperEl
     if (!ed || ed.isDestroyed || !wrapper) {
       toggles.value = []
+      clearHoverListeners()
       return
     }
 
     const gutterAnchor = getContentScrollGutterAnchor(wrapper)
     if (!gutterAnchor) {
       toggles.value = []
+      clearHoverListeners()
       return
     }
+
+    clearHoverListeners()
 
     const doc = ed.state.doc
     const flat = collectFlat(doc)
@@ -86,6 +136,7 @@ function syncToggles() {
           zIndex: 30,
         },
       })
+      bindToggleHover(anchor, section.entry.id)
     }
 
     toggles.value = next
@@ -172,6 +223,8 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   if (rafId) cancelAnimationFrame(rafId)
+  clearHideVisibleTimer()
+  clearHoverListeners()
   window.removeEventListener('resize', syncToggles)
   resizeObserver?.disconnect()
   const ed = props.editor
@@ -186,10 +239,14 @@ onBeforeUnmount(() => {
     :key="`${toggle.entryId}-${toggle.collapsed ? 'c' : 'e'}`"
     type="button"
     class="tu-fold-bullet heading-section-fold-gutter__btn"
+    :class="{ 'heading-section-fold-gutter__btn--visible': isToggleVisible(toggle.entryId) }"
     :style="toggle.style"
     :title="toggle.collapsed ? '展开本节' : '收起本节'"
     :aria-label="toggle.collapsed ? '展开本节' : '收起本节'"
+    :tabindex="isToggleVisible(toggle.entryId) ? 0 : -1"
     @mousedown.prevent
+    @mouseenter="showToggleForEntry(toggle.entryId)"
+    @mouseleave="scheduleHideToggleForEntry(toggle.entryId)"
     @click.stop="toggleFold(toggle.entryId)"
   >
     {{ toggle.collapsed ? '▶' : '▼' }}

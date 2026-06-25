@@ -23,10 +23,14 @@ import { ParagraphNode } from './extensions/ParagraphNode'
 import { HeadingNode } from './extensions/HeadingNode'
 import { HeadingSourceDecorations } from './extensions/HeadingSourceDecorations'
 import { HeadingSectionFold } from './extensions/HeadingSectionFold'
+import { TagContentFilter } from './extensions/TagContentFilter'
+import { TextTagSpanDecorations } from './extensions/TextTagSpanDecorations'
 import { TuLink } from './extensions/TuLink'
 import { UrlEmbedBlockNode } from './extensions/UrlEmbedBlockNode'
 import { createHtmlInlineRenderExtension } from './extensions/HtmlInlineRender'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
+import type { BlockTag, TextTagSpan } from '@/api/types'
+import type { SectionTagsMap, SectionTagAnchor } from '@/utils/sectionMetadata'
 
 export type InsertBlockType =
   | 'richtext'
@@ -54,6 +58,14 @@ export interface TuEditorExtensionsConfig {
   onHeadingSourceClick: (binding: HeadingSourceBinding) => void
   getTocContext: () => TocCollectContext | null
   getFoldRevision: () => number
+  getSectionTagsMap: () => SectionTagsMap
+  getSectionTagAnchors: () => Record<string, SectionTagAnchor>
+  getTextTagSpans: () => TextTagSpan[]
+  getActiveTagFilter: () => BlockTag | null
+  getFilterRevision: () => number
+  getTextTagSpanRevision: () => number
+  onTextTagSpanClick?: (spanId: string) => void
+  onTextTagSpansMapped?: (spans: TextTagSpan[]) => void
   insertOptions: InsertOption[]
   slashSuggestion: {
     items: (props: { query: string }) => InsertOption[]
@@ -116,6 +128,20 @@ export function getTuEditorExtensions(config: TuEditorExtensionsConfig): Extensi
     HeadingSectionFold.configure({
       getTocContext: config.getTocContext,
       getFoldRevision: config.getFoldRevision,
+    }),
+    TextTagSpanDecorations.configure({
+      getTextTagSpans: config.getTextTagSpans,
+      getRevision: config.getTextTagSpanRevision,
+      onSpanClick: config.onTextTagSpanClick,
+      onSpansMapped: config.onTextTagSpansMapped,
+    }),
+    TagContentFilter.configure({
+      getTocContext: config.getTocContext,
+      getSectionTagsMap: config.getSectionTagsMap,
+      getSectionTagAnchors: config.getSectionTagAnchors,
+      getTextTagSpans: config.getTextTagSpans,
+      getActiveTagFilter: config.getActiveTagFilter,
+      getFilterRevision: config.getFilterRevision,
     }),
     SelectionDecorations,
     BlockActions,

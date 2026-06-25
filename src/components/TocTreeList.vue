@@ -18,7 +18,7 @@ const emit = defineEmits<{
   'source-click': [item: TocTreeItem]
 }>()
 
-const sectionTagsMap = computed(() => props.sectionTagsByItemId ?? {})
+const sectionTagsByItemIdMap = computed(() => props.sectionTagsByItemId ?? {})
 
 const onItemClick = (item: TocTreeItem) => {
   emit('click', item)
@@ -47,7 +47,7 @@ const itemClasses = (item: TocTreeItem, highlightedBlockId: string | null) => [
 ]
 
 function visibleSectionTags(item: TocTreeItem): BlockTag[] {
-  return sectionTagsMap.value[item.id] ?? []
+  return sectionTagsByItemIdMap.value[item.id] ?? []
 }
 
 function extraSectionTagCount(item: TocTreeItem): number {
@@ -105,7 +105,7 @@ function extraSectionTagCount(item: TocTreeItem): number {
         <TocTreeList
           :items="item.children"
           :highlighted-block-id="highlightedBlockId"
-          :section-tags-by-item-id="sectionTagsMap"
+          :section-tags-by-item-id="sectionTagsByItemIdMap"
           :is-expanded="isExpanded"
           @click="emit('click', $event)"
           @toggle="emit('toggle', $event)"

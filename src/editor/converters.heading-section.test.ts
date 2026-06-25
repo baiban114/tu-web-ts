@@ -52,6 +52,27 @@ describe('heading section fold markdown roundtrip', () => {
     expect(roundtrip.content).toContain('## 双注释标题')
   })
 
+  it('preserves stable heading blockId for section tags without fold or source', () => {
+    const pc: PageContent = {
+      content: [
+        '<!--tu:heading-id id="hs-section-b"-->',
+        '### B节',
+        '',
+        'B节正文',
+      ].join('\n'),
+      embeds: [],
+      annotations: [],
+    }
+
+    const doc = pageContentToTipTap(pc)
+    const heading = doc.content?.find((node) => node.type === 'heading')
+    expect(heading?.attrs?.blockId).toBe('hs-section-b')
+
+    const roundtrip = tipTapToPageContent(doc)
+    expect(roundtrip.content).toContain('<!--tu:heading-id id="hs-section-b"-->')
+    expect(roundtrip.content).toContain('### B节')
+  })
+
   it('omits fold comment when section is expanded', () => {
     const pc: PageContent = {
       content: '## Plain heading\n\nBody',

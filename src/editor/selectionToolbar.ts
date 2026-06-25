@@ -23,6 +23,7 @@ export interface SelectionToolbarActions {
   canMarkHeadingSource: boolean
   canClearHeadingSource: boolean
   canEditSectionTags: boolean
+  canEditTextTags: boolean
   canShow: boolean
 }
 
@@ -81,7 +82,8 @@ export function getSelectionToolbarActions(
   const canMarkHeadingSource = inHeading
   const canClearHeadingSource = inHeading && Boolean(sourceBinding)
   const canEditSectionTags = inHeading
-  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource || canEditSectionTags
+  const canEditTextTags = hasText && spannedBlockIds.length === 0
+  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource || canEditSectionTags || canEditTextTags
 
   return {
     canAddNote,
@@ -90,6 +92,7 @@ export function getSelectionToolbarActions(
     canMarkHeadingSource,
     canClearHeadingSource,
     canEditSectionTags,
+    canEditTextTags,
     canShow,
   }
 }
@@ -101,9 +104,10 @@ export function shouldShowSelectionBubbleMenu(
   from: number,
   to: number,
   suppressed: boolean,
+  isMouseSelecting: boolean,
   menuElement?: HTMLElement | null,
 ): boolean {
-  if (suppressed || !editor.isEditable) return false
+  if (suppressed || !editor.isEditable || isMouseSelecting) return false
 
   const { selection } = state
   const { empty } = selection

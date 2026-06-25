@@ -144,6 +144,15 @@ export function resolveAnnotationRange(
   return relocateByText(index, annotation)
 }
 
+/** Returns stored from/to when they still match selectedText in the document. */
+export function tryValidateAnnotationRange(
+  doc: ProseMirrorNode,
+  annotation: TextAnnotation,
+): { from: number; to: number } | null {
+  const index = buildAnnotationTextIndex(doc)
+  return validateRange(doc, index, annotation)
+}
+
 function validateRange(
   doc: ProseMirrorNode,
   index: AnnotationTextIndex,
@@ -176,7 +185,9 @@ function relocateByText(
 
   const before = annotation.contextBefore ?? ''
   const after = annotation.contextAfter ?? ''
-  const oldFrom = null
+  const oldFrom = typeof annotation.from === 'number' && annotation.from >= 0
+    ? annotation.from
+    : null
 
   const exactContextCandidate = findExactContextMatch(index, before, selected, after, oldFrom)
   if (exactContextCandidate) return exactContextCandidate

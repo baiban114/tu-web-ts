@@ -3,8 +3,7 @@ import { listAllBlocks } from '@/api/page'
 import { isMockDataSource } from '@/dev/dataSource'
 import { collectKbTagsMock } from '@/mock/store'
 import { collectBlockTags, collectTagsFromBlocksAndPage } from '@/utils/blockMetadata'
-import { getPageTags, mergeTagPools } from '@/utils/pageMetadata'
-import { collectSectionTagsFromMetadata } from '@/utils/sectionMetadata'
+import { mergeTagPools } from '@/utils/pageMetadata'
 
 export function collectAvailableTags(
   blocks: Block[],

@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue';
 import type { BlockTag } from '@/api/types';
 import { createTagColor, normalizeBlockTag, normalizeTagLabel } from '@/utils/blockMetadata';
+import { resolveTagEditorEnterAction } from '@/utils/tagEditorEnter';
 
 interface Props {
   visible: boolean;
@@ -69,15 +70,21 @@ const removeTag = (tagId: string) => {
   applyTags(props.selectedTags.filter((tag) => tag.id !== tagId));
 };
 
-const handleEnter = () => {
-  if (filteredCandidates.value.length > 0 && normalizedQuery.value) {
-    addTag(filteredCandidates.value[0]);
-    return;
-  }
-
+const createAndAddTag = () => {
   const newTag = createTagFromQuery();
-  if (newTag) {
-    addTag(newTag);
+  if (newTag) addTag(newTag);
+};
+
+const handleEnter = () => {
+  switch (resolveTagEditorEnterAction(canCreateTag.value, filteredCandidates.value.length)) {
+    case 'create':
+      createAndAddTag();
+      break;
+    case 'pick-first':
+      addTag(filteredCandidates.value[0]);
+      break;
+    default:
+      break;
   }
 };
 
@@ -157,7 +164,7 @@ watch(
             v-if="canCreateTag"
             type="button"
             class="tag-editor-option tag-editor-option--create"
-            @click="handleEnter"
+            @click="createAndAddTag"
           >
             新建标签 “{{ normalizeTagLabel(query) }}”
           </button>
