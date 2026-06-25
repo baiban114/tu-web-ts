@@ -1,4 +1,5 @@
 import { Extension } from '@tiptap/core'
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 
@@ -9,6 +10,20 @@ interface SelectionDecorationState {
 }
 
 export const selectionDecorationsKey = new PluginKey<SelectionDecorationState>('selectionDecorations')
+
+function selectionOverlapsCodeBlockContent(doc: ProseMirrorNode, from: number, to: number): boolean {
+  let overlaps = false
+  doc.nodesBetween(from, to, (node, pos) => {
+    if (node.type.name !== 'codeBlock') return
+    const innerFrom = pos + 1
+    const innerTo = pos + node.nodeSize - 1
+    if (from < innerTo && to > innerFrom) {
+      overlaps = true
+      return false
+    }
+  })
+  return overlaps
+}
 
 export const SelectionDecorations = Extension.create({
   name: 'selectionDecorations',
@@ -48,8 +63,12 @@ export const SelectionDecorations = Extension.create({
   },
 })
 
-function createSelectionState(doc: any, from: number | null, to: number | null): SelectionDecorationState {
+function createSelectionState(doc: ProseMirrorNode, from: number | null, to: number | null): SelectionDecorationState {
   if (from === null || to === null || to <= from) {
+    return { from: null, to: null, decorations: DecorationSet.empty }
+  }
+
+  if (selectionOverlapsCodeBlockContent(doc, from, to)) {
     return { from: null, to: null, decorations: DecorationSet.empty }
   }
 

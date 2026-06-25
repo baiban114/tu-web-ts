@@ -8,6 +8,7 @@ import { generateJSON } from '@tiptap/html'
 import StarterKit from '@tiptap/starter-kit'
 import { HeadingNode } from './extensions/HeadingNode'
 import { ParagraphNode } from './extensions/ParagraphNode'
+import { CodeBlockNode } from './extensions/CodeBlockNode'
 
 const pasteTestExtensions = [
   StarterKit.configure({
@@ -17,6 +18,7 @@ const pasteTestExtensions = [
   }),
   HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
   ParagraphNode,
+  CodeBlockNode,
 ]
 
 describe('pasteHtmlContent', () => {

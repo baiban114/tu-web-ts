@@ -1712,7 +1712,7 @@ defineExpose({
   font-size: 0.9em;
 }
 
-.tu-editor-wrapper :deep(.tu-editor-content pre) {
+.tu-editor-wrapper :deep(.tu-editor-content pre:not(.tu-code-block-view__pre)) {
   background: #f5f5f5;
   padding: 1em;
   border-radius: 8px;
@@ -1720,7 +1720,7 @@ defineExpose({
   margin: 0.5em 0;
 }
 
-.tu-editor-wrapper :deep(.tu-editor-content pre code) {
+.tu-editor-wrapper :deep(.tu-editor-content pre:not(.tu-code-block-view__pre) code) {
   background: none;
   padding: 0;
 }

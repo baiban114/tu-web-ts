@@ -21,6 +21,7 @@ import {
   serializeLinkDisplayComment,
   serializeUrlEmbedComment,
 } from '@/utils/urlDisplay'
+import { normalizeCodeBlockText } from '@/editor/utils/codeBlockText'
 
 // ─── Embed placeholder regex ───────────────────────────────────────────────
 const EMBED_RE = /<!--tu:embed\s+id="([^"]+)"\s+type="([^"]+)"\s*-->/g
@@ -487,7 +488,67 @@ function parseStandaloneImage(text: string): { alt: string; src: string } | null
   return null
 }
 
+const CODE_BLOCK_PLACEHOLDER_RE = /^@@TU_CODEBLOCK_(\d+)@@$/
+
+function extractFencedCodeBlocks(markdown: string): { markdown: string; blocks: JSONContent[] } {
+  const blocks: JSONContent[] = []
+  const lines = markdown.split('\n')
+  const output: string[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const openMatch = lines[index].match(/^```(.*)$/)
+    if (openMatch) {
+      const language = openMatch[1].trim()
+      const bodyLines: string[] = []
+      index += 1
+      while (index < lines.length && !/^```\s*$/.test(lines[index])) {
+        bodyLines.push(lines[index])
+        index += 1
+      }
+      if (index < lines.length) index += 1
+      const blockIndex = blocks.length
+      blocks.push({
+        type: 'codeBlock',
+        attrs: language ? { language } : {},
+        content: [{ type: 'text', text: normalizeCodeBlockText(bodyLines.join('\n')) }],
+      })
+      if (output.length > 0 && output[output.length - 1] !== '') output.push('')
+      output.push(`@@TU_CODEBLOCK_${blockIndex}@@`)
+      output.push('')
+      continue
+    }
+    output.push(lines[index])
+    index += 1
+  }
+
+  return { markdown: output.join('\n'), blocks }
+}
+
+function injectCodeBlockPlaceholders(nodes: JSONContent[], blocks: JSONContent[]): JSONContent[] {
+  if (blocks.length === 0) return nodes
+  return nodes.flatMap((node) => {
+    if (node.type !== 'paragraph' || !node.content) return [node]
+    const text = node.content
+      .filter((child) => child.type === 'text' && typeof child.text === 'string')
+      .map((child) => child.text)
+      .join('')
+      .trim()
+    const match = text.match(CODE_BLOCK_PLACEHOLDER_RE)
+    if (!match) return [node]
+    const block = blocks[Number(match[1])]
+    return block ? [block] : [node]
+  })
+}
+
 function parseMarkdown(markdown: string): JSONContent[] {
+  if (!markdown.trim()) return []
+
+  const { markdown: withoutFences, blocks } = extractFencedCodeBlocks(markdown)
+  return injectCodeBlockPlaceholders(parseMarkdownBlocks(withoutFences), blocks)
+}
+
+function parseMarkdownBlocks(markdown: string): JSONContent[] {
   if (!markdown.trim()) return []
 
   const paragraphs = markdown.split('\n\n')
@@ -704,9 +765,6 @@ function parseMarkdown(markdown: string): JSONContent[] {
           currentLines = []
         }
         currentQuoteLines.push(line.slice(2))
-      } else if (line.startsWith('```')) {
-        flushCurrentQuote()
-        currentLines.push(line)
       } else if (line.startsWith('---')) {
         flushCurrentQuote()
         if (currentLines.length > 0) {
@@ -885,6 +943,15 @@ function nodeToMarkdown(node: JSONContent): string {
         .join('\n')
     case 'horizontalRule':
       return '---'
+    case 'codeBlock': {
+      const language = String(node.attrs?.language || '').trim()
+      const text = (node.content || [])
+        .filter((item) => item.type === 'text')
+        .map((item) => item.text || '')
+        .join('')
+      const fence = language ? `\`\`\`${language}` : '```'
+      return `${fence}\n${text}\n\`\`\``
+    }
     case 'image':
       return '![' + (node.attrs?.alt || '') + '](' + (node.attrs?.src || '') + ')'
     case 'taskList':

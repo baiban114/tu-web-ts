@@ -126,6 +126,10 @@ function extraSectionTagCount(item: TocTreeItem): number {
         @click="onItemClick(item)"
         @contextmenu="onContextMenu(item, $event)"
       >
+        <span
+          class="page-toc__bullet page-toc__bullet--placeholder"
+          aria-hidden="true"
+        />
         <span class="page-toc__text">{{ item.text }}</span>
         <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
           <span
@@ -154,6 +158,10 @@ function extraSectionTagCount(item: TocTreeItem): number {
       @click="onItemClick(item)"
       @contextmenu="onContextMenu(item, $event)"
     >
+      <span
+        class="page-toc__bullet page-toc__bullet--placeholder"
+        aria-hidden="true"
+      />
       <span class="page-toc__text">{{ item.text }}</span>
       <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
         <span

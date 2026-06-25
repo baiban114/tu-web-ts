@@ -2872,12 +2872,19 @@ onBeforeUnmount(() => {
 }
 
 .page-toc :deep(.page-toc__bullet) {
-  flex: 0 0 auto;
-  min-width: 26px;
+  flex: 0 0 20px;
+  width: 20px;
+  min-width: 20px;
   padding-top: 1px;
   font-size: 11px;
   font-weight: 700;
   color: #1677ff;
+  text-align: center;
+}
+
+.page-toc :deep(.page-toc__bullet--placeholder) {
+  visibility: hidden;
+  pointer-events: none;
 }
 
 .page-toc :deep(.page-toc__item--ref) {
@@ -2895,7 +2902,6 @@ onBeforeUnmount(() => {
 .page-toc :deep(.page-toc__bullet--group) {
   color: #7c3aed !important;
   font-size: 10px !important;
-  min-width: 20px !important;
 }
 
 .page-toc :deep(.page-toc__children .page-toc__item:hover) {
@@ -3044,20 +3050,21 @@ onBeforeUnmount(() => {
 .nodeview-toolbar {
   position: fixed;
   display: flex;
-  gap: 4px;
-  padding: 4px 6px;
+  gap: 2px;
+  padding: 2px 3px;
   background: #fff;
   border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  border-radius: 3px;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
 }
 .nodeview-toolbar__btn {
-  padding: 4px 10px;
+  padding: 2px 7px;
   border: none;
-  border-radius: 4px;
+  border-radius: 2px;
   background: transparent;
   color: #374151;
   font-size: 12px;
+  line-height: 20px;
   cursor: pointer;
   white-space: nowrap;
 }

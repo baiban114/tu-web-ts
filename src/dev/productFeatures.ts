@@ -66,6 +66,14 @@ export const productFeatureCatalog: ProductFeature[] = [
     owner: 'Editor',
   },
   {
+    id: 'fenced-code-block',
+    module: '编辑器',
+    name: '围栏代码块',
+    description: 'Markdown ``` 围栏代码块渲染为带顶栏的代码块；顶栏可切换语言（Java、XML、JSON、纯文本等）并启用 lowlight 语法高亮。',
+    status: 'testing',
+    owner: 'Editor',
+  },
+  {
     id: 'table-block',
     module: '编辑器',
     name: '表格块',

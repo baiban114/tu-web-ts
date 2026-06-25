@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, onBeforeUnmount, ref, type Ref } from 'vue'
 import { useContentContainerBounds } from '../composables/useContentContainerBounds'
+import TuBlockChromeHeader from './TuBlockChromeHeader.vue'
 
 interface ResizableAxes {
   width?: boolean
@@ -151,25 +152,13 @@ onBeforeUnmount(() => {
     @mouseenter="hovered = true"
     @mouseleave="hovered = false"
   >
-    <div
+    <TuBlockChromeHeader
       v-if="blockTypeLabel"
-      class="resizable-block-wrapper__header"
-      data-drag-handle
-      data-node-view-drag-handle
-      draggable="true"
-    >
-      <span class="resizable-block-wrapper__type-badge">{{ blockTypeLabel }}</span>
-      <span
-        v-for="badge in compoundBadges"
-        :key="badge.annotationId"
-        class="resizable-block-wrapper__note-badge"
-        data-node-view-no-drag
-        :style="{ background: badge.color }"
-        :title="'笔记'"
-        @mousedown.stop
-        @click.stop="emit('compound-badge-click', blockId, badge.annotationId, $event)"
-      />
-    </div>
+      :type-label="blockTypeLabel"
+      :compound-badges="compoundBadges"
+      drag-handle
+      @compound-badge-click="(annotationId, event) => emit('compound-badge-click', blockId, annotationId, event)"
+    />
 
     <div
       v-if="$slots['header-meta']"
@@ -238,43 +227,6 @@ onBeforeUnmount(() => {
 .resizable-block-wrapper--lasso-selected {
   border-color: #fa8c16;
   box-shadow: 0 0 0 2px rgba(250, 140, 22, 0.2), inset 0 0 0 1px rgba(250, 140, 22, 0.08);
-}
-
-.resizable-block-wrapper__header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 11px;
-  color: #6b7280;
-  border-bottom: 1px solid #e5e7eb;
-  background: #f9fafb;
-  border-radius: 6px 6px 0 0;
-}
-
-.resizable-block-wrapper__note-badge {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s, transform 0.15s;
-}
-
-.resizable-block-wrapper__note-badge:hover {
-  opacity: 1;
-  transform: scale(1.3);
-}
-
-.resizable-block-wrapper__type-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 3px;
-  background: #eef2ff;
-  color: #4338ca;
-  font-weight: 600;
-  flex-shrink: 0;
 }
 
 .resizable-block-wrapper__header-meta {

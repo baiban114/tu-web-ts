@@ -30,10 +30,15 @@ const suppressedRef = toRef(props, 'suppressed')
 let detachEditorListeners: (() => void) | null = null
 let pointerDown = false
 
+function isEditorViewReady(editor: Editor | null | undefined): editor is Editor {
+  return Boolean(editor && !editor.isDestroyed && editor.view?.dom)
+}
+
 /** BubbleMenu only re-runs shouldShow when selection/doc changes; mimic its focus handler after drag. */
 function requestBubbleMenuUpdate(editor: Editor) {
   selectionRevision.value += 1
   window.setTimeout(() => {
+    if (!isEditorViewReady(editor)) return
     editor.emit('focus', {
       editor,
       event: new FocusEvent('focus'),
@@ -50,6 +55,9 @@ watch(
     isMouseSelecting.value = false
     pointerDown = false
     if (!editor) return
+    if (!isEditorViewReady(editor)) return
+
+    const editorDom = editor.view.dom
 
     const bump = () => {
       selectionRevision.value += 1
@@ -65,6 +73,7 @@ watch(
     const onMouseMove = (event: MouseEvent) => {
       if (!pointerDown || (event.buttons & 1) === 0) return
       if (isMouseSelecting.value) return
+      if (!isEditorViewReady(editor)) return
       isMouseSelecting.value = true
       editor.view.dispatch(editor.state.tr.setMeta('bubbleMenu', 'hide'))
     }
@@ -74,19 +83,21 @@ watch(
       const wasDraggingSelection = isMouseSelecting.value
       pointerDown = false
       isMouseSelecting.value = false
-      if (wasDraggingSelection) {
+      if (wasDraggingSelection && isEditorViewReady(editor)) {
         requestBubbleMenuUpdate(editor)
       }
     }
 
-    editor.view.dom.addEventListener('mousedown', onMouseDown)
+    editorDom.addEventListener('mousedown', onMouseDown)
     document.addEventListener('mousemove', onMouseMove)
     document.addEventListener('mouseup', onMouseUp)
 
     detachEditorListeners = () => {
-      editor.off('selectionUpdate', bump)
-      editor.off('transaction', bump)
-      editor.view.dom.removeEventListener('mousedown', onMouseDown)
+      if (!editor.isDestroyed) {
+        editor.off('selectionUpdate', bump)
+        editor.off('transaction', bump)
+      }
+      editorDom.removeEventListener('mousedown', onMouseDown)
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
@@ -107,7 +118,7 @@ onBeforeUnmount(() => {
 watch(suppressedRef, () => {
   selectionRevision.value += 1
   const editor = props.editor
-  if (!editor) return
+  if (!isEditorViewReady(editor)) return
   requestBubbleMenuUpdate(editor)
 })
 
@@ -152,7 +163,7 @@ const bubbleShouldShow = (ctx: {
 /** Anchor bubble menu inside the editor surface so it scrolls with content (not viewport-fixed). */
 const appendToEditorSurface = (): HTMLElement => {
   const editor = props.editor
-  if (!editor) return document.body
+  if (!isEditorViewReady(editor)) return document.body
   return (
     (editor.view.dom.closest('.tu-editor-wrapper') as HTMLElement | null)
     ?? editor.view.dom.parentElement
@@ -162,7 +173,7 @@ const appendToEditorSurface = (): HTMLElement => {
 
 const bubbleFloatingOptions = computed(() => {
   const editor = props.editor
-  const scrollTarget = editor
+  const scrollTarget = isEditorViewReady(editor)
     ? ((editor.view.dom.closest('.content-scroll') as HTMLElement | null) ?? window)
     : window
   return {
@@ -179,7 +190,7 @@ const bubbleFloatingOptions = computed(() => {
 
 <template>
   <BubbleMenu
-    v-if="editor"
+    v-if="editor && !editor.isDestroyed"
     class="selection-toolbar-host"
     :editor="editor"
     :update-delay="120"
@@ -297,9 +308,9 @@ const bubbleFloatingOptions = computed(() => {
 .selection-toolbar {
   display: flex;
   align-items: center;
-  padding: 2px 4px;
+  padding: 1px 2px;
   border: 1px solid var(--el-border-color-light);
-  border-radius: 8px;
+  border-radius: 3px;
   background: var(--el-bg-color);
   box-shadow: var(--el-box-shadow-light);
 }
@@ -307,18 +318,20 @@ const bubbleFloatingOptions = computed(() => {
 .selection-toolbar__group {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 0;
 }
 
 .selection-toolbar__btn {
   margin: 0;
-  padding: 4px 10px;
-  font-size: 13px;
+  height: 24px;
+  padding: 0 6px;
+  font-size: 12px;
   font-weight: 500;
+  border-radius: 2px;
 }
 
 .selection-toolbar__divider {
-  height: 16px;
-  margin: 0 2px;
+  height: 14px;
+  margin: 0 1px;
 }
 </style>

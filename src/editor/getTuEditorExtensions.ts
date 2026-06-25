@@ -21,6 +21,7 @@ import { TableBlockNode } from './extensions/TableBlockNode'
 import { MultiTableBlockNode } from './extensions/MultiTableBlockNode'
 import { ParagraphNode } from './extensions/ParagraphNode'
 import { HeadingNode } from './extensions/HeadingNode'
+import { CodeBlockNode } from './extensions/CodeBlockNode'
 import { HeadingSourceDecorations } from './extensions/HeadingSourceDecorations'
 import { HeadingSectionFold } from './extensions/HeadingSectionFold'
 import { TagContentFilter } from './extensions/TagContentFilter'
@@ -88,6 +89,7 @@ export function getTuEditorSchemaExtensions(): Extensions {
       paragraph: false,
       codeBlock: false,
     }),
+    CodeBlockNode,
     HeadingNode.configure({ levels: [1, 2, 3, 4, 5, 6] }),
     Image.configure({ inline: false }),
     TuLink.configure({ openOnClick: false }),
