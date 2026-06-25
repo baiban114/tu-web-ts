@@ -11,3 +11,7 @@ export function codeBlockNodeText(text: string): string {
   const normalized = normalizeCodeBlockText(text)
   return normalized || CODE_BLOCK_EMPTY_CHAR
 }
+
+export function isCodeBlockEffectivelyEmpty(text: string): boolean {
+  return normalizeCodeBlockText(text) === ''
+}

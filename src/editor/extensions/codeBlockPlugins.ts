@@ -1,7 +1,7 @@
-import { Plugin, PluginKey, Selection, TextSelection } from '@tiptap/pm/state'
+import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state'
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { EditorView, ViewMutationRecord } from '@tiptap/pm/view'
-import { codeBlockNodeText, CODE_BLOCK_EMPTY_CHAR } from '../utils/codeBlockText'
+import { codeBlockNodeText, CODE_BLOCK_EMPTY_CHAR, isCodeBlockEffectivelyEmpty } from '../utils/codeBlockText'
 
 const CODE_BLOCK_NAME = 'codeBlock'
 
@@ -97,13 +97,8 @@ export function createCodeBlockBoundaryShortcuts(nodeName = CODE_BLOCK_NAME) {
       const isAtEnd = $from.parentOffset === $from.parent.content.size
       if (!isAtEnd) return false
 
-      const after = $from.after()
-      if (after >= state.doc.content.size) return false
-
-      return editor.commands.command(({ tr }) => {
-        tr.setSelection(Selection.near(state.doc.resolve(after), 1))
-        return true
-      })
+      // Consume Delete at block end so joinForward cannot pull the next block in.
+      return true
     },
     Backspace: ({ editor }: { editor: import('@tiptap/core').Editor }) => {
       const { state } = editor
@@ -113,13 +108,9 @@ export function createCodeBlockBoundaryShortcuts(nodeName = CODE_BLOCK_NAME) {
       const isAtStart = $from.parentOffset === 0
       if (!isAtStart) return false
 
-      const before = $from.before()
-      if (before <= 0) return false
+      if (!isCodeBlockEffectivelyEmpty($from.parent.textContent)) return false
 
-      return editor.commands.command(({ tr }) => {
-        tr.setSelection(Selection.near(state.doc.resolve(before), -1))
-        return true
-      })
+      return editor.commands.deleteNode(nodeName)
     },
   }
 }

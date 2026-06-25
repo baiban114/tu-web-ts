@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CODE_BLOCK_EMPTY_CHAR, codeBlockNodeText, normalizeCodeBlockText } from './codeBlockText'
+import { CODE_BLOCK_EMPTY_CHAR, codeBlockNodeText, isCodeBlockEffectivelyEmpty, normalizeCodeBlockText } from './codeBlockText'
 
 describe('normalizeCodeBlockText', () => {
   it('strips placeholder, leading and trailing newlines', () => {
@@ -16,5 +16,13 @@ describe('codeBlockNodeText', () => {
     expect(codeBlockNodeText('')).toBe(CODE_BLOCK_EMPTY_CHAR)
     expect(codeBlockNodeText(CODE_BLOCK_EMPTY_CHAR)).toBe(CODE_BLOCK_EMPTY_CHAR)
     expect(codeBlockNodeText('hello')).toBe('hello')
+  })
+})
+
+describe('isCodeBlockEffectivelyEmpty', () => {
+  it('treats placeholder-only blocks as empty', () => {
+    expect(isCodeBlockEffectivelyEmpty('')).toBe(true)
+    expect(isCodeBlockEffectivelyEmpty(CODE_BLOCK_EMPTY_CHAR)).toBe(true)
+    expect(isCodeBlockEffectivelyEmpty('hello')).toBe(false)
   })
 })
