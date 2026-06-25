@@ -21,6 +21,7 @@ const emit = defineEmits<{
   (e: 'mark-heading-source'): void
   (e: 'clear-heading-source'): void
   (e: 'edit-section-tags'): void
+  (e: 'create-knowledge-relation'): void
 }>()
 
 const menuRoot = ref<HTMLElement | null>(null)
@@ -133,6 +134,7 @@ const actions = computed(() => {
       canMarkHeadingSource: false,
       canClearHeadingSource: false,
       canEditSectionTags: false,
+      canCreateKnowledgeRelation: false,
       canShow: false,
     }
   }
@@ -293,6 +295,23 @@ const bubbleFloatingOptions = computed(() => {
             @click="emit('set-excerpt-basis')"
           >
             设置依据
+          </ElButton>
+        </template>
+        <template v-if="actions.canCreateKnowledgeRelation">
+          <ElDivider
+            v-if="actions.canAddNote || actions.canMarkHeadingSource || actions.canClearHeadingSource || actions.canMarkResourceExcerpt || actions.canEditSectionTags || actions.canSetExcerptBasis"
+            direction="vertical"
+            class="selection-toolbar__divider"
+          />
+          <ElButton
+            size="small"
+            text
+            type="primary"
+            class="selection-toolbar__btn"
+            @mousedown.prevent.stop
+            @click="emit('create-knowledge-relation')"
+          >
+            建立关联
           </ElButton>
         </template>
       </div>

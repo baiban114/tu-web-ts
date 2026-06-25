@@ -24,6 +24,7 @@ export interface SelectionToolbarActions {
   canClearHeadingSource: boolean
   canEditSectionTags: boolean
   canEditTextTags: boolean
+  canCreateKnowledgeRelation: boolean
   canShow: boolean
 }
 
@@ -83,7 +84,8 @@ export function getSelectionToolbarActions(
   const canClearHeadingSource = inHeading && Boolean(sourceBinding)
   const canEditSectionTags = inHeading
   const canEditTextTags = hasText && spannedBlockIds.length === 0
-  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource || canEditSectionTags || canEditTextTags
+  const canCreateKnowledgeRelation = canAddNote && !inHeading
+  const canShow = canAddNote || canMarkResourceExcerpt || canSetExcerptBasis || canMarkHeadingSource || canClearHeadingSource || canEditSectionTags || canEditTextTags || canCreateKnowledgeRelation
 
   return {
     canAddNote,
@@ -93,6 +95,7 @@ export function getSelectionToolbarActions(
     canClearHeadingSource,
     canEditSectionTags,
     canEditTextTags,
+    canCreateKnowledgeRelation,
     canShow,
   }
 }

@@ -22,6 +22,7 @@
 - 跨域（页面 / 资源 / TOC）的拖拽、合并、删除规则
 - 将 `ResourceItemRelation`（图关系）并入父子树
 - AI 自动建树、多用户树共识
+- **知识关联边**（`knowledge_relation`）不进入父子树；与 `ResourceItemRelation` 同层，见 [knowledge-relations.md](./knowledge-relations.md)，Phase 2 投影到 X6 图谱
 
 ---
 

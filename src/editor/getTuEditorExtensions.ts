@@ -56,7 +56,10 @@ export interface TuEditorExtensionsConfig {
   annotations: TextAnnotation[]
   onAnnotationClick: (payload: { annotationId: string; annotationIds?: string[]; event: MouseEvent }) => void
   onAnnotationsMapped: (annotations: TextAnnotation[]) => void
-  onHeadingSourceClick: (binding: HeadingSourceBinding) => void
+  onHeadingSourceClick: (
+    binding: HeadingSourceBinding,
+    context: { blockId: string; title: string; clientX: number; clientY: number },
+  ) => void
   getTocContext: () => TocCollectContext | null
   getFoldRevision: () => number
   getSectionTagsMap: () => SectionTagsMap

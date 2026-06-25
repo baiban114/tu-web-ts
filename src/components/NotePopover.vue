@@ -3,6 +3,9 @@ import { computed, nextTick, ref, watch } from 'vue'
 import type { TextAnnotation } from '@/api/types'
 import type { FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
+import KnowledgeRelationList from './KnowledgeRelationList.vue'
+import { annotationToAnchor } from '@/utils/knowledgeAnchor'
+import type { KnowledgeAnchorNavigateHandlers } from '@/utils/knowledgeAnchor'
 
 const BLOCK_TYPE_LABELS: Record<string, string> = {
   x6Block: 'X6 画板',
@@ -22,6 +25,10 @@ interface Props {
   zIndex?: number
   annotation: TextAnnotation | null
   annotations?: TextAnnotation[]
+  kbId?: string
+  pageId?: string
+  navigate?: KnowledgeAnchorNavigateHandlers
+  relationRefreshKey?: number
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -61,6 +68,13 @@ const title = computed(() => {
     ? `笔记 ${displayedAnnotations.value.length}`
     : '笔记'
 })
+
+const relationAnchor = computed(() => {
+  if (!props.pageId || !props.annotation) return null
+  return annotationToAnchor(props.pageId, props.annotation)
+})
+
+const relationNavigate = computed(() => props.navigate ?? null)
 
 const popoverStyle = computed(() => {
   const style: Record<string, string> = {}
@@ -221,6 +235,15 @@ watch(
             </div>
           </article>
         </div>
+
+        <KnowledgeRelationList
+          v-if="kbId && relationAnchor && relationNavigate"
+          :key="relationRefreshKey"
+          :kb-id="kbId"
+          :anchor="relationAnchor"
+          :navigate="relationNavigate"
+          :after-navigate="() => emit('close')"
+        />
       </div>
     </div>
   </Teleport>

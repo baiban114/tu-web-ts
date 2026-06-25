@@ -5,7 +5,10 @@ import type { HeadingSourceBinding } from '@/api/types'
 import { headingSourceBadgeLabel, headingSourceBadgeTitle } from '@/utils/headingSource'
 
 export interface HeadingSourceDecorationsOptions {
-  onSourceClick: (binding: HeadingSourceBinding) => void
+  onSourceClick: (
+    binding: HeadingSourceBinding,
+    context: { blockId: string; title: string; clientX: number; clientY: number },
+  ) => void
 }
 
 export const headingSourceDecorationsKey = new PluginKey('headingSourceDecorations')
@@ -46,7 +49,14 @@ export const HeadingSourceDecorations = Extension.create<HeadingSourceDecoration
                   button.addEventListener('click', (event) => {
                     event.preventDefault()
                     event.stopPropagation()
-                    extension.options.onSourceClick(binding)
+                    const blockId = String(node.attrs.blockId || `heading-${pos}`)
+                    const title = node.textContent?.trim() || ''
+                    extension.options.onSourceClick(binding, {
+                      blockId,
+                      title,
+                      clientX: event.clientX,
+                      clientY: event.clientY,
+                    })
                   })
                   return button
                 }, { side: 1 }),

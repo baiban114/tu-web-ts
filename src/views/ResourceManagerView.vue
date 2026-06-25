@@ -64,7 +64,14 @@ import {
   type OrphanedAnnotation,
 } from '@/api/orphanedAnnotation';
 import { useObjectModelStore } from '@/stores/objectModel';
+import { useWorkspaceStore } from '@/stores/workspace';
 import TreeListPanel from '@/components/tree/TreeListPanel.vue';
+import {
+  listKnowledgeRelations,
+  deleteKnowledgeRelation,
+} from '@/api/knowledgeRelation';
+import type { KnowledgeAnchor, KnowledgeRelation } from '@/api/types';
+import { anchorLabel, navigateKnowledgeAnchor } from '@/utils/knowledgeAnchor';
 import {
   resourcesToTreeNodes,
   resourceWorksToTreeNodes,
@@ -73,13 +80,14 @@ import {
   type TreeNode,
 } from '@/utils/tree';
 
-type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned';
+type ResourceTab = 'references' | 'items' | 'works' | 'types' | 'urlRules' | 'objects' | 'orphaned' | 'knowledgeRelations';
 type ReferenceCategoryFilter = 'all' | 'internal' | 'external' | 'annotation';
 type ReferenceStatusFilter = 'all' | 'ok' | 'broken' | 'bound' | 'unbound';
 
 const route = useRoute();
 const router = useRouter();
-const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned']);
+const workspaceStore = useWorkspaceStore();
+const resourceTabs = new Set<ResourceTab>(['references', 'items', 'works', 'types', 'urlRules', 'objects', 'orphaned', 'knowledgeRelations']);
 
 const TAB_LABELS: Record<ResourceTab, string> = {
   references: '引用管理',
@@ -89,6 +97,7 @@ const TAB_LABELS: Record<ResourceTab, string> = {
   urlRules: 'URL 聚类规则',
   objects: '对象管理',
   orphaned: '孤立标注',
+  knowledgeRelations: '知识关联',
 };
 
 function getRouteTab(): ResourceTab {
@@ -115,6 +124,11 @@ const selectedReferenceResourceItemId = ref('');
 const currentPage = ref(0);
 const pageSize = ref(DEFAULT_PAGE_SIZE);
 const totalReferences = ref(0);
+const knowledgeRelations = ref<KnowledgeRelation[]>([]);
+const knowledgeRelationsLoading = ref(false);
+const knowledgeRelationsPage = ref(0);
+const knowledgeRelationsTotal = ref(0);
+const knowledgeRelationKeyword = ref('');
 
 const types = ref<ResourceType[]>([]);
 const works = ref<ResourceWork[]>([]);
@@ -858,6 +872,63 @@ async function refreshReferences() {
     showError(error);
   } finally {
     referencesLoading.value = false;
+  }
+}
+
+const knowledgeRelationsKbId = computed(() => workspaceStore.currentKbId || 'kb-demo-1');
+
+async function refreshKnowledgeRelations() {
+  const kbId = knowledgeRelationsKbId.value;
+  if (!kbId) return;
+  knowledgeRelationsLoading.value = true;
+  try {
+    const result = await listKnowledgeRelations(kbId, {
+      q: knowledgeRelationKeyword.value.trim() || undefined,
+      page: knowledgeRelationsPage.value,
+      pageSize: pageSize.value,
+    });
+    knowledgeRelations.value = result.items;
+    knowledgeRelationsTotal.value = result.total;
+    knowledgeRelationsPage.value = result.page;
+    if (knowledgeRelationsPage.value > 0 && knowledgeRelations.value.length === 0 && result.total > 0) {
+      knowledgeRelationsPage.value = Math.max(0, Math.ceil(result.total / pageSize.value) - 1);
+      return refreshKnowledgeRelations();
+    }
+  } catch (error) {
+    showError(error);
+  } finally {
+    knowledgeRelationsLoading.value = false;
+  }
+}
+
+function onKnowledgeRelationFilterChange() {
+  knowledgeRelationsPage.value = 0;
+  void refreshKnowledgeRelations();
+}
+
+function onKnowledgeRelationPageChange(page: number) {
+  knowledgeRelationsPage.value = page - 1;
+  void refreshKnowledgeRelations();
+}
+
+async function navigateRelationAnchor(anchor: KnowledgeAnchor) {
+  await navigateKnowledgeAnchor(anchor, {
+    router,
+    selectPage: async (pageId) => {
+      await router.push({ path: '/', query: { pageId } });
+    },
+    currentPageId: workspaceStore.currentPageId,
+  });
+}
+
+async function removeKnowledgeRelationRow(relation: KnowledgeRelation) {
+  try {
+    await confirmAction('确定删除该知识关联？', '删除关联');
+    await deleteKnowledgeRelation(relation.id);
+    showSuccess('关联已删除');
+    await refreshKnowledgeRelations();
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') showError(error);
   }
 }
 
@@ -1636,6 +1707,8 @@ function onTabChange(name: TabPaneName) {
     void refreshUrlRules();
   } else if (tab === 'orphaned') {
     void loadOrphanedAnnotations();
+  } else if (tab === 'knowledgeRelations') {
+    void refreshKnowledgeRelations();
   }
   void router.replace({
     path: route.path,
@@ -1695,6 +1768,9 @@ onMounted(async () => {
   await refreshAll();
   await refreshReferences();
   await loadOrphanedAnnotations();
+  if (activeTab.value === 'knowledgeRelations') {
+    await refreshKnowledgeRelations();
+  }
   await applyResourceDeepLink();
 });
 
@@ -1704,6 +1780,8 @@ watch(
     activeTab.value = getRouteTab();
     if (activeTab.value === 'orphaned') {
       void loadOrphanedAnnotations();
+    } else if (activeTab.value === 'knowledgeRelations') {
+      void refreshKnowledgeRelations();
     }
   },
 );
@@ -1787,7 +1865,65 @@ watch(
           </span>
         </template>
       </el-tab-pane>
+      <el-tab-pane label="知识关联" name="knowledgeRelations" />
     </el-tabs>
+
+    <section v-if="activeTab === 'knowledgeRelations'" class="resource-layout knowledge-relations-layout">
+      <div class="resource-panel resource-panel--full">
+        <div class="resource-panel__toolbar">
+          <el-input
+            v-model="knowledgeRelationKeyword"
+            clearable
+            placeholder="搜索 locator / 备注"
+            style="max-width: 280px"
+            @change="onKnowledgeRelationFilterChange"
+            @clear="onKnowledgeRelationFilterChange"
+          />
+          <el-button @click="refreshKnowledgeRelations">刷新</el-button>
+        </div>
+        <el-table
+          v-loading="knowledgeRelationsLoading"
+          :data="knowledgeRelations"
+          stripe
+          empty-text="暂无知识关联"
+        >
+          <el-table-column label="类型" width="100">
+            <template #default="{ row }">
+              <span :style="{ color: row.relationTypeColor || '#1677ff' }">{{ row.relationTypeLabel }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="源" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-button link type="primary" @click="navigateRelationAnchor(row.from)">
+                {{ anchorLabel(row.from) }}
+              </el-button>
+            </template>
+          </el-table-column>
+          <el-table-column label="目标" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">
+              <el-button link type="primary" @click="navigateRelationAnchor(row.to)">
+                {{ anchorLabel(row.to) }}
+              </el-button>
+            </template>
+          </el-table-column>
+          <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
+          <el-table-column label="操作" width="90" fixed="right">
+            <template #default="{ row }">
+              <el-button link type="danger" @click="removeKnowledgeRelationRow(row)">删除</el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <div class="resource-panel__pagination">
+          <el-pagination
+            layout="total, prev, pager, next"
+            :total="knowledgeRelationsTotal"
+            :page-size="pageSize"
+            :current-page="knowledgeRelationsPage + 1"
+            @current-change="onKnowledgeRelationPageChange"
+          />
+        </div>
+      </div>
+    </section>
 
     <section v-if="activeTab === 'references'" class="resource-layout reference-layout">
       <el-card shadow="never" class="resource-form-card">

@@ -77,7 +77,7 @@ const emit = defineEmits<{
   'open-block-picker': []
   'open-resource-picker': []
   'open-tag-editor': [blockId: string]
-  'heading-source-click': [binding: HeadingSourceBinding]
+  'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
   'mark-block-excerpt': [blockId: string]
   'set-block-basis': [blockId: string]
   'url-hover-change': [target: UrlHoverTarget | null]
@@ -874,7 +874,7 @@ const editor = useEditor({
     annotations: flattenedAnnotations.value,
     onAnnotationClick: (payload) => emit('annotation-click', payload),
     onAnnotationsMapped: (annotations) => emit('annotations-mapped', annotations),
-    onHeadingSourceClick: (binding) => emit('heading-source-click', binding),
+    onHeadingSourceClick: (binding, context) => emit('heading-source-click', binding, context),
     getTocContext: () => tocCollectContext?.value ?? null,
     getFoldRevision: () => getSectionFoldRevision(),
     getSectionTagsMap: () => sectionTagsMapRef?.value ?? {},

@@ -17,6 +17,8 @@ import TagFilterBar from './TagFilterBar.vue'
 import Toast from './Toast.vue'
 import NoteEditor from './NoteEditor.vue'
 import NotePopover from './NotePopover.vue'
+import KnowledgeAnchorPicker from './KnowledgeAnchorPicker.vue'
+import KnowledgeRelationList from './KnowledgeRelationList.vue'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
 import { blockSyncManager } from '@/utils/blockSyncManager'
@@ -78,6 +80,12 @@ import { getBlockExcerptContent, getTocEntryExcerptContent, collectBasisBlockIds
 import { HEADING_SECTION_FOLD_META } from '@/utils/toc/tocSectionFoldActions'
 import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import type { KnowledgeAnchor } from '@/api/types'
+import {
+  buildSelectionAnchor,
+  headingAnchor,
+  type KnowledgeAnchorNavigateHandlers,
+} from '@/utils/knowledgeAnchor'
 import type { GraphData } from '@/api/types'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
@@ -516,12 +524,22 @@ const pendingBasisTarget = ref<PendingBasisTarget | null>(null)
 
 const tiptapEditor = computed(() => tuEditorRef.value?.editor ?? null)
 
+const knowledgeAnchorPickerVisible = ref(false)
+const knowledgeSourceAnchor = ref<KnowledgeAnchor | null>(null)
+const knowledgeRelationRefreshKey = ref(0)
+const headingSourcePopoverVisible = ref(false)
+const headingSourcePopoverTop = ref(0)
+const headingSourcePopoverLeft = ref(0)
+const headingSourcePopoverAnchor = ref<KnowledgeAnchor | null>(null)
+const headingSourcePopoverBinding = ref<HeadingSourceBinding | null>(null)
+
 const selectionToolbarSuppressed = computed(() => (
   nodeViewToolbar.visible
   || showResourcePicker.value
   || noteEditorVisible.value
   || urlHoverToolbarVisible.value
   || tagEditorState.value.visible
+  || knowledgeAnchorPickerVisible.value
 ))
 
 const notePopoverVisible = ref(false)
@@ -963,8 +981,42 @@ const navigateToHeadingSource = (binding: HeadingSourceBinding) => {
   })
 }
 
-const handleHeadingSourceClick = (binding: HeadingSourceBinding) => {
-  navigateToHeadingSource(binding)
+const handleHeadingSourceClick = (
+  binding: HeadingSourceBinding,
+  context: { blockId: string; title: string; clientX: number; clientY: number },
+) => {
+  const pageId = workspaceStore.currentPageId
+  if (!pageId) {
+    navigateToHeadingSource(binding)
+    return
+  }
+  headingSourcePopoverBinding.value = binding
+  headingSourcePopoverAnchor.value = headingAnchor(pageId, context.blockId, context.title)
+  headingSourcePopoverTop.value = context.clientY + 8
+  headingSourcePopoverLeft.value = context.clientX
+  headingSourcePopoverVisible.value = true
+  knowledgeRelationRefreshKey.value += 1
+}
+
+const closeHeadingSourcePopover = () => {
+  headingSourcePopoverVisible.value = false
+  headingSourcePopoverAnchor.value = null
+  headingSourcePopoverBinding.value = null
+}
+
+const handleCreateKnowledgeRelationFromSelection = () => {
+  const editor = tuEditorRef.value?.editor
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  if (!editor || !pageId || !kbId) return
+  knowledgeSourceAnchor.value = buildSelectionAnchor(editor, pageId)
+  if (!knowledgeSourceAnchor.value) return
+  knowledgeAnchorPickerVisible.value = true
+}
+
+const handleKnowledgeRelationCreated = () => {
+  knowledgeRelationRefreshKey.value += 1
+  showToast('已建立知识关联')
 }
 
 const handleMarkHeadingSourceFromSelection = () => {
@@ -1209,6 +1261,54 @@ const scrollElementIntoEditorView = (el: HTMLElement) => {
   }
   el.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
+
+const scrollToAnnotationById = (_pageId: string, annotationId: string) => {
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  const el = editorDom?.querySelector<HTMLElement>(`[data-tu-annotation-id="${CSS.escape(annotationId)}"]`)
+  if (el) scrollElementIntoEditorView(el)
+}
+
+const scrollToHeadingByBlockId = (_pageId: string, blockId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  const entry = flat.find((item) => item.blockId === blockId)
+  if (!entry) return
+  const nodeDom = editor.view.nodeDOM(entry.pos)
+  const el = nodeDom instanceof HTMLElement
+    ? nodeDom
+    : nodeDom instanceof Text
+      ? nodeDom.parentElement
+      : editor.view.dom.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  if (el) scrollElementIntoEditorView(el)
+}
+
+const scrollToSelectionRange = (_pageId: string, from: number, to: number) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+  const docSize = editor.state.doc.content.size
+  const safeFrom = Math.max(1, Math.min(from, docSize - 1))
+  const safeTo = Math.max(safeFrom, Math.min(to, docSize - 1))
+  editor.commands.setTextSelection({ from: safeFrom, to: safeTo })
+  try {
+    const coords = editor.view.coordsAtPos(safeFrom)
+    const element = document.elementFromPoint(coords.left, coords.top)
+    if (element instanceof HTMLElement) {
+      scrollElementIntoEditorView(element)
+    }
+  } catch {
+    // ignore invalid positions after navigation
+  }
+}
+
+const knowledgeNavigateHandlers = computed<KnowledgeAnchorNavigateHandlers>(() => ({
+  router,
+  selectPage: (pageId) => workspaceStore.selectPage(pageId),
+  currentPageId: workspaceStore.currentPageId,
+  scrollToAnnotation: scrollToAnnotationById,
+  scrollToHeading: scrollToHeadingByBlockId,
+  scrollToSelection: scrollToSelectionRange,
+}))
 
 const findHeadingInEmbedBlock = (blockId: string, headingText?: string): HTMLElement | null => {
   if (!headingText) return null
@@ -2513,6 +2613,16 @@ onBeforeUnmount(() => {
       @mark-heading-source="handleMarkHeadingSourceFromSelection"
       @clear-heading-source="handleClearHeadingSourceFromSelection"
       @edit-section-tags="handleEditSectionTagsFromSelection"
+      @create-knowledge-relation="handleCreateKnowledgeRelationFromSelection"
+    />
+
+    <KnowledgeAnchorPicker
+      :visible="knowledgeAnchorPickerVisible"
+      :kb-id="workspaceStore.currentKbId || ''"
+      :source-anchor="knowledgeSourceAnchor"
+      :page-tree="workspaceStore.pageTree"
+      @update:visible="knowledgeAnchorPickerVisible = $event"
+      @created="handleKnowledgeRelationCreated"
     />
 
     <!-- 引用块选择器 -->
@@ -2597,11 +2707,44 @@ onBeforeUnmount(() => {
       :top="notePopoverPosition.top"
       :left="notePopoverPosition.left"
       :z-index="notePopoverPosition.zIndex"
+      :kb-id="workspaceStore.currentKbId || ''"
+      :page-id="workspaceStore.currentPageId || ''"
+      :navigate="knowledgeNavigateHandlers"
+      :relation-refresh-key="knowledgeRelationRefreshKey"
       @edit="handleEditAnnotation"
       @delete="handleDeleteAnnotation"
       @navigate-basis="handleNavigateBasisFromPopover"
       @close="notePopoverVisible = false; notePopoverAnnotation = null; notePopoverAnnotations = []; notePopoverAnchor = null"
     />
+
+    <Teleport to="body">
+      <div
+        v-if="headingSourcePopoverVisible && headingSourcePopoverAnchor"
+        class="heading-source-relation-popover"
+        :style="{ top: `${headingSourcePopoverTop}px`, left: `${headingSourcePopoverLeft}px` }"
+        @mousedown.stop
+      >
+        <div class="heading-source-relation-popover__header">
+          <span>标题关联</span>
+          <button type="button" @click="closeHeadingSourcePopover">关闭</button>
+        </div>
+        <KnowledgeRelationList
+          :key="knowledgeRelationRefreshKey"
+          :kb-id="workspaceStore.currentKbId || ''"
+          :anchor="headingSourcePopoverAnchor"
+          :navigate="knowledgeNavigateHandlers"
+          :after-navigate="closeHeadingSourcePopover"
+        />
+        <button
+          v-if="headingSourcePopoverBinding"
+          type="button"
+          class="heading-source-relation-popover__link"
+          @click="navigateToHeadingSource(headingSourcePopoverBinding); closeHeadingSourcePopover()"
+        >
+          查看来源资料
+        </button>
+      </div>
+    </Teleport>
 
     <!-- Toast 消息 -->
     <div class="toast-container">
@@ -3127,6 +3270,46 @@ onBeforeUnmount(() => {
 
 .toc-context-menu button:hover {
   background: #f3f4f6;
+}
+
+.heading-source-relation-popover {
+  position: fixed;
+  z-index: 60;
+  width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.heading-source-relation-popover__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.heading-source-relation-popover__header button {
+  border: none;
+  background: transparent;
+  color: #8c8c8c;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.heading-source-relation-popover__link {
+  margin-top: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  background: #f6ffed;
+  color: #389e0d;
+  padding: 6px 8px;
+  cursor: pointer;
+  font-size: 12px;
 }
 </style>
 

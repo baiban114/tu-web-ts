@@ -353,3 +353,51 @@ export interface ImportRoadmapResult {
   pages: PageItem[];
   pageCount: number;
 }
+
+export type KnowledgeAnchorKind =
+  | 'page'
+  | 'heading'
+  | 'section'
+  | 'annotation'
+  | 'textSpan'
+  | 'block'
+  | 'resourceItem'
+  | 'resourceExcerpt';
+
+export interface KnowledgeAnchor {
+  kind: KnowledgeAnchorKind;
+  locator: string;
+  snapshot?: Record<string, unknown>;
+}
+
+export interface RelationTypeDef {
+  id: string;
+  kbId: string | null;
+  typeKey: string;
+  label: string;
+  color?: string | null;
+  icon?: string | null;
+  bidirectional: boolean;
+  system: boolean;
+  enabled: boolean;
+}
+
+export interface KnowledgeRelation {
+  id: string;
+  kbId: string;
+  relationTypeKey: string;
+  relationTypeLabel: string;
+  relationTypeColor?: string | null;
+  bidirectional: boolean;
+  from: KnowledgeAnchor;
+  to: KnowledgeAnchor;
+  note?: string | null;
+  sourceProvenance: string;
+  status: string;
+}
+
+export interface RelationsByAnchor {
+  locator: string;
+  outgoing: KnowledgeRelation[];
+  incoming: KnowledgeRelation[];
+}
