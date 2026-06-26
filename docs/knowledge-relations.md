@@ -84,6 +84,11 @@ flowchart LR
 | POST | `/api/kbs/{kbId}/knowledge-points` |
 | PATCH/DELETE | `/api/knowledge-points/{id}` |
 | GET/POST/DELETE | `/api/knowledge-points/{id}/anchors` |
+| GET/POST | `/api/knowledge-points/{id}/aliases` |
+| DELETE | `/api/knowledge-point-aliases/{aliasId}` |
+| POST | `/api/kbs/{kbId}/knowledge-points/generate`（body: `sources`: `pageTree` / `documentHeadings`，可选 `pageIds`） |
+
+`generate` 仅创建知识点 + `primary` 证据锚点，不创建 `knowledge_relation`、不设置 `parent_id`（扁平生成）。同 locator 已绑定则跳过（幂等）。
 
 ### 关系
 
@@ -99,8 +104,13 @@ flowchart LR
 
 ## 8. UI 约定
 
-- 创建：`SelectionToolbar` →「建立关联」→ `KnowledgePointPicker`（知识点树 / 搜索；源证据自动绑定或新建知识点）
-- 管理：资源管理「知识点」Tab（软分类树 + 分页列表 + 证据/关系详情）
+- 创建：`SelectionToolbar` →「建立关联」→ 弹窗「关联到知识点」：单选要挂靠的知识点；编辑器带入的可定位内容静默写入 `relation.from`，**不展示**证据栏、不做知识点↔知识点双选
+- 知识点建立（含为内容绑定知识点）：资源管理「知识点」Tab、从结构生成、`createKnowledgePoint + sourceAnchor`；**不在**关联弹窗内提供
+- 目标知识点可在 Picker 知识点树内直接新建：工具栏 `+` 创建顶层知识点，节点右键「添加子知识点」创建子级；新建知识点不自动绑定当前证据（独立于内容的标签式实体）
+- 知识点树支持重命名：节点右键「重命名」，或选中节点后按 `F2`（管理面板与关联弹窗共用 `KnowledgePointTree`）
+- 管理：资源管理「知识点」Tab（[`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) 分类树为主：拖拽调层级、右键新建/重命名/删除；右侧详情展示证据/别名/关联）
+- **从结构生成**：知识点 Tab 工具栏「从结构生成…」→ 勾选知识库页面树 / 文档标题结构；若工作区有当前页则仅处理该页。完成后刷新分类树
+- **别名**：选中知识点后在详情区维护别名 chips；列表搜索与 Picker 搜索 Tab 可命中别名（副标题展示匹配别名）
 - 查看：`NotePopover`、标题来源徽章、资源管理「知识关联」Tab
 - 跳转：`navigateKnowledgePoint(pointId)` → 取 `is_primary` 证据 → `navigateKnowledgeAnchor(locator)`
 

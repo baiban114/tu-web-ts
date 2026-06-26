@@ -1018,7 +1018,7 @@ const handleCreateKnowledgeRelationFromSelection = () => {
 
 const handleKnowledgeRelationCreated = () => {
   knowledgeRelationRefreshKey.value += 1
-  showToast('已建立知识关联')
+  showToast('已关联到知识点')
 }
 
 const handleMarkHeadingSourceFromSelection = () => {

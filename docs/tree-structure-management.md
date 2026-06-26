@@ -38,6 +38,15 @@
 | UI | [`LeftPanel.vue`](../src/components/LeftPanel.vue) — `el-tree`，拖拽、右键、重命名 |
 | 特点 | **标准可变树**，实现最成熟 |
 
+### 2.1.1 知识点软分类树
+
+| 项 | 内容 |
+|----|------|
+| 模型 | [`KnowledgePoint`](../src/api/types.ts)：`parentId`、`sortOrder`、嵌套 `children?` |
+| 持久化 | `KnowledgePointService.buildTree`；`PATCH /api/knowledge-points/{id}` 支持 reparent + 兄弟重排 |
+| UI | [`KnowledgePointTree.vue`](../src/components/knowledge/KnowledgePointTree.vue) — 与页面目录同为 `el-tree` 可编辑树；用于资源管理「知识点」Tab 与「关联到知识点」弹窗 |
+| 特点 | **软分类**（非前置关系）；`TreeListPanel` 只读浏览，**不**用于知识点编辑 |
+
 ### 2.2 页面内目录（TOC）
 
 | 项 | 内容 |
@@ -230,6 +239,7 @@ toggle: (node: TreeNode, expanded: boolean) => void
 | 场景 | 组件 |
 |------|------|
 | 页面目录（拖拽、右键、重命名） | **保留** `LeftPanel` 现有 `el-tree` |
+| 知识点软分类（拖拽、右键、重命名） | **`KnowledgePointTree`**（`el-tree`，管理 + 关联弹窗） |
 | 资源管理浏览、合并归类目标选择、设置页预览 | **新建** `TreeListPanel` |
 | TOC 侧栏 | v2 评估是否替换为 `TreeListPanel`（需保留 scroll-to-pos） |
 

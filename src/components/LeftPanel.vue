@@ -15,6 +15,7 @@ import {
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
 import type { PageType } from '@/api/types';
+import { canDropOnNode, computeTreeDropTarget, normalizeDropType, type TreeDropType } from '@/utils/tree/drag';
 import AuthPanel from './AuthPanel.vue';
 import GlobalSearchBox from './GlobalSearchBox.vue';
 import MarkdownImportButton from './MarkdownImportButton.vue';
@@ -399,15 +400,42 @@ async function onFinishRename(node: PageItem) {
   renamingId.value = null;
 }
 
-function allowDrop() {
-  return true;
+function flattenPages(nodes: PageItem[]): PageItem[] {
+  const result: PageItem[] = [];
+  const walk = (list: PageItem[]) => {
+    for (const node of list) {
+      result.push(node);
+      if (node.children?.length) walk(node.children);
+    }
+  };
+  walk(nodes);
+  return result;
 }
 
-async function onNodeDrop(draggingNode: any, dropNode: any, dropType: 'before' | 'after' | 'inner') {
+function allowDrop(draggingNode: any, dropNode: any, dropType: TreeDropType) {
+  const flat = flattenPages(store.pageTree).map((page) => ({
+    id: page.id,
+    parentId: page.parentId,
+    sortOrder: page.order,
+  }));
+  return canDropOnNode(draggingNode.data.id, dropNode.data.id, dropType, flat);
+}
+
+async function onNodeDrop(draggingNode: any, dropNode: any, dropType: TreeDropType) {
   const dragging = draggingNode.data as PageItem;
   const drop = dropNode.data as PageItem;
-  const newParentId = dropType === 'inner' ? drop.id : drop.parentId;
-  await store.reorderPage(dragging.id, newParentId, 0);
+  const flat = flattenPages(store.pageTree).map((page) => ({
+    id: page.id,
+    parentId: page.parentId,
+    sortOrder: page.order,
+  }));
+  const target = computeTreeDropTarget(
+    { id: dragging.id, parentId: dragging.parentId, sortOrder: dragging.order },
+    { id: drop.id, parentId: drop.parentId, sortOrder: drop.order },
+    normalizeDropType(dropType),
+    flat,
+  );
+  await store.reorderPage(dragging.id, target.parentId, target.sortOrder);
 }
 
 function expandAllTree() {

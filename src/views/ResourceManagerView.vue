@@ -2980,6 +2980,34 @@ watch(
   align-items: start;
 }
 
+.knowledge-relations-layout,
+.knowledge-points-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.resource-panel {
+  width: 100%;
+  min-width: 0;
+}
+
+.resource-panel__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.resource-panel__pagination {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
+.resource-panel :deep(.el-table) {
+  width: 100%;
+}
+
 .reference-layout {
   grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { onBeforeUnmount, ref, watch } from 'vue';
 import {
   ElButton,
   ElDialog,
@@ -9,18 +9,12 @@ import {
   ElSelect,
   ElTabPane,
   ElTabs,
-  ElTree,
 } from 'element-plus';
 import type { KnowledgeAnchor, KnowledgePoint, RelationTypeDef } from '@/api/types';
+import KnowledgePointTree from '@/components/knowledge/KnowledgePointTree.vue';
 import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 import { createKnowledgeRelation, listRelationTypes } from '@/api/knowledgeRelation';
-import {
-  createKnowledgePoint,
-  getKnowledgePointTree,
-  listKnowledgePoints,
-  listKnowledgePointsByLocator,
-} from '@/api/knowledgePoint';
-import { anchorLabel } from '@/utils/knowledgeAnchor';
+import { getKnowledgePointTree, listKnowledgePoints } from '@/api/knowledgePoint';
 
 const props = defineProps<{
   visible: boolean;
@@ -36,52 +30,68 @@ const emit = defineEmits<{
 const activeTab = ref('tree');
 const relationTypes = ref<RelationTypeDef[]>([]);
 const selectedTypeKey = ref('case');
-const selectedTargetPoint = ref<KnowledgePoint | null>(null);
+const selectedPoint = ref<KnowledgePoint | null>(null);
+const selectedPointId = ref<string | null>(null);
 const saving = ref(false);
+const treeLoading = ref(false);
 
 const pointTree = ref<KnowledgePoint[]>([]);
+const pointTreeRef = ref<InstanceType<typeof KnowledgePointTree> | null>(null);
 const searchKeyword = ref('');
 const searchPage = ref(0);
 const searchTotal = ref(0);
 const searchItems = ref<KnowledgePoint[]>([]);
 
-const sourcePoints = ref<KnowledgePoint[]>([]);
-const sourceMode = ref<'existing' | 'new'>('new');
-const selectedSourcePointId = ref('');
-const newSourceTitle = ref('');
+async function refreshPointTree() {
+  treeLoading.value = true;
+  try {
+    pointTree.value = await getKnowledgePointTree(props.kbId);
+  } finally {
+    treeLoading.value = false;
+  }
+}
 
-const treeProps = { label: 'title', children: 'children' };
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
+}
 
-const sourceLabel = computed(() => (props.sourceAnchor ? anchorLabel(props.sourceAnchor) : ''));
+function handleDialogKeydown(event: KeyboardEvent) {
+  if (!props.visible || activeTab.value !== 'tree') return;
+  if (event.key !== 'F2') return;
+  if (isTypingTarget(event.target)) return;
+  if (!selectedPoint.value) return;
+  event.preventDefault();
+  pointTreeRef.value?.startRename(selectedPoint.value);
+}
 
 watch(
   () => props.visible,
   async (visible) => {
     if (!visible) {
-      selectedTargetPoint.value = null;
+      selectedPoint.value = null;
+      selectedPointId.value = null;
       selectedTypeKey.value = 'case';
       activeTab.value = 'tree';
       searchKeyword.value = '';
       searchPage.value = 0;
-      sourceMode.value = 'new';
-      selectedSourcePointId.value = '';
-      newSourceTitle.value = '';
+      document.removeEventListener('keydown', handleDialogKeydown);
       return;
     }
+    document.addEventListener('keydown', handleDialogKeydown);
     relationTypes.value = await listRelationTypes(props.kbId);
     if (!relationTypes.value.some((item) => item.typeKey === selectedTypeKey.value)) {
       selectedTypeKey.value = relationTypes.value[0]?.typeKey ?? 'case';
     }
-    pointTree.value = await getKnowledgePointTree(props.kbId);
-    if (props.sourceAnchor) {
-      sourcePoints.value = await listKnowledgePointsByLocator(props.kbId, props.sourceAnchor.locator);
-      sourceMode.value = sourcePoints.value.length ? 'existing' : 'new';
-      selectedSourcePointId.value = sourcePoints.value[0]?.id ?? '';
-      newSourceTitle.value = sourceLabel.value;
-    }
+    await refreshPointTree();
     await loadSearch();
   },
 );
+
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleDialogKeydown);
+});
 
 async function loadSearch() {
   const result = await listKnowledgePoints(props.kbId, {
@@ -93,12 +103,41 @@ async function loadSearch() {
   searchTotal.value = result.total;
 }
 
-function handleTreeNodeClick(data: KnowledgePoint) {
-  selectedTargetPoint.value = data;
+function onTreeSelect(point: KnowledgePoint) {
+  selectedPoint.value = point;
+  selectedPointId.value = point.id;
+}
+
+async function onTreeUpdated() {
+  await loadSearch();
+  if (selectedPointId.value) {
+    const findInTree = (nodes: KnowledgePoint[]): KnowledgePoint | null => {
+      for (const node of nodes) {
+        if (node.id === selectedPointId.value) return node;
+        if (node.children?.length) {
+          const found = findInTree(node.children);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    const refreshed = findInTree(pointTree.value);
+    if (refreshed) selectedPoint.value = refreshed;
+  }
 }
 
 function selectSearchItem(item: KnowledgePoint) {
-  selectedTargetPoint.value = item;
+  selectedPoint.value = item;
+  selectedPointId.value = item.id;
+  activeTab.value = 'tree';
+  pointTreeRef.value?.setCurrentKey(item.id);
+}
+
+function findMatchingAlias(point: KnowledgePoint, query: string): string | null {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+  if (point.title.toLowerCase().includes(q)) return null;
+  return (point.aliases ?? []).find((alias) => alias.toLowerCase().includes(q)) ?? null;
 }
 
 function close() {
@@ -106,23 +145,12 @@ function close() {
 }
 
 async function handleSave() {
-  if (!props.sourceAnchor || !selectedTargetPoint.value || saving.value) return;
+  if (!props.sourceAnchor || !selectedPoint.value || saving.value) return;
   saving.value = true;
   try {
-    let fromPointId = selectedSourcePointId.value;
-    if (sourceMode.value === 'new') {
-      const created = await createKnowledgePoint(props.kbId, {
-        title: newSourceTitle.value.trim() || sourceLabel.value || '未命名知识点',
-        sourceAnchor: props.sourceAnchor,
-      });
-      fromPointId = created.id;
-    } else if (!fromPointId) {
-      return;
-    }
     await createKnowledgeRelation(props.kbId, {
       relationTypeKey: selectedTypeKey.value,
-      fromPointId,
-      toPointId: selectedTargetPoint.value.id,
+      toPointId: selectedPoint.value.id,
       from: props.sourceAnchor,
     });
     emit('created');
@@ -141,41 +169,26 @@ async function onSearchPageChange(page: number) {
 <template>
   <ElDialog
     :model-value="visible"
-    title="建立知识关联"
+    title="关联到知识点"
     width="min(560px, calc(100vw - 48px))"
     class="tu-dialog-viewport"
     destroy-on-close
     @update:model-value="(value: boolean) => emit('update:visible', value)"
   >
     <div class="kpp-body">
-      <div v-if="sourceAnchor" class="kpp-source">
-        <span class="kpp-label">证据</span>
-        <span class="kpp-value">{{ sourceLabel }}</span>
-      </div>
-
-      <div class="kpp-source-point">
-        <div class="kpp-label">源知识点</div>
-        <div v-if="sourcePoints.length" class="kpp-source-modes">
-          <label><input v-model="sourceMode" type="radio" value="existing" /> 绑定已有</label>
-          <label><input v-model="sourceMode" type="radio" value="new" /> 新建并绑定</label>
+      <div class="kpp-selected">
+        <span class="kpp-label">知识点</span>
+        <div class="kpp-selected__row">
+          <span class="kpp-value">{{ selectedPoint?.title ?? '未选择' }}</span>
+          <ElButton
+            v-if="selectedPoint"
+            link
+            type="primary"
+            @click="selectedPoint = null; selectedPointId = null"
+          >
+            清除
+          </ElButton>
         </div>
-        <ElSelect
-          v-if="sourceMode === 'existing' && sourcePoints.length"
-          v-model="selectedSourcePointId"
-          class="kpp-select"
-        >
-          <ElOption
-            v-for="point in sourcePoints"
-            :key="point.id"
-            :label="point.title"
-            :value="point.id"
-          />
-        </ElSelect>
-        <ElInput
-          v-else
-          v-model="newSourceTitle"
-          placeholder="新知识点标题"
-        />
       </div>
 
       <label class="kpp-field-label">关系类型</label>
@@ -190,13 +203,20 @@ async function onSearchPageChange(page: number) {
 
       <ElTabs v-model="activeTab" class="kpp-tabs">
         <ElTabPane label="知识点树" name="tree">
-          <div class="kpp-scroll">
-            <ElTree
-              :data="pointTree"
-              node-key="id"
-              :props="treeProps"
-              highlight-current
-              @node-click="handleTreeNodeClick"
+          <div class="kpp-scroll" tabindex="-1" @keydown.stop>
+            <KnowledgePointTree
+              ref="pointTreeRef"
+              :kb-id="kbId"
+              :tree="pointTree"
+              :selected-id="selectedPointId"
+              :loading="treeLoading"
+              mode="pick"
+              :draggable="false"
+              :on-refresh="refreshPointTree"
+              toolbar-hint="选择要挂靠的知识点"
+              @select="onTreeSelect"
+              @updated="onTreeUpdated"
+              @update:selected-id="(id) => { selectedPointId = id; }"
             />
           </div>
         </ElTabPane>
@@ -216,10 +236,16 @@ async function onSearchPageChange(page: number) {
               :key="item.id"
               type="button"
               class="kpp-list-item"
-              :class="{ 'kpp-list-item--active': selectedTargetPoint?.id === item.id }"
+              :class="{ 'kpp-list-item--active': selectedPoint?.id === item.id }"
               @click="selectSearchItem(item)"
             >
-              {{ item.title }}
+              <span class="kpp-list-item__title">{{ item.title }}</span>
+              <span
+                v-if="findMatchingAlias(item, searchKeyword)"
+                class="kpp-list-item__alias"
+              >
+                {{ findMatchingAlias(item, searchKeyword) }}
+              </span>
             </button>
           </div>
           <ElPagination
@@ -233,22 +259,17 @@ async function onSearchPageChange(page: number) {
           />
         </ElTabPane>
       </ElTabs>
-
-      <div v-if="selectedTargetPoint" class="kpp-target">
-        <span class="kpp-label">目标知识点</span>
-        <span class="kpp-value">{{ selectedTargetPoint.title }}</span>
-      </div>
     </div>
 
     <template #footer>
       <ElButton @click="close">取消</ElButton>
       <ElButton
         type="primary"
-        :disabled="!sourceAnchor || !selectedTargetPoint || (sourceMode === 'existing' && sourcePoints.length > 0 && !selectedSourcePointId)"
+        :disabled="!sourceAnchor || !selectedPoint"
         :loading="saving"
         @click="handleSave"
       >
-        建立关联
+        关联
       </ElButton>
     </template>
   </ElDialog>
@@ -262,12 +283,17 @@ async function onSearchPageChange(page: number) {
   min-height: 0;
 }
 
-.kpp-source,
-.kpp-target,
-.kpp-source-point {
+.kpp-selected {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+}
+
+.kpp-selected__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .kpp-label {
@@ -295,16 +321,13 @@ async function onSearchPageChange(page: number) {
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   padding: 8px;
-}
-
-.kpp-source-modes {
-  display: flex;
-  gap: 12px;
-  font-size: 13px;
+  outline: none;
 }
 
 .kpp-list-item {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   width: 100%;
   border: none;
   background: transparent;
@@ -312,6 +335,16 @@ async function onSearchPageChange(page: number) {
   padding: 8px;
   border-radius: 6px;
   cursor: pointer;
+}
+
+.kpp-list-item__title {
+  font-size: 13px;
+  color: #1f1f1f;
+}
+
+.kpp-list-item__alias {
+  font-size: 12px;
+  color: #8c8c8c;
 }
 
 .kpp-list-item:hover,

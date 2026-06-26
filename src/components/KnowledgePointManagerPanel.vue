@@ -4,17 +4,21 @@ import { useRouter } from 'vue-router';
 import {
   ElButton,
   ElCard,
+  ElCheckbox,
+  ElDialog,
   ElInput,
-  ElPagination,
-  ElTree,
+  ElMessage,
+  ElTag,
 } from 'element-plus';
-import type { KnowledgeAnchor, KnowledgePoint, KnowledgePointAnchor, KnowledgeRelation } from '@/api/types';
-import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
+import type { KnowledgeAnchor, KnowledgePoint, KnowledgePointAlias, KnowledgePointAnchor, KnowledgeRelation } from '@/api/types';
+import KnowledgePointTree from '@/components/knowledge/KnowledgePointTree.vue';
 import {
-  createKnowledgePoint,
+  addKnowledgePointAlias,
+  deleteKnowledgePointAlias,
+  generateKnowledgePoints,
   getKnowledgePointTree,
+  listKnowledgePointAliases,
   listKnowledgePointAnchors,
-  listKnowledgePoints,
 } from '@/api/knowledgePoint';
 import { listKnowledgeRelationsByPoint } from '@/api/knowledgeRelation';
 import {
@@ -34,21 +38,20 @@ const workspaceStore = useWorkspaceStore();
 
 const pointTree = ref<KnowledgePoint[]>([]);
 const treeLoading = ref(false);
-const listLoading = ref(false);
 const keyword = ref('');
-const listPage = ref(0);
-const listTotal = ref(0);
-const listItems = ref<KnowledgePoint[]>([]);
-const selectedParentId = ref<string | null>(null);
+const selectedPointId = ref<string | null>(null);
 const selectedPoint = ref<KnowledgePoint | null>(null);
 const anchors = ref<KnowledgePointAnchor[]>([]);
 const relationsLoading = ref(false);
 const outgoing = ref<KnowledgeRelation[]>([]);
 const incoming = ref<KnowledgeRelation[]>([]);
-const newPointTitle = ref('');
-const creating = ref(false);
-
-const treeProps = { label: 'title', children: 'children' };
+const generateDialogVisible = ref(false);
+const generatePageTree = ref(true);
+const generateDocumentHeadings = ref(true);
+const generating = ref(false);
+const aliases = ref<KnowledgePointAlias[]>([]);
+const newAlias = ref('');
+const addingAlias = ref(false);
 
 const navigateHandlers = computed(() => ({
   router,
@@ -62,36 +65,38 @@ async function refreshTree() {
   treeLoading.value = true;
   try {
     pointTree.value = await getKnowledgePointTree(props.kbId);
+    if (selectedPointId.value) {
+      const flat = findPointInTree(pointTree.value, selectedPointId.value);
+      if (flat) {
+        selectedPoint.value = flat;
+      } else {
+        selectedPointId.value = null;
+        selectedPoint.value = null;
+      }
+    }
   } finally {
     treeLoading.value = false;
   }
 }
 
-async function refreshList() {
-  listLoading.value = true;
-  try {
-    const result = await listKnowledgePoints(props.kbId, {
-      q: keyword.value.trim() || undefined,
-      page: listPage.value,
-      pageSize: DEFAULT_PAGE_SIZE,
-    });
-    let items = result.items;
-    if (selectedParentId.value) {
-      items = items.filter((item) => item.parentId === selectedParentId.value);
+function findPointInTree(nodes: KnowledgePoint[], id: string): KnowledgePoint | null {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    if (node.children?.length) {
+      const found = findPointInTree(node.children, id);
+      if (found) return found;
     }
-    listItems.value = items;
-    listTotal.value = selectedParentId.value ? items.length : result.total;
-    listPage.value = result.page;
-  } finally {
-    listLoading.value = false;
   }
+  return null;
 }
 
 async function refreshDetail(point: KnowledgePoint) {
+  selectedPointId.value = point.id;
   selectedPoint.value = point;
   relationsLoading.value = true;
   try {
     anchors.value = await listKnowledgePointAnchors(point.id);
+    aliases.value = await listKnowledgePointAliases(point.id);
     const relations = await listKnowledgeRelationsByPoint(props.kbId, point.id);
     outgoing.value = relations.outgoing;
     incoming.value = relations.incoming;
@@ -100,54 +105,18 @@ async function refreshDetail(point: KnowledgePoint) {
   }
 }
 
-async function refreshAll() {
-  await refreshTree();
-  await refreshList();
-}
-
 watch(
   () => props.kbId,
-  () => { void refreshAll(); },
+  () => {
+    selectedPointId.value = null;
+    selectedPoint.value = null;
+    void refreshTree();
+  },
   { immediate: true },
 );
 
-function onTreeNodeClick(data: KnowledgePoint) {
-  selectedParentId.value = data.id;
-  listPage.value = 0;
-  void refreshList();
-}
-
-function clearTreeFilter() {
-  selectedParentId.value = null;
-  listPage.value = 0;
-  void refreshList();
-}
-
-function onListPageChange(page: number) {
-  listPage.value = page - 1;
-  void refreshList();
-}
-
-function onKeywordChange() {
-  listPage.value = 0;
-  void refreshList();
-}
-
-async function handleCreatePoint() {
-  const title = newPointTitle.value.trim();
-  if (!title || creating.value) return;
-  creating.value = true;
-  try {
-    const created = await createKnowledgePoint(props.kbId, {
-      title,
-      parentId: selectedParentId.value,
-    });
-    newPointTitle.value = '';
-    await refreshAll();
-    await refreshDetail(created);
-  } finally {
-    creating.value = false;
-  }
+function onTreeSelect(point: KnowledgePoint) {
+  void refreshDetail(point);
 }
 
 function onNavigateAnchor(anchor: KnowledgeAnchor) {
@@ -157,166 +126,233 @@ function onNavigateAnchor(anchor: KnowledgeAnchor) {
 function onNavigatePoint(pointId: string) {
   void navigateKnowledgePoint(pointId, navigateHandlers.value);
 }
+
+function openGenerateDialog() {
+  generatePageTree.value = true;
+  generateDocumentHeadings.value = true;
+  generateDialogVisible.value = true;
+}
+
+async function handleGenerate() {
+  const sources: string[] = [];
+  if (generatePageTree.value) sources.push('pageTree');
+  if (generateDocumentHeadings.value) sources.push('documentHeadings');
+  if (!sources.length || generating.value) return;
+
+  const pageIds = workspaceStore.currentPageId ? [workspaceStore.currentPageId] : undefined;
+  generating.value = true;
+  try {
+    const result = await generateKnowledgePoints(props.kbId, { sources, pageIds });
+    generateDialogVisible.value = false;
+    ElMessage.success(`生成完成：新建 ${result.created}，跳过 ${result.skipped}，失败 ${result.failed}`);
+    await refreshTree();
+    if (selectedPointId.value) {
+      const refreshed = findPointInTree(pointTree.value, selectedPointId.value);
+      if (refreshed) await refreshDetail(refreshed);
+    }
+  } finally {
+    generating.value = false;
+  }
+}
+
+async function handleAddAlias() {
+  const alias = newAlias.value.trim();
+  if (!selectedPoint.value || !alias || addingAlias.value) return;
+  addingAlias.value = true;
+  try {
+    await addKnowledgePointAlias(selectedPoint.value.id, alias);
+    newAlias.value = '';
+    aliases.value = await listKnowledgePointAliases(selectedPoint.value.id);
+    await refreshTree();
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '添加别名失败');
+  } finally {
+    addingAlias.value = false;
+  }
+}
+
+async function handleDeleteAlias(alias: KnowledgePointAlias) {
+  if (!selectedPoint.value) return;
+  await deleteKnowledgePointAlias(alias.id);
+  aliases.value = aliases.value.filter((item) => item.id !== alias.id);
+  await refreshTree();
+}
+
+async function onTreeUpdated() {
+  if (!selectedPointId.value) {
+    selectedPoint.value = null;
+    return;
+  }
+  const refreshed = findPointInTree(pointTree.value, selectedPointId.value);
+  if (refreshed) {
+    await refreshDetail(refreshed);
+  } else {
+    selectedPointId.value = null;
+    selectedPoint.value = null;
+    anchors.value = [];
+    aliases.value = [];
+    outgoing.value = [];
+    incoming.value = [];
+  }
+}
 </script>
 
 <template>
   <section class="kpm-layout">
-    <aside class="kpm-sidebar">
-      <div class="kpm-sidebar__toolbar">
-        <span class="kpm-sidebar__title">分类树</span>
-        <ElButton link type="primary" @click="clearTreeFilter">全部</ElButton>
-      </div>
-      <div v-loading="treeLoading" class="kpm-tree-wrap">
-        <ElTree
-          :data="pointTree"
-          node-key="id"
-          :props="treeProps"
-          highlight-current
-          @node-click="onTreeNodeClick"
-        />
-      </div>
-    </aside>
-
-    <div class="kpm-main">
+    <div class="kpm-tree-panel">
       <div class="kpm-toolbar">
         <ElInput
           v-model="keyword"
           clearable
-          placeholder="搜索知识点"
-          style="max-width: 280px"
-          @change="onKeywordChange"
-          @clear="onKeywordChange"
-        />
-        <ElInput
-          v-model="newPointTitle"
-          placeholder="新建知识点标题"
+          placeholder="筛选分类树"
           style="max-width: 220px"
-          @keyup.enter="handleCreatePoint"
         />
-        <ElButton type="primary" :loading="creating" :disabled="!newPointTitle.trim()" @click="handleCreatePoint">
-          新建
-        </ElButton>
-        <ElButton @click="refreshAll">刷新</ElButton>
+        <ElButton @click="refreshTree">刷新</ElButton>
+        <ElButton @click="openGenerateDialog">从结构生成…</ElButton>
       </div>
-
-      <div class="kpm-content">
-        <div v-loading="listLoading" class="kpm-list">
-          <button
-            v-for="item in listItems"
-            :key="item.id"
-            type="button"
-            class="kpm-list-item"
-            :class="{ 'kpm-list-item--active': selectedPoint?.id === item.id }"
-            @click="refreshDetail(item)"
-          >
-            <span class="kpm-list-item__title">{{ item.title }}</span>
-            <span v-if="item.summary" class="kpm-list-item__summary">{{ item.summary }}</span>
-          </button>
-          <div v-if="!listLoading && listItems.length === 0" class="kpm-empty">暂无知识点</div>
-        </div>
-
-        <ElCard v-if="selectedPoint" v-loading="relationsLoading" shadow="never" class="kpm-detail">
-          <template #header>
-            <span>{{ selectedPoint.title }}</span>
-          </template>
-          <p v-if="selectedPoint.summary" class="kpm-detail__summary">{{ selectedPoint.summary }}</p>
-
-          <div v-if="anchors.length" class="kpm-section">
-            <div class="kpm-section__title">证据</div>
-            <button
-              v-for="anchor in anchors"
-              :key="anchor.id"
-              type="button"
-              class="kpm-link"
-              @click="onNavigateAnchor({ kind: anchor.kind, locator: anchor.locator, snapshot: anchor.snapshot })"
-            >
-              {{ anchorLabel({ kind: anchor.kind, locator: anchor.locator, snapshot: anchor.snapshot }) }}
-            </button>
-          </div>
-
-          <div v-if="outgoing.length" class="kpm-section">
-            <div class="kpm-section__title">关联到</div>
-            <button
-              v-for="relation in outgoing"
-              :key="relation.id"
-              type="button"
-              class="kpm-link"
-              @click="relation.toPointId && onNavigatePoint(relation.toPointId)"
-            >
-              {{ relation.relationTypeLabel }} · {{ relationEndpointLabel(relation, 'out') }}
-            </button>
-          </div>
-
-          <div v-if="incoming.length" class="kpm-section">
-            <div class="kpm-section__title">被关联</div>
-            <button
-              v-for="relation in incoming"
-              :key="relation.id"
-              type="button"
-              class="kpm-link"
-              @click="relation.fromPointId && onNavigatePoint(relation.fromPointId)"
-            >
-              {{ relation.relationTypeLabel }} · {{ relationEndpointLabel(relation, 'in') }}
-            </button>
-          </div>
-        </ElCard>
-      </div>
-
-      <div class="kpm-pagination">
-        <ElPagination
-          layout="total, prev, pager, next"
-          :total="listTotal"
-          :page-size="DEFAULT_PAGE_SIZE"
-          :current-page="listPage + 1"
-          @current-change="onListPageChange"
+      <div class="kpm-tree-body">
+        <KnowledgePointTree
+          :kb-id="kbId"
+          :tree="pointTree"
+          :selected-id="selectedPointId"
+          :loading="treeLoading"
+          mode="manage"
+          :filter-keyword="keyword"
+          :on-refresh="refreshTree"
+          toolbar-hint="拖到节点上/下边线调整顺序；拖到父节点行可提升为同级；或右键「提升为同级节点」"
+          @select="onTreeSelect"
+          @updated="onTreeUpdated"
+          @update:selected-id="(id) => { selectedPointId = id; }"
         />
       </div>
     </div>
+
+    <div class="kpm-detail-panel">
+      <ElCard v-if="selectedPoint" v-loading="relationsLoading" shadow="never" class="kpm-detail">
+        <template #header>
+          <span>{{ selectedPoint.title }}</span>
+        </template>
+        <p v-if="selectedPoint.summary" class="kpm-detail__summary">{{ selectedPoint.summary }}</p>
+
+        <div class="kpm-section">
+          <div class="kpm-section__title">别名</div>
+          <div v-if="aliases.length" class="kpm-alias-chips">
+            <ElTag
+              v-for="alias in aliases"
+              :key="alias.id"
+              closable
+              @close="handleDeleteAlias(alias)"
+            >
+              {{ alias.alias }}
+            </ElTag>
+          </div>
+          <div class="kpm-alias-form">
+            <ElInput
+              v-model="newAlias"
+              placeholder="添加别名"
+              @keyup.enter="handleAddAlias"
+            />
+            <ElButton
+              type="primary"
+              :loading="addingAlias"
+              :disabled="!newAlias.trim()"
+              @click="handleAddAlias"
+            >
+              添加
+            </ElButton>
+          </div>
+        </div>
+
+        <div v-if="anchors.length" class="kpm-section">
+          <div class="kpm-section__title">证据</div>
+          <button
+            v-for="anchor in anchors"
+            :key="anchor.id"
+            type="button"
+            class="kpm-link"
+            @click="onNavigateAnchor({ kind: anchor.kind, locator: anchor.locator, snapshot: anchor.snapshot })"
+          >
+            {{ anchorLabel({ kind: anchor.kind, locator: anchor.locator, snapshot: anchor.snapshot }) }}
+          </button>
+        </div>
+
+        <div v-if="outgoing.length" class="kpm-section">
+          <div class="kpm-section__title">关联到</div>
+          <button
+            v-for="relation in outgoing"
+            :key="relation.id"
+            type="button"
+            class="kpm-link"
+            @click="relation.toPointId && onNavigatePoint(relation.toPointId)"
+          >
+            {{ relation.relationTypeLabel }} · {{ relationEndpointLabel(relation, 'out') }}
+          </button>
+        </div>
+
+        <div v-if="incoming.length" class="kpm-section">
+          <div class="kpm-section__title">被关联</div>
+          <button
+            v-for="relation in incoming"
+            :key="relation.id"
+            type="button"
+            class="kpm-link"
+            @click="relation.fromPointId && onNavigatePoint(relation.fromPointId)"
+          >
+            {{ relation.relationTypeLabel }} · {{ relationEndpointLabel(relation, 'in') }}
+          </button>
+        </div>
+      </ElCard>
+      <div v-else class="kpm-empty-detail">
+        在左侧分类树中选择知识点，或右键新建
+      </div>
+    </div>
+
+    <ElDialog
+      v-model="generateDialogVisible"
+      title="从结构生成知识点"
+      width="480px"
+      class="tu-dialog-viewport"
+    >
+      <p class="kpm-generate-hint">扁平生成：不设置父节点，仅建立知识点与 primary 证据锚点。</p>
+      <div class="kpm-generate-options">
+        <ElCheckbox v-model="generatePageTree">知识库页面树</ElCheckbox>
+        <ElCheckbox v-model="generateDocumentHeadings">文档标题结构</ElCheckbox>
+      </div>
+      <p v-if="workspaceStore.currentPageId" class="kpm-generate-scope">
+        将仅处理当前选中页面。
+      </p>
+      <template #footer>
+        <ElButton @click="generateDialogVisible = false">取消</ElButton>
+        <ElButton
+          type="primary"
+          :loading="generating"
+          :disabled="!generatePageTree && !generateDocumentHeadings"
+          @click="handleGenerate"
+        >
+          开始生成
+        </ElButton>
+      </template>
+    </ElDialog>
   </section>
 </template>
 
 <style scoped>
 .kpm-layout {
   display: grid;
-  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 1fr) minmax(280px, 1fr);
   gap: 16px;
-  min-height: 0;
+  min-height: min(70vh, 640px);
 }
 
-.kpm-sidebar {
+.kpm-tree-panel,
+.kpm-detail-panel {
   display: flex;
   flex-direction: column;
   min-height: 0;
   border: 1px solid #f0f0f0;
   border-radius: 8px;
   background: #fff;
-}
-
-.kpm-sidebar__toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.kpm-sidebar__title {
-  font-size: 13px;
-  color: #595959;
-}
-
-.kpm-tree-wrap {
-  flex: 1;
-  overflow: auto;
-  padding: 8px;
-  max-height: min(70vh, 640px);
-}
-
-.kpm-main {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  min-width: 0;
+  padding: 12px;
 }
 
 .kpm-toolbar {
@@ -324,54 +360,21 @@ function onNavigatePoint(pointId: string) {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  margin-bottom: 12px;
+  flex-shrink: 0;
 }
 
-.kpm-content {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.2fr);
-  gap: 12px;
+.kpm-tree-body {
+  flex: 1;
   min-height: 0;
-}
-
-.kpm-list {
-  border: 1px solid #f0f0f0;
-  border-radius: 8px;
-  background: #fff;
-  max-height: min(70vh, 640px);
-  overflow: auto;
-}
-
-.kpm-list-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: 100%;
-  border: none;
-  background: transparent;
-  text-align: left;
-  padding: 10px 12px;
-  border-bottom: 1px solid #f5f5f5;
-  cursor: pointer;
-}
-
-.kpm-list-item:hover,
-.kpm-list-item--active {
-  background: #f0f5ff;
-}
-
-.kpm-list-item__title {
-  font-size: 14px;
-  color: #1f1f1f;
-}
-
-.kpm-list-item__summary {
-  font-size: 12px;
-  color: #8c8c8c;
+  overflow: hidden;
 }
 
 .kpm-detail {
-  max-height: min(70vh, 640px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
+  border: none;
 }
 
 .kpm-detail__summary {
@@ -388,6 +391,19 @@ function onNavigatePoint(pointId: string) {
   font-size: 12px;
   color: #8c8c8c;
   margin-bottom: 6px;
+}
+
+.kpm-alias-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.kpm-alias-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .kpm-link {
@@ -408,15 +424,32 @@ function onNavigatePoint(pointId: string) {
   background: #f0f5ff;
 }
 
-.kpm-empty {
-  padding: 24px;
-  text-align: center;
+.kpm-empty-detail {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   color: #8c8c8c;
   font-size: 13px;
+  padding: 24px;
+  text-align: center;
 }
 
-.kpm-pagination {
+.kpm-generate-hint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #595959;
+}
+
+.kpm-generate-options {
   display: flex;
-  justify-content: flex-end;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.kpm-generate-scope {
+  margin: 12px 0 0;
+  font-size: 12px;
+  color: #8c8c8c;
 }
 </style>

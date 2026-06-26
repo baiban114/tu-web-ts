@@ -12,6 +12,19 @@ export { flattenTree } from './flatten';
 export { buildTreeFromLevels } from './levels';
 export { walkTree, findTreeNode, findTreePath } from './walk';
 export { toTreeDocument, toFlatWithPath, toMarkdownOutline } from './serialize';
+export {
+  canDropOnNode,
+  computeTreeDropTarget,
+  flattenKnowledgePoints,
+  isDescendant,
+  moveToRootEnd,
+  normalizeDropType,
+  promoteToSiblingAfterParent,
+  toMovableNode,
+  type TreeDropTarget,
+  type TreeDropType,
+  type TreeMovableNode,
+} from './drag';
 
 export {
   resourcesToTreeNodes,

@@ -2,9 +2,9 @@ import type { KnowledgeAnchor, KnowledgeRelation, RelationTypeDef, RelationsByPo
 import { DEFAULT_PAGE_SIZE } from '@/constants/pagination';
 import type { PageResult } from '@/constants/pagination';
 import { paginateSlice } from '@/utils/clientPagination';
+import { anchorLabel } from '@/utils/knowledgeAnchor';
 import type { ListKnowledgeRelationsParams } from '@/api/knowledgeRelation';
 import {
-  ensurePointForAnchorMock,
   findPointById,
   listKnowledgePointsByLocatorMock,
 } from '@/mock/knowledgePoint';
@@ -46,9 +46,12 @@ function newId(): string {
 function enrichRelation(relation: KnowledgeRelation): KnowledgeRelation {
   const fromPoint = relation.fromPointId ? findPointById(relation.fromPointId) : undefined;
   const toPoint = relation.toPointId ? findPointById(relation.toPointId) : undefined;
+  const fromPointTitle = fromPoint?.title
+    ?? relation.fromPointTitle
+    ?? (relation.from ? anchorLabel(relation.from) : null);
   return {
     ...relation,
-    fromPointTitle: fromPoint?.title ?? relation.fromPointTitle ?? null,
+    fromPointTitle,
     toPointTitle: toPoint?.title ?? relation.toPointTitle ?? null,
   };
 }
@@ -125,11 +128,15 @@ export function createKnowledgeRelationMock(
   },
 ): KnowledgeRelation {
   const typeDef = resolveType(kbId, payload.relationTypeKey);
-  const fromPointId = payload.fromPointId
-    ?? (payload.from ? ensurePointForAnchorMock(kbId, payload.from).id : '');
-  const toPointId = payload.toPointId
-    ?? (payload.to ? ensurePointForAnchorMock(kbId, payload.to).id : '');
-  const fromPoint = findPointById(fromPointId);
+  const fromPointId = payload.fromPointId?.trim() ?? '';
+  const toPointId = payload.toPointId?.trim() ?? '';
+  if (!toPointId) {
+    throw new Error('toPointId is required');
+  }
+  if (!fromPointId && !payload.from) {
+    throw new Error('fromPointId or from anchor is required');
+  }
+  const fromPoint = fromPointId ? findPointById(fromPointId) : undefined;
   const toPoint = findPointById(toPointId);
   const relation: KnowledgeRelation = {
     id: newId(),
@@ -138,9 +145,9 @@ export function createKnowledgeRelationMock(
     relationTypeLabel: typeDef.label,
     relationTypeColor: typeDef.color,
     bidirectional: typeDef.bidirectional,
-    fromPointId,
+    fromPointId: fromPointId || null,
     toPointId,
-    fromPointTitle: fromPoint?.title ?? null,
+    fromPointTitle: fromPoint?.title ?? (payload.from ? anchorLabel(payload.from) : null),
     toPointTitle: toPoint?.title ?? null,
     from: payload.from ?? null,
     to: payload.to ?? null,

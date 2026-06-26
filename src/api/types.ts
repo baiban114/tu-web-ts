@@ -421,7 +421,28 @@ export interface KnowledgePoint {
   status: string;
   estimatedHours?: number | null;
   sortOrder: number;
+  aliases?: string[];
   children?: KnowledgePoint[];
+}
+
+export interface KnowledgePointAlias {
+  id: string;
+  knowledgePointId: string;
+  alias: string;
+}
+
+export interface KnowledgePointGenerationItem {
+  locator: string;
+  pointId: string | null;
+  title: string;
+  status: 'created' | 'skipped' | 'failed' | string;
+}
+
+export interface KnowledgePointGenerationResult {
+  created: number;
+  skipped: number;
+  failed: number;
+  items: KnowledgePointGenerationItem[];
 }
 
 export interface KnowledgePointAnchor {

@@ -69,7 +69,7 @@ export async function createKnowledgeRelation(
   kbId: string,
   payload: {
     relationTypeKey: string;
-    fromPointId: string;
+    fromPointId?: string;
     toPointId: string;
     from?: KnowledgeAnchor;
     to?: KnowledgeAnchor;
