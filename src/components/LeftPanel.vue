@@ -11,6 +11,7 @@ import {
   ElDropdown,
   ElDropdownMenu,
   ElDropdownItem,
+  ElTooltip,
 } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { PageItem } from '@/api/page';
@@ -620,7 +621,14 @@ function collapseAllTree() {
                 @keyup.esc="renamingId = null"
                 @click.stop
               />
-              <span v-else class="node-label">{{ node.label }}</span>
+              <ElTooltip
+                v-else
+                :content="node.label"
+                placement="right"
+                :show-after="400"
+              >
+                <span class="node-label">{{ node.label }}</span>
+              </ElTooltip>
             </span>
           </template>
         </el-tree>
@@ -827,6 +835,8 @@ function collapseAllTree() {
   height: 32px;
   border-radius: 6px;
   padding-right: 4px;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .page-tree :deep(.el-tree-node__content:hover) {
@@ -851,8 +861,15 @@ function collapseAllTree() {
   display: flex;
   align-items: center;
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   gap: 4px;
+}
+
+.tree-node :deep(.el-tooltip__trigger) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .node-icon {
@@ -877,6 +894,9 @@ function collapseAllTree() {
 }
 
 .node-label {
+  display: block;
+  flex: 1;
+  min-width: 0;
   font-size: 13px;
   overflow: hidden;
   text-overflow: ellipsis;

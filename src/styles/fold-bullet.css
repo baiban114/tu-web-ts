@@ -24,6 +24,16 @@
   color: #6d28d9;
 }
 
+.tu-fold-chevron {
+  display: block;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.tu-fold-chevron--collapsed {
+  transform: rotate(-90deg);
+}
+
 .heading-section-fold-gutter__btn {
   display: inline-flex;
   align-items: center;

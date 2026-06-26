@@ -13,6 +13,7 @@ import {
 } from '@/utils/toc/tocSectionFoldActions'
 import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
 import { EDITOR_SECTION_HANDLE_KEY } from '@/editor/editorSectionHandleBridge'
+import FoldChevronIcon from './FoldChevronIcon.vue'
 import { getSectionFoldRevision } from '@/stores/sectionFoldSession'
 
 interface FoldToggleLayout {
@@ -277,7 +278,7 @@ onBeforeUnmount(() => {
     @mouseleave="(event) => onFoldButtonLeave(toggle.entryId, event)"
     @click.stop="toggleFold(toggle.entryId)"
   >
-    {{ toggle.collapsed ? '▶' : '▼' }}
+    <FoldChevronIcon :collapsed="toggle.collapsed" :size="12" />
   </button>
 </template>
 

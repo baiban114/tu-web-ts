@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { ElTooltip } from 'element-plus'
+import FoldChevronIcon from './FoldChevronIcon.vue'
 import type { BlockTag } from '@/api/types'
 import type { TocTreeItem } from '@/utils/toc/headings'
 import { headingSourceBadgeLabel } from '@/utils/headingSource'
@@ -72,9 +74,11 @@ function extraSectionTagCount(item: TocTreeItem): number {
           class="page-toc__bullet page-toc__bullet--group"
           @click.stop="onToggleClick(item)"
         >
-          {{ isExpanded(item) ? '▼' : '▶' }}
+          <FoldChevronIcon :collapsed="!isExpanded(item)" />
         </span>
-        <span class="page-toc__text">{{ item.text }}</span>
+        <ElTooltip :content="item.text" placement="left" :show-after="400">
+          <span class="page-toc__text">{{ item.text }}</span>
+        </ElTooltip>
         <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
           <span
             v-for="tag in visibleSectionTags(item).slice(0, 2)"
@@ -130,7 +134,9 @@ function extraSectionTagCount(item: TocTreeItem): number {
           class="page-toc__bullet page-toc__bullet--placeholder"
           aria-hidden="true"
         />
-        <span class="page-toc__text">{{ item.text }}</span>
+        <ElTooltip :content="item.text" placement="left" :show-after="400">
+          <span class="page-toc__text">{{ item.text }}</span>
+        </ElTooltip>
         <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
           <span
             v-for="tag in visibleSectionTags(item).slice(0, 2)"
@@ -162,7 +168,9 @@ function extraSectionTagCount(item: TocTreeItem): number {
         class="page-toc__bullet page-toc__bullet--placeholder"
         aria-hidden="true"
       />
-      <span class="page-toc__text">{{ item.text }}</span>
+      <ElTooltip :content="item.text" placement="left" :show-after="400">
+        <span class="page-toc__text">{{ item.text }}</span>
+      </ElTooltip>
       <span v-if="visibleSectionTags(item).length" class="page-toc__tags">
         <span
           v-for="tag in visibleSectionTags(item).slice(0, 2)"

@@ -3148,10 +3148,12 @@ onBeforeUnmount(() => {
 
 .page-toc :deep(.page-toc__item) {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  gap: 6px;
   width: 100%;
-  padding: 8px 10px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -3172,11 +3174,11 @@ onBeforeUnmount(() => {
 }
 
 .page-toc :deep(.page-toc__bullet) {
-  flex: 0 0 20px;
-  width: 20px;
-  min-width: 20px;
+  flex: 0 0 14px;
+  width: 14px;
+  min-width: 14px;
   padding-top: 1px;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   color: #1677ff;
   text-align: center;
@@ -3200,8 +3202,11 @@ onBeforeUnmount(() => {
 }
 
 .page-toc :deep(.page-toc__bullet--group) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   color: #7c3aed !important;
-  font-size: 10px !important;
+  cursor: pointer;
 }
 
 .page-toc :deep(.page-toc__children .page-toc__item:hover) {
@@ -3220,8 +3225,8 @@ onBeforeUnmount(() => {
 .page-toc :deep(.page-toc__local-children) {
   display: flex;
   flex-direction: column;
-  margin-left: 16px;
-  padding-left: 8px;
+  margin-left: 10px;
+  padding-left: 4px;
   border-left: 1px solid #e5e7eb;
 }
 
@@ -3236,37 +3241,26 @@ onBeforeUnmount(() => {
 .page-toc :deep(.page-toc__children) {
   display: flex;
   flex-direction: column;
-  margin: 2px 0 4px 14px;
-  padding-left: 8px;
+  margin: 2px 0 4px 10px;
+  padding-left: 4px;
   border-left: 1px solid #e5e7eb;
 }
 
+.page-toc :deep(.page-toc__item .el-tooltip__trigger) {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .page-toc :deep(.page-toc__text) {
+  display: block;
   flex: 1;
   min-width: 0;
   font-size: 13px;
   line-height: 1.45;
-  word-break: break-word;
-}
-
-.page-toc :deep(.page-toc__item--level-2) {
-  padding-left: 18px;
-}
-
-.page-toc :deep(.page-toc__item--level-3) {
-  padding-left: 28px;
-}
-
-.page-toc :deep(.page-toc__item--level-4) {
-  padding-left: 38px;
-}
-
-.page-toc :deep(.page-toc__item--level-5) {
-  padding-left: 48px;
-}
-
-.page-toc :deep(.page-toc__item--level-6) {
-  padding-left: 58px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .toc-settings-popover {
