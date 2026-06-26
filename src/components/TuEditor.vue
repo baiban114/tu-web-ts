@@ -17,6 +17,10 @@ import {
   insertHtmlFromClipboard,
   sanitizePastedHtml,
 } from '@/editor/pasteHtmlContent'
+import {
+  isHeadingPasteContext,
+  pastePlainTextInHeading,
+} from '@/editor/pasteInTextblock'
 import { resolveClipboardHtmlSource } from '@/editor/extensions/HtmlInlineRender'
 import { getAnnotationSelectionPayload } from '@/editor/annotationText'
 import { createGraphFromSource, createGraphSourceMetadata } from '@/utils/graphSources'
@@ -1124,6 +1128,12 @@ const editor = useEditor({
 
       const html = event.clipboardData?.getData('text/html') ?? ''
       const plain = event.clipboardData?.getData('text/plain') ?? ''
+
+      if (isHeadingPasteContext(editor.value) && plain) {
+        pastePlainTextInHeading(editor.value, plain)
+        return true
+      }
+
       if (html.trim() || (plain.trim() && /<[a-z][\s\S]*>/i.test(plain))) {
         const sourceHtml = html.trim()
           ? resolveClipboardHtmlSource(html, plain)
