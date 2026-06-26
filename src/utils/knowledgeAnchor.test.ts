@@ -5,6 +5,7 @@ import {
   pageAnchor,
   parseLocator,
   resourceExcerptAnchor,
+  sectionAnchor,
 } from './knowledgeAnchor';
 
 describe('knowledgeAnchor', () => {
@@ -34,5 +35,9 @@ describe('knowledgeAnchor', () => {
     expect(parsed.pageId).toBe('p1');
     expect(parsed.from).toBe(12);
     expect(parsed.to).toBe(34);
+  });
+
+  it('builds section anchor with section key', () => {
+    expect(sectionAnchor('p1', 'local:blk', '节标题').locator).toBe('page:p1:section:local:blk');
   });
 });

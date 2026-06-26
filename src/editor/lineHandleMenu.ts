@@ -30,6 +30,7 @@ export type LineHandleAction =
   | 'mark-excerpt'
   | 'set-basis'
   | 'add-note'
+  | 'create-knowledge-relation'
   | 'cut'
   | 'copy'
   | 'duplicate'
@@ -65,12 +66,36 @@ export function buildEditorLineHandleItems(extraActionItems: LineHandleMenuItem[
   ]
 }
 
-export const sectionHandleExtraItems: LineHandleMenuItem[] = [
-  { key: 'add-note', label: '添加标注（本节）', icon: '📝' },
-]
+function knowledgeActionItems(kind: 'line' | 'section'): LineHandleMenuItem[] {
+  return [
+    { key: 'add-note', label: kind === 'section' ? '添加标注（本节）' : '添加标注', icon: '📝' },
+    { key: 'create-knowledge-relation', label: '建立关联', icon: '🔗' },
+  ]
+}
+
+export type EditorHandleTarget =
+  | { kind: 'line'; pos: number }
+  | { kind: 'section'; entryId: string }
+
+export function buildHandleMenuItems(target: EditorHandleTarget | null): LineHandleMenuItem[] {
+  const kind = target?.kind === 'section' ? 'section' : 'line'
+  const sectionLabels: Record<string, string> = {
+    'mark-excerpt': '标记节选（本节）',
+    'set-basis': '设置依据（本节）',
+    cut: '剪切本节',
+    copy: '复制本节',
+    duplicate: '复制本节',
+    delete: '删除本节',
+  }
+  return buildEditorLineHandleItems(knowledgeActionItems(kind)).map((item) => (
+    kind === 'section' && sectionLabels[item.key]
+      ? { ...item, label: sectionLabels[item.key] }
+      : item
+  ))
+}
 
 export function buildSectionHandleItems(): LineHandleMenuItem[] {
-  return buildEditorLineHandleItems(sectionHandleExtraItems)
+  return buildHandleMenuItems({ kind: 'section', entryId: '' })
 }
 
 export function isInsertBlockAction(key: string): key is InsertBlockType {

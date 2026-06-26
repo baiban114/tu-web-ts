@@ -40,17 +40,20 @@ import {
   type UrlDisplayMode,
 } from '@/utils/urlDisplay'
 import {
-  buildEditorLineHandleItems,
-  buildSectionHandleItems,
+  buildHandleMenuItems,
   insertOptions,
   isInsertBlockAction,
+  type EditorHandleTarget,
   type InsertBlockType,
   type LineHandleAction,
 } from '@/editor/lineHandleMenu'
 import { collectFlatTocEntries } from '@/utils/toc/collectFlatTocEntries'
+import { iterTocFoldSections } from '@/utils/toc/tocSections'
+import { findTocFoldAnchorElement } from '@/utils/toc/tocSectionFoldActions'
 import { getTocSectionBoundaryPos } from '@/utils/toc/tocSections'
 import { resolveFoldSectionEntryIdAtPos } from '@/utils/toc/resolveFoldSectionEntry'
 import type { ResolvedPos } from '@tiptap/pm/model'
+import { EDITOR_SECTION_HANDLE_KEY } from '@/editor/editorSectionHandleBridge'
 import {
   resolveUrlHoverTarget,
   urlHoverTargetsEqual,
@@ -95,6 +98,9 @@ const emit = defineEmits<{
   'section-annotate': [entryId: string]
   'section-mark-excerpt': [entryId: string]
   'section-set-basis': [entryId: string]
+  'section-create-knowledge-relation': [entryId: string]
+  'line-annotate': [blockId: string]
+  'line-create-knowledge-relation': [blockId: string]
   'url-hover-change': [target: UrlHoverTarget | null]
   'text-tag-span-click': [spanId: string]
   'text-tag-spans-mapped': [spans: TextTagSpan[]]
@@ -133,7 +139,7 @@ const handleMenuVisible = ref(false)
 let hideHandleTimer: ReturnType<typeof setTimeout> | null = null
 
 const handleFixedLeft = ref(0)
-const hoveredSectionEntryId = ref<string | null>(null)
+const handleTarget = ref<EditorHandleTarget | null>(null)
 let hoveredLineEl: HTMLElement | null = null
 let scrollContainer: HTMLElement | null = null
 
@@ -145,10 +151,7 @@ const handlePositionStyle = computed<CSSProperties>(() => ({
   transform: 'translateX(-50%)',
 }))
 
-const baseHandleItems = buildEditorLineHandleItems()
-const activeHandleItems = computed(() => (
-  hoveredSectionEntryId.value ? buildSectionHandleItems() : baseHandleItems
-))
+const activeHandleItems = computed(() => buildHandleMenuItems(handleTarget.value))
 
 const slashQuery = ref('')
 const slashMenuVisible = ref(false)
@@ -617,22 +620,34 @@ const completePendingExternalResourceInsert = (block: Block) => {
 const handleScrollInEditor = () => {
   if (!handleVisible.value || !hoveredLineEl || !editorEl.value) return
   if (!document.contains(hoveredLineEl)) {
-    handleVisible.value = false
-    hoveredPos.value = null
-    hoveredLineEl = null
+    clearHandleState()
     return
   }
   handleTop.value = hoveredLineEl.getBoundingClientRect().top
+}
+
+const isHandleInteractionTarget = (node: EventTarget | null): boolean => {
+  if (!(node instanceof Node)) return false
+  if (editorEl.value?.contains(node)) return true
+  if (node instanceof HTMLElement) {
+    if (node.closest('.heading-section-fold-gutter__btn')) return true
+    if (node.closest('.hover-handle')) return true
+  }
+  return false
+}
+
+const clearHandleState = () => {
+  handleVisible.value = false
+  handleTarget.value = null
+  hoveredPos.value = null
+  hoveredLineEl = null
 }
 
 const scheduleHideHandle = () => {
   if (hideHandleTimer) return
   hideHandleTimer = setTimeout(() => {
     if (!handleMenuVisible.value) {
-      handleVisible.value = false
-      hoveredPos.value = null
-      hoveredSectionEntryId.value = null
-      hoveredLineEl = null
+      clearHandleState()
     }
     hideHandleTimer = null
   }, 200)
@@ -665,7 +680,12 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   if (!isInsideEditor && !isInLeftGutter) { scheduleHideHandle(); return }
 
   if (isInLeftGutter) {
-    if (handleVisible.value) clearHideHandle()
+    const section = resolveSectionAtClientY(event.clientY)
+    if (section) {
+      showHandle({ kind: 'section', entryId: section.entryId }, section.anchorEl)
+    } else {
+      scheduleHideHandle()
+    }
     return
   }
 
@@ -681,19 +701,38 @@ const handleEditorMouseMove = (event: MouseEvent) => {
   const domPos = editor.value.view.nodeDOM(resolved.before(1))
   if (!domPos || !(domPos instanceof HTMLElement)) { scheduleHideHandle(); return }
 
-  const lineRect = domPos.getBoundingClientRect()
-  const height = Math.max(28, lineRect.height)
-
-  hoveredLineEl = domPos
-  handleFixedLeft.value = gutter?.hoverLeft ?? (wrapperRect.left - 24)
-  hoveredPos.value = pos.pos
-  hoveredSectionEntryId.value = tocCollectContext?.value
+  const sectionEntryId = tocCollectContext?.value
     ? resolveFoldSectionEntryIdAtPos(editor.value.state.doc, pos.pos, tocCollectContext.value)
     : null
-  handleTop.value = lineRect.top
-  handleHeight.value = height
-  handleVisible.value = true
+  if (sectionEntryId) {
+    showHandle({ kind: 'section', entryId: sectionEntryId }, domPos)
+    return
+  }
 
+  showHandle({ kind: 'line', pos: pos.pos }, domPos)
+}
+
+function showHandle(target: EditorHandleTarget, anchorEl: HTMLElement) {
+  if (!editor.value || !editorEl.value || !props.editable) return
+
+  const wrapperRect = editorEl.value.getBoundingClientRect()
+  const gutter = getContentScrollGutterAnchor(editorEl.value)
+  const lineRect = anchorEl.getBoundingClientRect()
+
+  handleTarget.value = target
+  hoveredLineEl = anchorEl
+  handleFixedLeft.value = gutter?.hoverLeft ?? (wrapperRect.left - 24)
+  handleTop.value = lineRect.top
+  handleHeight.value = Math.max(28, lineRect.height)
+  if (target.kind === 'line') {
+    hoveredPos.value = target.pos
+  } else {
+    const resolved = resolveSectionEntry(target.entryId)
+    hoveredPos.value = resolved
+      ? Math.min(resolved.entry.pos + 1, editor.value.state.doc.content.size - 1)
+      : null
+  }
+  handleVisible.value = true
   clearHideHandle()
 }
 
@@ -749,7 +788,8 @@ const handleDocumentMouseUp = () => {
   emit('selection-pointer-change', false)
 }
 
-const handleEditorMouseLeave = () => {
+const handleEditorMouseLeave = (event: MouseEvent) => {
+  if (isHandleInteractionTarget(event.relatedTarget)) return
   scheduleHideHandle()
 }
 
@@ -759,21 +799,65 @@ const handleHandleMenuVisibilityChange = (visible: boolean) => {
 }
 
 const handleHandleSelect = (key: LineHandleAction) => {
-  if (!editor.value || hoveredPos.value == null) return
+  const target = handleTarget.value
+  if (!editor.value || !target) return
+  runHandleAction(target, key)
+  clearHandleState()
+}
 
-  const resolved = editor.value.state.doc.resolve(hoveredPos.value)
-  if (resolved.depth < 1) return
-
-  const sectionEntryId = hoveredSectionEntryId.value
-  if (sectionEntryId) {
-    runSectionHandleAction(sectionEntryId, key)
-  } else {
-    runLineHandleAction(key, resolved, hoveredPos.value)
+function runHandleAction(target: EditorHandleTarget, key: LineHandleAction) {
+  if (target.kind === 'section') {
+    runSectionHandleAction(target.entryId, key)
+    return
   }
+  const resolved = editor.value!.state.doc.resolve(target.pos)
+  if (resolved.depth < 1) return
+  runLineHandleAction(key, resolved, target.pos)
+}
 
-  handleVisible.value = false
-  hoveredPos.value = null
-  hoveredSectionEntryId.value = null
+function resolveSectionAtClientY(clientY: number): { entryId: string; anchorEl: HTMLElement } | null {
+  const ed = editor.value
+  const ctx = tocCollectContext?.value
+  if (!ed || !ctx) return null
+  const doc = ed.state.doc
+  const flat = collectFlatTocEntries(doc, ctx)
+  for (const section of iterTocFoldSections(flat, doc)) {
+    const anchor = findTocFoldAnchorElement(ed, section.entry)
+    if (!anchor) continue
+    const rect = anchor.getBoundingClientRect()
+    if (clientY >= rect.top && clientY <= rect.bottom) {
+      return { entryId: section.entry.id, anchorEl: anchor }
+    }
+  }
+  return null
+}
+
+const handleSectionGutterHover = (entryId: string) => {
+  const ed = editor.value
+  if (!ed) return
+  const resolved = resolveSectionEntry(entryId)
+  const anchor = resolved ? findTocFoldAnchorElement(ed, resolved.entry) : null
+  if (!resolved || !anchor) return
+  showHandle({ kind: 'section', entryId }, anchor)
+}
+
+const handleSectionGutterLeave = (event?: MouseEvent) => {
+  if (event && isHandleInteractionTarget(event.relatedTarget)) return
+  scheduleHideHandle()
+}
+
+provide(EDITOR_SECTION_HANDLE_KEY, {
+  onSectionGutterHover: handleSectionGutterHover,
+  onSectionGutterLeave: handleSectionGutterLeave,
+})
+
+const handleWrapperMouseMove = (event: MouseEvent) => {
+  if (!props.editable || handleMenuVisible.value) return
+  const target = event.target as HTMLElement | null
+  const foldBtn = target?.closest('.heading-section-fold-gutter__btn')
+  if (!(foldBtn instanceof HTMLElement)) return
+  const entryId = foldBtn.dataset.entryId
+  if (entryId) handleSectionGutterHover(entryId)
 }
 
 function resolveSectionEntry(entryId: string) {
@@ -806,6 +890,16 @@ function runLineHandleAction(key: LineHandleAction, resolved: ResolvedPos, curso
   }
 
   switch (key) {
+    case 'add-note': {
+      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      if (blockId) emit('line-annotate', blockId)
+      break
+    }
+    case 'create-knowledge-relation': {
+      const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
+      if (blockId) emit('line-create-knowledge-relation', blockId)
+      break
+    }
     case 'mark-excerpt': {
       const blockId = resolved.node(1)?.attrs?.blockId as string | undefined
       if (blockId) emit('mark-block-excerpt', blockId)
@@ -875,6 +969,9 @@ function runSectionHandleAction(entryId: string, key: LineHandleAction) {
       break
     case 'set-basis':
       emit('section-set-basis', entryId)
+      break
+    case 'create-knowledge-relation':
+      emit('section-create-knowledge-relation', entryId)
       break
     case 'cut':
     case 'copy':
@@ -1072,6 +1169,7 @@ const editor = useEditor({
       // nextTick so the template ref editorEl is available
       nextTick(() => {
         editorEl.value?.addEventListener('mousedown', handleLassoStart, { capture: true })
+        editorEl.value?.addEventListener('mousemove', handleWrapperMouseMove)
       })
 
       lastDocSignature = getDocSignature()
@@ -1233,6 +1331,11 @@ watch(
   { deep: true },
 )
 
+watch(editorEl, (el, prev) => {
+  prev?.removeEventListener('mousemove', handleWrapperMouseMove)
+  el?.addEventListener('mousemove', handleWrapperMouseMove)
+})
+
 onMounted(() => {
   isMounted = true
 })
@@ -1266,6 +1369,7 @@ onBeforeUnmount(() => {
         document.removeEventListener('mouseup', handleDocumentMouseUp, true)
         document.removeEventListener('keydown', handleDocumentKeyDown)
         editorEl.value?.removeEventListener('mousedown', handleLassoStart, { capture: true })
+        editorEl.value?.removeEventListener('mousemove', handleWrapperMouseMove)
       }
     } catch {
       // view already destroyed by Tiptap internal cleanup
@@ -1612,7 +1716,12 @@ defineExpose({
 <template>
   <div ref="editorEl" class="tu-editor-wrapper">
     <editor-content :editor="editor" />
-    <HeadingSectionFoldGutter :editor="editor" :wrapper-el="editorEl" />
+    <HeadingSectionFoldGutter
+      :editor="editor"
+      :wrapper-el="editorEl"
+      @section-gutter-hover="handleSectionGutterHover"
+      @section-gutter-leave="(event) => handleSectionGutterLeave(event)"
+    />
     <div
       v-if="slashMenuVisible && filteredSlashOptions.length > 0"
       class="slash-command-menu"

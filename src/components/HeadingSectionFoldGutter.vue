@@ -12,6 +12,7 @@ import {
   toggleTocEntryCollapse,
 } from '@/utils/toc/tocSectionFoldActions'
 import { getContentScrollGutterAnchor } from '@/utils/editorGutterLayout'
+import { EDITOR_SECTION_HANDLE_KEY } from '@/editor/editorSectionHandleBridge'
 import { getSectionFoldRevision } from '@/stores/sectionFoldSession'
 
 interface FoldToggleLayout {
@@ -25,7 +26,13 @@ const props = defineProps<{
   wrapperEl?: HTMLElement | null
 }>()
 
+const emit = defineEmits<{
+  'section-gutter-hover': [entryId: string]
+  'section-gutter-leave': [event?: MouseEvent]
+}>()
+
 const tocCollectContext = inject<ComputedRef<TocCollectContext> | undefined>('tocCollectContext', undefined)
+const sectionHandleBridge = inject(EDITOR_SECTION_HANDLE_KEY, null)
 
 const toggles = ref<FoldToggleLayout[]>([])
 const visibleEntryId = ref<string | null>(null)
@@ -48,15 +55,19 @@ function clearHideVisibleTimer() {
 function showToggleForEntry(entryId: string) {
   clearHideVisibleTimer()
   visibleEntryId.value = entryId
+  emit('section-gutter-hover', entryId)
+  sectionHandleBridge?.onSectionGutterHover(entryId)
 }
 
-function scheduleHideToggleForEntry(entryId: string) {
+function scheduleHideToggleForEntry(entryId: string, event?: MouseEvent) {
   clearHideVisibleTimer()
   hideVisibleTimer = setTimeout(() => {
     hideVisibleTimer = null
     if (visibleEntryId.value === entryId) {
       visibleEntryId.value = null
     }
+    emit('section-gutter-leave', event)
+    sectionHandleBridge?.onSectionGutterLeave(event)
   }, 120)
 }
 
@@ -70,14 +81,30 @@ function clearHoverListeners() {
   }
 }
 
+function onFoldButtonLeave(entryId: string, event: MouseEvent) {
+  const rel = event.relatedTarget
+  if (rel instanceof HTMLElement) {
+    if (rel.closest('.hover-handle')) return
+    if (rel.closest('.ProseMirror')) return
+  }
+  scheduleHideToggleForEntry(entryId, event)
+}
+
 function bindToggleHover(anchor: HTMLElement, entryId: string) {
   const onEnter = () => showToggleForEntry(entryId)
-  const onLeave = () => scheduleHideToggleForEntry(entryId)
+  const onLeave = (event: MouseEvent) => {
+    const rel = event.relatedTarget
+    if (rel instanceof HTMLElement) {
+      if (rel.closest('.heading-section-fold-gutter__btn')) return
+      if (rel.closest('.hover-handle')) return
+    }
+    scheduleHideToggleForEntry(entryId, event)
+  }
   anchor.addEventListener('mouseenter', onEnter)
-  anchor.addEventListener('mouseleave', onLeave)
+  anchor.addEventListener('mouseleave', onLeave as EventListener)
   hoverCleanups.push(() => {
     anchor.removeEventListener('mouseenter', onEnter)
-    anchor.removeEventListener('mouseleave', onLeave)
+    anchor.removeEventListener('mouseleave', onLeave as EventListener)
   })
 }
 
@@ -239,6 +266,7 @@ onBeforeUnmount(() => {
     :key="`${toggle.entryId}-${toggle.collapsed ? 'c' : 'e'}`"
     type="button"
     class="tu-fold-bullet heading-section-fold-gutter__btn"
+    :data-entry-id="toggle.entryId"
     :class="{ 'heading-section-fold-gutter__btn--visible': isToggleVisible(toggle.entryId) }"
     :style="toggle.style"
     :title="toggle.collapsed ? '展开本节' : '收起本节'"
@@ -246,7 +274,7 @@ onBeforeUnmount(() => {
     :tabindex="isToggleVisible(toggle.entryId) ? 0 : -1"
     @mousedown.prevent
     @mouseenter="showToggleForEntry(toggle.entryId)"
-    @mouseleave="scheduleHideToggleForEntry(toggle.entryId)"
+    @mouseleave="(event) => onFoldButtonLeave(toggle.entryId, event)"
     @click.stop="toggleFold(toggle.entryId)"
   >
     {{ toggle.collapsed ? '▶' : '▼' }}

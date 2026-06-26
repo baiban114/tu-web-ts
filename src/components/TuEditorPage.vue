@@ -82,8 +82,10 @@ import { isMindmapBlueprint } from '@/components/x6'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { KnowledgeAnchor } from '@/api/types'
 import {
+  buildBlockAnchor,
   buildSelectionAnchor,
   headingAnchor,
+  sectionAnchor,
   type KnowledgeAnchorNavigateHandlers,
 } from '@/utils/knowledgeAnchor'
 import type { GraphData } from '@/api/types'
@@ -1816,6 +1818,68 @@ const openSectionAnnotationFromTocEntry = (entryId: string) => {
   noteEditorVisible.value = true
 }
 
+const openBlockAnnotationFromGutter = (blockId: string) => {
+  const editor = tuEditorRef.value?.editor
+  if (!editor) return
+
+  const payload = getBlockExcerptContent(editor.state.doc, blockId, tocCollectContext.value)
+  if (!payload) return
+
+  const blockIds = collectBasisBlockIds(editor.state.doc, blockId, tocCollectContext.value)
+  pendingNoteBlockId.value = ''
+  pendingNoteSelectedText.value = payload.text
+  pendingNoteContextBefore.value = ''
+  pendingNoteContextAfter.value = ''
+  pendingNoteFrom.value = 0
+  pendingNoteTo.value = 0
+  pendingNoteSpannedBlockIds.value = blockIds
+  pendingNoteSpannedBlockMetadata.value = normalizeSpannedBlockMetadata(blockIds, [])
+  pendingNoteTags.value = []
+  pendingTextTagSpanId.value = ''
+  editingAnnotation.value = undefined
+  noteEditorVisible.value = true
+}
+
+const openKnowledgeRelationForTocEntry = (entryId: string) => {
+  const editor = tuEditorRef.value?.editor
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  if (!editor || !pageId || !kbId) return
+
+  let flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+  let entry = flat.find((item) => item.id === entryId)
+  if (!entry) return
+
+  if (entry.sourceType === 'local') {
+    ensureLocalHeadingBlockId(entry)
+    flat = collectFlatTocEntries(editor.state.doc, tocCollectContext.value)
+    entry = flat.find((item) => item.id === entryId) ?? entry
+  }
+
+  const sectionKey = getSectionTagKey(entry)
+  knowledgeSourceAnchor.value = sectionAnchor(
+    pageId,
+    sectionKey,
+    entry.text?.trim() || undefined,
+  )
+  knowledgeAnchorPickerVisible.value = true
+}
+
+const handleLineAnnotateFromGutter = (blockId: string) => {
+  openBlockAnnotationFromGutter(blockId)
+}
+
+const handleLineCreateKnowledgeRelationFromGutter = (blockId: string) => {
+  const editor = tuEditorRef.value?.editor
+  const pageId = workspaceStore.currentPageId
+  const kbId = workspaceStore.currentKbId
+  if (!editor || !pageId || !kbId) return
+
+  knowledgeSourceAnchor.value = buildBlockAnchor(editor, pageId, blockId)
+  if (!knowledgeSourceAnchor.value) return
+  knowledgeAnchorPickerVisible.value = true
+}
+
 const handleSectionAnnotateFromGutter = (entryId: string) => {
   openSectionAnnotationFromTocEntry(entryId)
 }
@@ -1826,6 +1890,10 @@ const handleSectionMarkExcerptFromGutter = (entryId: string) => {
 
 const handleSectionSetBasisFromGutter = (entryId: string) => {
   openSetBasisForTocEntry(entryId)
+}
+
+const handleSectionCreateKnowledgeRelationFromGutter = (entryId: string) => {
+  openKnowledgeRelationForTocEntry(entryId)
 }
 
 const handleEditSectionTagsFromNodeView = () => {
@@ -2515,9 +2583,12 @@ onBeforeUnmount(() => {
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
           @set-block-basis="handleSetBlockBasis"
+          @line-annotate="handleLineAnnotateFromGutter"
+          @line-create-knowledge-relation="handleLineCreateKnowledgeRelationFromGutter"
           @section-annotate="handleSectionAnnotateFromGutter"
           @section-mark-excerpt="handleSectionMarkExcerptFromGutter"
           @section-set-basis="handleSectionSetBasisFromGutter"
+          @section-create-knowledge-relation="handleSectionCreateKnowledgeRelationFromGutter"
           @heading-source-click="handleHeadingSourceClick"
           @text-tag-span-click="handleTextTagSpanClick"
           @text-tag-spans-mapped="handleTextTagSpansMapped"

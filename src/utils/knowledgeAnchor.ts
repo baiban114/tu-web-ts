@@ -2,6 +2,7 @@ import type { Router } from 'vue-router';
 import type { KnowledgeAnchor, KnowledgeAnchorKind, KnowledgeRelation, TextAnnotation } from '@/api/types';
 import { getAnnotationSelectionPayload } from '@/editor/annotationText';
 import type { Editor } from '@tiptap/core';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { listKnowledgePointAnchors } from '@/api/knowledgePoint';
 
 export interface KnowledgeAnchorNavigateHandlers {
@@ -71,6 +72,47 @@ export function buildAnnotationAnchorFromEditor(
   const title = payload.selectedText?.trim()
     || [payload.contextBefore, payload.contextAfter].filter(Boolean).join(' ').trim();
   return annotationAnchor(pageId, annotationId, title || undefined);
+}
+
+function findBlockInDoc(
+  doc: ProseMirrorNode,
+  blockId: string,
+): { pos: number; node: ProseMirrorNode } | null {
+  let match: { pos: number; node: ProseMirrorNode } | undefined
+  doc.descendants((node, pos) => {
+    if (node.isBlock && node.attrs?.blockId === blockId) {
+      match = { pos, node }
+      return false
+    }
+    return true
+  })
+  return match ?? null
+}
+
+export function buildBlockAnchor(
+  editor: Editor,
+  pageId: string,
+  blockId: string,
+): KnowledgeAnchor | null {
+  const match = findBlockInDoc(editor.state.doc, blockId)
+  if (!match) return null
+  const { pos, node } = match
+  const title = node.textContent.trim()
+  if (node.type.name === 'heading') {
+    return headingAnchor(pageId, blockId, title || undefined)
+  }
+
+  const from = pos
+  const to = pos + node.nodeSize
+  const payload = getAnnotationSelectionPayload(editor.state.doc, from, to)
+  const snapshotTitle = payload.selectedText?.trim() || title
+  if (!snapshotTitle) return null
+
+  return {
+    kind: 'annotation',
+    locator: `page:${pageId}:selection:${from}:${to}`,
+    snapshot: { title: snapshotTitle, from, to, ephemeral: true },
+  }
 }
 
 export function buildSelectionAnchor(
