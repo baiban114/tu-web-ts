@@ -1,6 +1,19 @@
 import type { Editor } from '@tiptap/core'
 import { parseExternalUrl } from '@/utils/externalUrlResource'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
+import { URL_EMBED_DEFAULT_HEIGHT } from '@/utils/urlDisplay'
+
+function readUrlEmbedHeight(editor: Editor, blockId: string): number {
+  let height = URL_EMBED_DEFAULT_HEIGHT
+  editor.state.doc.descendants((node) => {
+    if (node.type.name === 'urlEmbedBlock' && node.attrs.blockId === blockId) {
+      height = Number(node.attrs.height) || URL_EMBED_DEFAULT_HEIGHT
+      return false
+    }
+    return true
+  })
+  return height
+}
 
 export type UrlHoverTargetKind = 'inline' | 'iframe'
 
@@ -11,6 +24,7 @@ export interface UrlHoverTarget {
   from: number
   to: number
   blockId?: string
+  iframeHeight?: number
   label?: string
   anchorRect: DOMRect
 }
@@ -96,6 +110,7 @@ export function resolveUrlHoverTarget(editor: Editor, event: MouseEvent): UrlHov
       from: 0,
       to: 0,
       blockId: blockId || undefined,
+      iframeHeight: blockId ? readUrlEmbedHeight(editor, blockId) : URL_EMBED_DEFAULT_HEIGHT,
       anchorRect: rect,
     }
   }
@@ -184,4 +199,5 @@ export function urlHoverTargetsEqual(a: UrlHoverTarget | null, b: UrlHoverTarget
     && a.from === b.from
     && a.to === b.to
     && a.blockId === b.blockId
+    && a.iframeHeight === b.iframeHeight
 }

@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import type { Editor } from '@tiptap/core'
 import { computed, nextTick, ref, watch } from 'vue'
-import { ElButton, ElDivider } from 'element-plus'
+import { ElButton, ElDivider, ElInputNumber } from 'element-plus'
 import { useAnchoredFloating } from '@/composables/useAnchoredFloating'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import { resolveUrlHoverTargetAnchorRect } from '@/editor/urlHoverTarget'
-import type { UrlDisplayMode } from '@/utils/urlDisplay'
+import {
+  URL_EMBED_MAX_HEIGHT,
+  URL_EMBED_MIN_HEIGHT,
+  type UrlDisplayMode,
+} from '@/utils/urlDisplay'
 
 interface Props {
   visible: boolean
@@ -22,12 +26,13 @@ const props = withDefaults(defineProps<Props>(), {
 
 const emit = defineEmits<{
   (e: 'select-mode', mode: UrlDisplayMode): void
+  (e: 'height-change', height: number): void
   (e: 'mouseenter'): void
   (e: 'mouseleave'): void
 }>()
 
 const toolbarRef = ref<HTMLElement | null>(null)
-const measuredSize = ref({ width: 280, height: 76 })
+const measuredSize = ref({ width: 280, height: 96 })
 
 const toolbarVisible = computed(() => props.visible && !props.suppressed && Boolean(props.target))
 
@@ -90,6 +95,13 @@ const canUseIframe = computed(() => {
   const url = props.target?.url || ''
   return !/\.(png|jpe?g|gif|webp|svg|avif|bmp)(\?.*)?$/i.test(url)
 })
+const showIframeHeight = computed(() => props.target?.kind === 'iframe' && props.target.displayMode === 'iframe')
+const iframeHeight = computed(() => props.target?.iframeHeight ?? URL_EMBED_MIN_HEIGHT)
+
+function emitHeightChange(value: number | undefined) {
+  if (value == null || Number.isNaN(value)) return
+  emit('height-change', value)
+}
 </script>
 
 <template>
@@ -142,6 +154,20 @@ const canUseIframe = computed(() => {
           标题
         </ElButton>
       </div>
+      <div v-if="showIframeHeight" class="url-hover-toolbar__height">
+        <span class="url-hover-toolbar__height-label">高度</span>
+        <ElInputNumber
+          :model-value="iframeHeight"
+          :min="URL_EMBED_MIN_HEIGHT"
+          :max="URL_EMBED_MAX_HEIGHT"
+          :step="40"
+          size="small"
+          controls-position="right"
+          class="url-hover-toolbar__height-input"
+          @mousedown.prevent.stop
+          @update:model-value="emitHeightChange"
+        />
+      </div>
     </div>
   </Teleport>
 </template>
@@ -188,5 +214,28 @@ const canUseIframe = computed(() => {
 .url-hover-toolbar__divider {
   height: 14px;
   margin: 0 1px;
+}
+
+.url-hover-toolbar__height {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.url-hover-toolbar__height-label {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: #6b7280;
+}
+
+.url-hover-toolbar__height-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.url-hover-toolbar__height-input :deep(.el-input__wrapper) {
+  padding-left: 8px;
+  padding-right: 28px;
 }
 </style>

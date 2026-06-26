@@ -1463,6 +1463,15 @@ const handleUrlDisplayModeSelect = async (mode: UrlDisplayMode) => {
   pinUrlHoverToolbar()
 }
 
+const handleUrlEmbedHeightChange = (height: number) => {
+  const target = urlHoverTarget.value
+  if (!target?.blockId || !tuEditorRef.value) return
+  const updated = tuEditorRef.value.applyUrlEmbedHeight(target.blockId, height)
+  if (!updated) return
+  urlHoverTarget.value = updated
+  pinUrlHoverToolbar()
+}
+
 const showUrlHoverAfterInsert = (url: string, label: string) => {
   const editor = tuEditorRef.value?.editor
   if (!editor) return
@@ -2538,6 +2547,7 @@ onBeforeUnmount(() => {
       :suppressed="urlHoverToolbarSuppressed"
       :pinning="urlHoverToolbarPinned"
       @select-mode="handleUrlDisplayModeSelect"
+      @height-change="handleUrlEmbedHeightChange"
       @mouseenter="handleUrlHoverToolbarEnter"
       @mouseleave="handleUrlHoverToolbarLeave"
     />

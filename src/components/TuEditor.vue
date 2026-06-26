@@ -37,6 +37,9 @@ import { fetchResourcePageTitle } from '@/api/externalResource'
 import {
   createUrlEmbedBlockId,
   fallbackPageTitleFromUrl,
+  URL_EMBED_DEFAULT_HEIGHT,
+  URL_EMBED_MAX_HEIGHT,
+  URL_EMBED_MIN_HEIGHT,
   type UrlDisplayMode,
 } from '@/utils/urlDisplay'
 import {
@@ -1495,6 +1498,8 @@ function buildIframeHoverTarget(
 ): UrlHoverTarget | null {
   const pos = findBlockPos(ed.state.doc, blockId)
   if (pos === null) return null
+  const node = ed.state.doc.nodeAt(pos)
+  const iframeHeight = Number(node?.attrs?.height) || URL_EMBED_DEFAULT_HEIGHT
   const dom = ed.view.nodeDOM(pos)
   if (!(dom instanceof HTMLElement)) return null
   const root = dom.querySelector('.url-embed-block-nv') as HTMLElement | null || dom
@@ -1505,8 +1510,25 @@ function buildIframeHoverTarget(
     from: 0,
     to: 0,
     blockId,
+    iframeHeight,
     anchorRect: root.getBoundingClientRect(),
   }
+}
+
+function applyUrlEmbedHeight(blockId: string, height: number): UrlHoverTarget | null {
+  const ed = editor.value
+  if (!ed || !props.editable) return null
+  const pos = findBlockPos(ed.state.doc, blockId)
+  if (pos === null) return null
+  const node = ed.state.doc.nodeAt(pos)
+  if (!node || node.type.name !== 'urlEmbedBlock') return null
+  const clamped = Math.min(URL_EMBED_MAX_HEIGHT, Math.max(URL_EMBED_MIN_HEIGHT, Math.round(height)))
+  ed.view.dispatch(ed.state.tr.setNodeMarkup(pos, undefined, {
+    ...node.attrs,
+    height: clamped,
+  }))
+  flushContentChange()
+  return buildIframeHoverTarget(ed, blockId, String(node.attrs.url || ''))
 }
 
 async function applyUrlDisplayMode(
@@ -1523,7 +1545,7 @@ async function applyUrlDisplayMode(
       .deleteRange({ from: target.from, to: target.to })
       .insertContentAt(target.from, {
         type: 'urlEmbedBlock',
-        attrs: { blockId, url: target.url, height: 360 },
+        attrs: { blockId, url: target.url, height: URL_EMBED_DEFAULT_HEIGHT },
       })
       .run()
     flushContentChange()
@@ -1703,6 +1725,7 @@ defineExpose({
     return true
   },
   applyUrlDisplayMode,
+  applyUrlEmbedHeight,
   setUrlHoverSuppressed,
   showUrlHoverForInline: (from: number, to: number, url: string, displayMode: UrlDisplayMode = 'link', label?: string) => {
     const ed = editor.value

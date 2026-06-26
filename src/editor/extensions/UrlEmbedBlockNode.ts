@@ -2,7 +2,7 @@ import { Node, mergeAttributes } from '@tiptap/core'
 import { VueNodeViewRenderer } from '@tiptap/vue-3'
 import UrlEmbedBlockView from '../views/UrlEmbedBlockView.vue'
 import { stopNonHandleNodeViewDragEvent } from './nodeViewDragHandle'
-import { createUrlEmbedBlockId } from '@/utils/urlDisplay'
+import { createUrlEmbedBlockId, URL_EMBED_DEFAULT_HEIGHT } from '@/utils/urlDisplay'
 import { parseIframeSnippet } from '../htmlEmbedUtils'
 
 export const UrlEmbedBlockNode = Node.create({
@@ -17,7 +17,7 @@ export const UrlEmbedBlockNode = Node.create({
     return {
       blockId: { default: '' },
       url: { default: '' },
-      height: { default: 360 },
+      height: { default: URL_EMBED_DEFAULT_HEIGHT },
     }
   },
 
