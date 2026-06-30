@@ -11,6 +11,12 @@ import {
 } from '@/utils/pdfExcerpt'
 import { acquirePdfDocument, releasePdfDocument } from '@/utils/pdfDocumentCache'
 import type { PdfDocumentProxy } from '@/utils/pdfjsSetup'
+import {
+  buildPdfSidebarTree,
+  type PdfSidebarNode,
+  type PdfSidebarSource,
+} from '@/utils/pdfOutline'
+import PdfExcerptSidebar from './PdfExcerptSidebar.vue'
 
 const props = defineProps(nodeViewProps)
 
@@ -26,6 +32,11 @@ const loadError = ref('')
 const loading = ref(false)
 const pageCanvases = ref<Array<{ pageNumber: number; height: number }>>([])
 const docRef = shallowRef<PdfDocumentProxy | null>(null)
+const sidebarNodes = ref<PdfSidebarNode[]>([])
+const sidebarSource = ref<PdfSidebarSource>('pages')
+const sidebarOpen = ref(true)
+const activePage = ref<number | null>(null)
+const pagesScrollRef = ref<HTMLElement | null>(null)
 
 const pageRefs = new Map<number, HTMLElement>()
 const renderedPages = new Set<number>()
@@ -41,6 +52,21 @@ function setPageRef(pageNumber: number, el: unknown) {
   } else {
     pageRefs.delete(pageNumber)
   }
+}
+
+const sidebarTitle = computed(() => (sidebarSource.value === 'outline' ? '书签' : '目录'))
+const showSidebar = computed(() => sidebarNodes.value.length > 0)
+
+function toggleSidebar() {
+  sidebarOpen.value = !sidebarOpen.value
+}
+
+function scrollToPage(pageNumber: number) {
+  if (pageNumber < startPage.value || pageNumber > endPage.value) return
+  activePage.value = pageNumber
+  const el = pageRefs.get(pageNumber)
+  el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  void renderPage(pageNumber)
 }
 
 function openInNewTab() {
@@ -152,6 +178,9 @@ async function loadDocument() {
   loadError.value = ''
   cancelRenderTasks()
   pageCanvases.value = []
+  sidebarNodes.value = []
+  sidebarSource.value = 'pages'
+  activePage.value = null
   pageRefs.clear()
 
   try {
@@ -180,6 +209,13 @@ async function loadDocument() {
       pages.push({ pageNumber, height: 0 })
     }
     pageCanvases.value = pages
+    const sidebar = await buildPdfSidebarTree(doc, normalized.startPage, normalized.endPage)
+    if (generation !== loadGeneration) return
+    sidebarNodes.value = sidebar.nodes
+    sidebarSource.value = sidebar.source
+    if (pages.length > 0) {
+      activePage.value = pages[0].pageNumber
+    }
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'PDF 加载失败'
     pageCanvases.value = []
@@ -199,6 +235,12 @@ watch(fileUrl, () => {
 
 watch([startPage, endPage], () => {
   void loadDocument()
+})
+
+watch(sidebarOpen, () => {
+  renderedPages.clear()
+  cancelRenderTasks()
+  void nextTick().then(() => schedulePageRendering())
 })
 
 onBeforeUnmount(() => {
@@ -239,15 +281,58 @@ onBeforeUnmount(() => {
             在新标签打开正本
           </button>
         </div>
-        <div v-else class="pdf-excerpt-block__pages">
-          <div
-            v-for="page in pageCanvases"
-            :key="page.pageNumber"
-            :ref="(el) => setPageRef(page.pageNumber, el)"
-            class="pdf-excerpt-block__page"
-            :data-page-number="page.pageNumber"
+        <div v-else class="pdf-excerpt-block__content">
+          <aside
+            v-if="showSidebar && sidebarOpen"
+            class="pdf-excerpt-block__sidebar"
+            @mousedown.stop
           >
-            <div class="pdf-excerpt-block__page-label">第 {{ page.pageNumber }} 页</div>
+            <div class="pdf-excerpt-block__sidebar-header">
+              <span class="pdf-excerpt-block__sidebar-title">{{ sidebarTitle }}</span>
+              <button
+                type="button"
+                class="pdf-excerpt-block__sidebar-toggle"
+                :title="`隐藏${sidebarTitle}`"
+                :aria-label="`隐藏${sidebarTitle}`"
+                @click="toggleSidebar"
+              >
+                ‹
+              </button>
+            </div>
+            <nav class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
+              <PdfExcerptSidebar
+                :nodes="sidebarNodes"
+                :start-page="startPage"
+                :end-page="endPage"
+                :active-page="activePage"
+                @navigate="scrollToPage"
+              />
+            </nav>
+          </aside>
+          <div class="pdf-excerpt-block__main">
+            <button
+              v-if="showSidebar && !sidebarOpen"
+              type="button"
+              class="pdf-excerpt-block__sidebar-expand"
+              :title="`显示${sidebarTitle}`"
+              :aria-label="`显示${sidebarTitle}`"
+              @mousedown.stop
+              @click="toggleSidebar"
+            >
+              <span class="pdf-excerpt-block__sidebar-expand-icon">›</span>
+              <span class="pdf-excerpt-block__sidebar-expand-label">{{ sidebarTitle }}</span>
+            </button>
+            <div ref="pagesScrollRef" class="pdf-excerpt-block__pages">
+              <div
+                v-for="page in pageCanvases"
+                :key="page.pageNumber"
+                :ref="(el) => setPageRef(page.pageNumber, el)"
+                class="pdf-excerpt-block__page"
+                :data-page-number="page.pageNumber"
+              >
+                <div class="pdf-excerpt-block__page-label">第 {{ page.pageNumber }} 页</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -266,8 +351,120 @@ onBeforeUnmount(() => {
 .pdf-excerpt-block {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
   background: #f8fafc;
+}
+
+.pdf-excerpt-block__content {
+  display: flex;
+  min-height: 0;
+  height: 100%;
+}
+
+.pdf-excerpt-block__sidebar {
+  flex: 0 0 200px;
+  width: 200px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  box-sizing: border-box;
+}
+
+.pdf-excerpt-block__sidebar-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 12px;
+}
+
+.pdf-excerpt-block__sidebar-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #64748b;
+}
+
+.pdf-excerpt-block__sidebar-toggle {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #64748b;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.pdf-excerpt-block__sidebar-toggle:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.pdf-excerpt-block__main {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.pdf-excerpt-block__sidebar-expand {
+  flex: 0 0 28px;
+  width: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  padding: 10px 0;
+  border: none;
+  border-right: 1px solid #e2e8f0;
+  background: #f1f5f9;
+  color: #64748b;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.pdf-excerpt-block__sidebar-expand:hover {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.pdf-excerpt-block__sidebar-expand-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.pdf-excerpt-block__sidebar-expand-label {
+  font-size: 11px;
+  writing-mode: vertical-rl;
+  letter-spacing: 0.08em;
+}
+
+.pdf-excerpt-block__sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 8px;
+}
+
+.pdf-excerpt-block__pages {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  box-sizing: border-box;
 }
 
 .pdf-excerpt-block__status,
@@ -296,13 +493,6 @@ onBeforeUnmount(() => {
   color: #374151;
   font-size: 12px;
   cursor: pointer;
-}
-
-.pdf-excerpt-block__pages {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 12px;
 }
 
 .pdf-excerpt-block__page {
