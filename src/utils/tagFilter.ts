@@ -28,6 +28,7 @@ const EMBED_BLOCK_TYPES = new Set([
   'refBlock',
   'externalResourceBlock',
   'urlEmbedBlock',
+  'pdfExcerptBlock',
 ])
 
 export interface TagFilterHiddenRange {

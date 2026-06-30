@@ -15,16 +15,29 @@ interface ApiEnvelope<T> {
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
+const mockFileUrls = new Map<string, string>();
+
 function buildUrl(path: string): string {
   if (/^https?:\/\//.test(path)) return path;
   return `${API_BASE_URL}${path}`;
 }
 
+export function buildFileUrl(fileId: string): string {
+  if (isMockDataSource()) {
+    const mockUrl = mockFileUrls.get(fileId);
+    if (mockUrl) return mockUrl;
+  }
+  return buildUrl(`/api/files/${fileId}`);
+}
+
 export async function uploadFile(file: File): Promise<FileUploadResult> {
   if (isMockDataSource()) {
+    const id = `mock-file-${Date.now()}`;
+    const url = URL.createObjectURL(file);
+    mockFileUrls.set(id, url);
     return {
-      id: `mock-file-${Date.now()}`,
-      url: URL.createObjectURL(file),
+      id,
+      url,
       contentType: file.type || 'application/octet-stream',
       sizeBytes: file.size,
     };
@@ -56,4 +69,11 @@ export async function uploadFile(file: File): Promise<FileUploadResult> {
   }
 
   return payload.data;
+}
+
+export async function uploadPdfFile(file: File): Promise<FileUploadResult> {
+  if (file.type && file.type !== 'application/pdf') {
+    throw new Error('Only PDF files are supported');
+  }
+  return uploadFile(file);
 }

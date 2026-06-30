@@ -47,4 +47,26 @@ describe('url display markdown roundtrip', () => {
     const roundtrip = tipTapToPageContent(doc)
     expect(roundtrip.content).toContain('<!--tu:url-embed id="ue-test1" url="https://example.com" height="360"-->')
   })
+
+  it('preserves pdf excerpt comment', () => {
+    const pc: PageContent = {
+      content: '<!--tu:pdf-excerpt id="pe-test1" fileId="file-abc" fileName="book.pdf" start="3" end="5" height="480"-->',
+      embeds: [],
+      annotations: [],
+    }
+
+    const doc = pageContentToTipTap(pc)
+    const embed = doc.content?.find((node) => node.type === 'pdfExcerptBlock')
+    expect(embed?.attrs).toMatchObject({
+      blockId: 'pe-test1',
+      fileId: 'file-abc',
+      fileName: 'book.pdf',
+      startPage: 3,
+      endPage: 5,
+      height: 480,
+    })
+
+    const roundtrip = tipTapToPageContent(doc)
+    expect(roundtrip.content).toContain('<!--tu:pdf-excerpt id="pe-test1" fileId="file-abc" fileName="book.pdf" start="3" end="5" height="480"-->')
+  })
 })

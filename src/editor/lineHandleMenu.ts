@@ -2,6 +2,7 @@ export type InsertBlockType =
   | 'richtext'
   | 'ref'
   | 'externalResource'
+  | 'pdf-excerpt'
   | 'line'
   | 'x6'
   | 'x6-mindmap'
@@ -41,6 +42,7 @@ export const insertOptions: InsertOption[] = [
   { key: 'richtext', label: '文本', icon: '📝', keywords: ['text', 'richtext', 'wenben'] },
   { key: 'ref', label: '引用', icon: '🔖', keywords: ['ref', 'reference', 'yinyong'] },
   { key: 'externalResource', label: '外部资源', icon: '▣', keywords: ['resource', 'external', 'book', 'ziyuan', 'tushu'] },
+  { key: 'pdf-excerpt', label: 'PDF 摘页', icon: '📄', keywords: ['pdf', '摘页', 'document', 'file'] },
   { key: 'line', label: '时间轴', icon: '🕒', keywords: ['timeline', 'line', 'shijianzhou'] },
   { key: 'x6', label: 'X6 画板', icon: '🧩', keywords: ['x6', 'graph', 'draw', 'huaban'] },
   { key: 'x6-mindmap', label: '思维导图', icon: '◇', keywords: ['mindmap', '思维导图', '脑图', 'tree'] },

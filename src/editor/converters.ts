@@ -21,6 +21,11 @@ import {
   serializeLinkDisplayComment,
   serializeUrlEmbedComment,
 } from '@/utils/urlDisplay'
+import {
+  PDF_EXCERPT_COMMENT_RE,
+  parsePdfExcerptComment,
+  serializePdfExcerptComment,
+} from '@/utils/pdfExcerpt'
 import { normalizeCodeBlockText } from '@/editor/utils/codeBlockText'
 
 // ─── Embed placeholder regex ───────────────────────────────────────────────
@@ -607,6 +612,34 @@ function parseMarkdownBlocks(markdown: string): JSONContent[] {
         continue
       }
 
+      const pdfExcerptMatch = line.match(PDF_EXCERPT_COMMENT_RE)
+      if (pdfExcerptMatch) {
+        flushCurrentQuote()
+        if (currentLines.length > 0) {
+          nodes.push({
+            type: 'paragraph',
+            content: parseInlineMarkdown(currentLines.join('\n'), pendingLinkDisplayMode),
+          })
+          currentLines = []
+          pendingLinkDisplayMode = null
+        }
+        const parsedPdf = parsePdfExcerptComment(pdfExcerptMatch[1])
+        if (parsedPdf) {
+          nodes.push({
+            type: 'pdfExcerptBlock',
+            attrs: {
+              blockId: parsedPdf.blockId,
+              fileId: parsedPdf.fileId,
+              fileName: parsedPdf.fileName,
+              startPage: parsedPdf.startPage,
+              endPage: parsedPdf.endPage,
+              height: parsedPdf.height,
+            },
+          })
+        }
+        continue
+      }
+
       const linkDisplayMatch = line.match(LINK_DISPLAY_COMMENT_RE)
       if (linkDisplayMatch) {
         flushCurrentQuote()
@@ -929,6 +962,19 @@ function nodeToMarkdown(node: JSONContent): string {
       const height = Number(node.attrs?.height) || 360
       if (!blockId || !url) return ''
       return serializeUrlEmbedComment(blockId, url, height)
+    }
+    case 'pdfExcerptBlock': {
+      const blockId = String(node.attrs?.blockId || '')
+      const fileId = String(node.attrs?.fileId || '')
+      if (!blockId || !fileId) return ''
+      return serializePdfExcerptComment({
+        blockId,
+        fileId,
+        fileName: String(node.attrs?.fileName || ''),
+        startPage: Number(node.attrs?.startPage) || 1,
+        endPage: Number(node.attrs?.endPage) || 1,
+        height: Number(node.attrs?.height) || 480,
+      })
     }
     case 'bulletList':
       return (node.content || []).map((item) => '- ' + contentToMarkdown(item.content || [])).join('\n')

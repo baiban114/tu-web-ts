@@ -11,6 +11,7 @@ import SelectionToolbar from './SelectionToolbar.vue'
 import UrlHoverToolbar from './UrlHoverToolbar.vue'
 import BlockPicker from './BlockPicker.vue'
 import ExternalResourcePicker from './ExternalResourcePicker.vue'
+import PdfExcerptPicker, { type PdfExcerptSelection } from './PdfExcerptPicker.vue'
 import BlockMetadataTagEditor from './BlockMetadataTagEditor.vue'
 import PageTagsBar from './PageTagsBar.vue'
 import TagFilterBar from './TagFilterBar.vue'
@@ -372,6 +373,7 @@ const pageTitleEditing = ref(false)
 const tuEditorRef = ref<InstanceType<typeof TuEditor> | null>(null)
 const showBlockPicker = ref(false)
 const showResourcePicker = ref(false)
+const showPdfExcerptPicker = ref(false)
 const resourcePickerMode = ref<'insert' | 'markExcerpt' | 'bindSource' | 'setBasis'>('insert')
 const pendingResourceExcerptText = ref('')
 const pendingResourceExcerptTitle = ref('')
@@ -515,6 +517,7 @@ const urlHoverToolbarSuppressed = computed(() => (
   || linkPopoverVisible.value
   || nodeViewToolbar.visible
   || showResourcePicker.value
+  || showPdfExcerptPicker.value
   || noteEditorVisible.value
 ))
 
@@ -549,6 +552,7 @@ const headingSourcePopoverBinding = ref<HeadingSourceBinding | null>(null)
 const selectionToolbarSuppressed = computed(() => (
   nodeViewToolbar.visible
   || showResourcePicker.value
+  || showPdfExcerptPicker.value
   || noteEditorVisible.value
   || urlHoverToolbarVisible.value
   || tagEditorState.value.visible
@@ -788,6 +792,17 @@ const handleOpenResourcePicker = () => {
   pendingResourceExcerptText.value = ''
   pendingResourceExcerptTitle.value = ''
   showResourcePicker.value = true
+}
+
+const handleOpenPdfExcerptPicker = () => {
+  showPdfExcerptPicker.value = true
+}
+
+const handlePdfExcerptPickerConfirm = (selection: PdfExcerptSelection) => {
+  const inserted = tuEditorRef.value?.insertPdfExcerptBlock?.(selection)
+  if (!inserted) return
+  showPdfExcerptPicker.value = false
+  showToast(`已插入 PDF 摘页：${selection.fileName} 第 ${selection.startPage}–${selection.endPage} 页`)
 }
 
 const getSelectionAnnotationPayload = (from: number, to: number) => {
@@ -2600,6 +2615,7 @@ onBeforeUnmount(() => {
           @compound-badge-click="handleCompoundBadgeClick"
           @open-block-picker="handleOpenBlockPicker"
           @open-resource-picker="handleOpenResourcePicker"
+          @open-pdf-excerpt-picker="handleOpenPdfExcerptPicker"
           @open-tag-editor="handleOpenTagEditor"
           @block-click="handleBlockClick"
           @mark-block-excerpt="handleMarkBlockExcerpt"
@@ -2792,6 +2808,12 @@ onBeforeUnmount(() => {
       @excerpt-created="handleResourceExcerptCreated"
       @bind-source="handleBindResourceFromPicker"
       @update:visible="handleResourcePickerVisibleChange"
+    />
+
+    <PdfExcerptPicker
+      :visible="showPdfExcerptPicker"
+      @update:visible="showPdfExcerptPicker = $event"
+      @confirm="handlePdfExcerptPickerConfirm"
     />
 
     <div

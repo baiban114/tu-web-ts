@@ -41,6 +41,7 @@
     "@tiptap/vue-3": "^3.23.5",
     "element-plus": "^2.13.5",
     "lowlight": "^3.3.0",
+    "pdfjs-dist": "^6.1.200",
     "pinia": "^3.0.3",
     "tslib": "^2.8.1",
     "vue": "^3.5.18",

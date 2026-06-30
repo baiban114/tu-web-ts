@@ -28,6 +28,7 @@ import { TagContentFilter } from './extensions/TagContentFilter'
 import { TextTagSpanDecorations } from './extensions/TextTagSpanDecorations'
 import { TuLink } from './extensions/TuLink'
 import { UrlEmbedBlockNode } from './extensions/UrlEmbedBlockNode'
+import { PdfExcerptBlockNode } from './extensions/PdfExcerptBlockNode'
 import { createHtmlInlineRenderExtension } from './extensions/HtmlInlineRender'
 import type { TocCollectContext } from '@/utils/toc/collectFlatTocEntries'
 import type { BlockTag, TextTagSpan } from '@/api/types'
@@ -37,6 +38,7 @@ export type InsertBlockType =
   | 'richtext'
   | 'ref'
   | 'externalResource'
+  | 'pdf-excerpt'
   | 'line'
   | 'x6'
   | 'x6-mindmap'
@@ -109,6 +111,7 @@ export function getTuEditorSchemaExtensions(): Extensions {
     TableBlockNode,
     MultiTableBlockNode,
     UrlEmbedBlockNode,
+    PdfExcerptBlockNode,
     ParagraphNode,
   ] as Extensions
 }

@@ -11,6 +11,7 @@ import {
   tipTapToBlocks,
   getTuEditorExtensions,
   getTuEditorSchemaExtensions,
+  createPdfExcerptNodeAttrs,
 } from '@/editor'
 import {
   findClipboardImageFileOnly,
@@ -98,6 +99,7 @@ const emit = defineEmits<{
   'compound-badge-click': [blockId: string, annotationId: string, clientY: number, clientX: number]
   'open-block-picker': []
   'open-resource-picker': []
+  'open-pdf-excerpt-picker': []
   'open-tag-editor': [blockId: string]
   'heading-source-click': [binding: HeadingSourceBinding, context: { blockId: string; title: string; clientX: number; clientY: number }]
   'mark-block-excerpt': [blockId: string]
@@ -128,6 +130,7 @@ let skipNextContentSync = false
 let isMounted = false
 let pendingRefInsertPos: number | null = null
 let pendingExternalResourceInsertPos: number | null = null
+let pendingPdfExcerptInsertPos: number | null = null
 let selectionPointerDown = false
 let lastDocSignature = ''
 let urlHoverTimer: ReturnType<typeof setTimeout> | null = null
@@ -566,6 +569,11 @@ const requestExternalResourceInsertAfterPos = (pos: number) => {
   emit('open-resource-picker')
 }
 
+const requestPdfExcerptInsertAfterPos = (pos: number) => {
+  pendingPdfExcerptInsertPos = pos
+  emit('open-pdf-excerpt-picker')
+}
+
 const insertExternalBlockAfterPos = (type: InsertBlockType, pos: number) => {
   if (type === 'ref') {
     requestRefInsertAfterPos(pos)
@@ -573,6 +581,10 @@ const insertExternalBlockAfterPos = (type: InsertBlockType, pos: number) => {
   }
   if (type === 'externalResource') {
     requestExternalResourceInsertAfterPos(pos)
+    return
+  }
+  if (type === 'pdf-excerpt') {
+    requestPdfExcerptInsertAfterPos(pos)
     return
   }
 
@@ -591,6 +603,11 @@ const insertExternalBlockAtSelection = (type: InsertBlockType) => {
   if (type === 'externalResource') {
     pendingExternalResourceInsertPos = editor.value.state.selection.from
     emit('open-resource-picker')
+    return
+  }
+  if (type === 'pdf-excerpt') {
+    pendingPdfExcerptInsertPos = editor.value.state.selection.from
+    emit('open-pdf-excerpt-picker')
     return
   }
 
@@ -622,6 +639,26 @@ const completePendingExternalResourceInsert = (block: Block) => {
     insertBlockAtSelection(block)
   }
   pendingExternalResourceInsertPos = null
+}
+
+const insertPdfExcerptBlock = (input: {
+  fileId: string
+  fileName: string
+  startPage: number
+  endPage: number
+  height?: number
+}) => {
+  if (!editor.value) return false
+  const content = {
+    type: 'pdfExcerptBlock',
+    attrs: createPdfExcerptNodeAttrs(input),
+  }
+  if (pendingPdfExcerptInsertPos != null) {
+    const pos = pendingPdfExcerptInsertPos
+    pendingPdfExcerptInsertPos = null
+    return editor.value.chain().focus().insertContentAt(pos, content).run()
+  }
+  return editor.value.chain().focus().insertContent(content).run()
 }
 
 const handleScrollInEditor = () => {
@@ -1736,6 +1773,7 @@ defineExpose({
   },
   applyUrlDisplayMode,
   applyUrlEmbedHeight,
+  insertPdfExcerptBlock,
   setUrlHoverSuppressed,
   showUrlHoverForInline: (from: number, to: number, url: string, displayMode: UrlDisplayMode = 'link', label?: string) => {
     const ed = editor.value
