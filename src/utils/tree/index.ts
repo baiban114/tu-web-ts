@@ -37,3 +37,15 @@ export {
 
 export { pagesToTreeNodes, flatPagesToTreeNodes, type PageTreeMeta } from './adapters/pages';
 export { tocToTreeNodes, type TocTreeItem, type TocTreeMeta } from './adapters/toc';
+export {
+  contentOutlineToTreeNodes,
+  isDocumentPage,
+  isOutlinePlaceholderNode,
+  isOutlineTreeNode,
+  isVirtualPageTreeExtra,
+  mergeDocumentOutlinesIntoPageTree,
+  outlineNodeTreeId,
+  type OutlineTreeMeta,
+  type PageTreeDisplayItem,
+  type PageTreeNodeKind,
+} from './adapters/outline';

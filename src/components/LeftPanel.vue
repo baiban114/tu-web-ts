@@ -14,8 +14,16 @@ import {
   ElTooltip,
 } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { useOutlineCacheStore } from '@/stores/outlineCache';
 import type { PageItem } from '@/api/page';
 import type { PageType } from '@/api/types';
+import {
+  isDocumentPage,
+  isOutlineTreeNode,
+  isVirtualPageTreeExtra,
+  mergeDocumentOutlinesIntoPageTree,
+  type PageTreeDisplayItem,
+} from '@/utils/tree';
 import { canDropOnNode, computeTreeDropTarget, normalizeDropType, type TreeDropType } from '@/utils/tree/drag';
 import AuthPanel from './AuthPanel.vue';
 import GlobalSearchBox from './GlobalSearchBox.vue';
@@ -23,10 +31,13 @@ import MarkdownImportButton from './MarkdownImportButton.vue';
 import RoadmapImportButton from './RoadmapImportButton.vue';
 
 const store = useWorkspaceStore();
+const outlineCacheStore = useOutlineCacheStore();
 
 const treeRef = ref<InstanceType<typeof ElTree>>()
 const pageTreeFocusRef = ref<HTMLElement | null>(null)
 const allTreeExpanded = ref(false)
+const expandedOutlinePageIds = ref<Set<string>>(new Set())
+const outlineLoadingPageIds = ref<Set<string>>(new Set())
 
 const selectedPageIds = ref<Set<string>>(new Set())
 const selectionAnchorId = ref<string | null>(null)
@@ -82,8 +93,10 @@ function getVisiblePageOrder(): PageItem[] {
   if (!tree) return [];
 
   const result: PageItem[] = [];
-  const visit = (node: { data: PageItem; expanded: boolean; childNodes: Array<{ data: PageItem; expanded: boolean; childNodes: unknown[] }> }) => {
-    result.push(node.data);
+  const visit = (node: { data: PageTreeDisplayItem; expanded: boolean; childNodes: Array<{ data: PageTreeDisplayItem; expanded: boolean; childNodes: unknown[] }> }) => {
+    if (!isVirtualPageTreeExtra(node.data)) {
+      result.push(node.data);
+    }
     if (node.expanded) {
       node.childNodes.forEach((child) => visit(child as typeof node));
     }
@@ -283,15 +296,90 @@ const treeProps = {
   children: 'children',
 };
 
+const displayPageTree = computed(() => mergeDocumentOutlinesIntoPageTree(store.pageTree, {
+  isOutlineExpanded: (pageId) => expandedOutlinePageIds.value.has(pageId),
+  getOutlineNodes: (pageId) => (
+    outlineCacheStore.pages.has(pageId)
+      ? outlineCacheStore.getPageNodes(pageId) ?? []
+      : undefined
+  ),
+  isOutlineLoading: (pageId) => outlineLoadingPageIds.value.has(pageId),
+}));
+
+function isPageOutlineExpanded(pageId: string): boolean {
+  return expandedOutlinePageIds.value.has(pageId);
+}
+
+function getElTreeNode(pageId: string) {
+  return treeRef.value?.store?.nodesMap?.[pageId] ?? null;
+}
+
+function outlineLevelLabel(level: number | null | undefined): string {
+  if (level != null && level >= 1 && level <= 6) return `H${level}`;
+  return '§';
+}
+
+async function loadPageOutline(pageId: string) {
+  if (outlineLoadingPageIds.value.has(pageId)) return;
+  const next = new Set(outlineLoadingPageIds.value);
+  next.add(pageId);
+  outlineLoadingPageIds.value = next;
+  try {
+    await outlineCacheStore.ensurePageOutline(pageId);
+  } finally {
+    const done = new Set(outlineLoadingPageIds.value);
+    done.delete(pageId);
+    outlineLoadingPageIds.value = done;
+  }
+}
+
+async function expandPageOutlineInTree(pageId: string) {
+  closeContextMenu();
+  const next = new Set(expandedOutlinePageIds.value);
+  next.add(pageId);
+  expandedOutlinePageIds.value = next;
+  await loadPageOutline(pageId);
+  await nextTick();
+  getElTreeNode(pageId)?.expand();
+}
+
+function collapsePageOutlineInTree(pageId: string) {
+  closeContextMenu();
+  const next = new Set(expandedOutlinePageIds.value);
+  next.delete(pageId);
+  expandedOutlinePageIds.value = next;
+  getElTreeNode(pageId)?.collapse();
+}
+
+async function onTogglePageOutlineFromContextMenu() {
+  const node = contextMenu.value.node;
+  if (!node || !isDocumentPage(node)) return;
+  if (isPageOutlineExpanded(node.id)) {
+    collapsePageOutlineInTree(node.id);
+    return;
+  }
+  await expandPageOutlineInTree(node.id);
+}
+
+async function onPageTreeNodeExpand(data: PageTreeDisplayItem) {
+  if (isVirtualPageTreeExtra(data) || !isDocumentPage(data)) return;
+  if (!isPageOutlineExpanded(data.id)) return;
+  await loadPageOutline(data.id);
+}
+
+function allowDrag(node: any) {
+  return !isVirtualPageTreeExtra(node.data as PageTreeDisplayItem);
+}
+
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageItem | null });
 
 function onNodeContextMenu(event: Event, data: unknown) {
   (event as MouseEvent).preventDefault();
   const e = event as MouseEvent;
-  const node = data as PageItem;
+  const node = data as PageTreeDisplayItem;
+  if (isVirtualPageTreeExtra(node)) return;
   if (!isPageSelected(node.id) && !(e.ctrlKey || e.metaKey || e.shiftKey)) {
     setSingleSelection(node.id);
-    void store.selectPage(node.id);
   }
   contextMenu.value = { visible: true, x: e.clientX, y: e.clientY, node };
 }
@@ -317,29 +405,34 @@ watch(
   },
 );
 
-function onNodeClick(data: PageItem, _node: unknown, _instance: unknown, event: MouseEvent) {
+function onNodeClick(data: PageTreeDisplayItem, _node: unknown, _instance: unknown, event: MouseEvent) {
+  const pageId = isVirtualPageTreeExtra(data)
+    ? (data.outlineMeta?.pageId || data.parentId || undefined)
+    : data.id;
+  if (!pageId) return;
+
   const multi = event.ctrlKey || event.metaKey;
   const range = event.shiftKey;
 
   if (range) {
-    const anchor = selectionAnchorId.value ?? store.currentPageId ?? data.id;
+    const anchor = selectionAnchorId.value ?? store.currentPageId ?? pageId;
     selectionAnchorId.value = anchor;
-    selectVisibleRange(anchor, data.id);
-    void store.selectPage(data.id);
+    selectVisibleRange(anchor, pageId);
+    void store.selectPage(pageId);
     focusPageTree();
     return;
   }
 
   if (multi) {
-    togglePageSelection(data.id);
-    selectionAnchorId.value = data.id;
-    void store.selectPage(data.id);
+    togglePageSelection(pageId);
+    selectionAnchorId.value = pageId;
+    void store.selectPage(pageId);
     focusPageTree();
     return;
   }
 
-  setSingleSelection(data.id);
-  void store.selectPage(data.id);
+  setSingleSelection(pageId);
+  void store.selectPage(pageId);
   focusPageTree();
 }
 
@@ -414,6 +507,7 @@ function flattenPages(nodes: PageItem[]): PageItem[] {
 }
 
 function allowDrop(draggingNode: any, dropNode: any, dropType: TreeDropType) {
+  if (isVirtualPageTreeExtra(draggingNode.data) || isVirtualPageTreeExtra(dropNode.data)) return false;
   const flat = flattenPages(store.pageTree).map((page) => ({
     id: page.id,
     parentId: page.parentId,
@@ -423,6 +517,7 @@ function allowDrop(draggingNode: any, dropNode: any, dropType: TreeDropType) {
 }
 
 async function onNodeDrop(draggingNode: any, dropNode: any, dropType: TreeDropType) {
+  if (isVirtualPageTreeExtra(draggingNode.data) || isVirtualPageTreeExtra(dropNode.data)) return;
   const dragging = draggingNode.data as PageItem;
   const drop = dropNode.data as PageItem;
   const flat = flattenPages(store.pageTree).map((page) => ({
@@ -565,14 +660,16 @@ function collapseAllTree() {
         <el-tree
           ref="treeRef"
           v-if="store.pageTree.length > 0"
-          :data="store.pageTree"
+          :data="displayPageTree"
           :props="treeProps"
           node-key="id"
           draggable
+          :allow-drag="allowDrag"
           :allow-drop="allowDrop"
           :highlight-current="true"
           :current-node-key="store.currentPageId ?? undefined"
           @node-click="onNodeClick"
+          @node-expand="onPageTreeNodeExpand"
           @node-contextmenu="onNodeContextMenu"
           @node-drop="onNodeDrop"
           class="page-tree"
@@ -580,14 +677,23 @@ function collapseAllTree() {
           <template #default="{ node, data }">
             <span
               class="tree-node"
-              :class="{ 'tree-node--selected': isPageSelected(data.id) }"
+              :class="{
+                'tree-node--selected': !isVirtualPageTreeExtra(data) && isPageSelected(data.id),
+                'tree-node--outline': isOutlineTreeNode(data),
+                'tree-node--outline-placeholder': data.nodeKind === 'outline-placeholder',
+              }"
             >
               <span
                 class="node-icon"
                 aria-hidden="true"
               >
+                <span
+                  v-if="isOutlineTreeNode(data)"
+                  class="node-icon__outline"
+                  :title="outlineLevelLabel(data.outlineMeta?.level)"
+                >{{ outlineLevelLabel(data.outlineMeta?.level) }}</span>
                 <svg
-                  v-if="data.pageType === 'mindmap'"
+                  v-else-if="data.pageType === 'mindmap'"
                   class="node-icon__mindmap"
                   viewBox="0 0 12 12"
                   fill="none"
@@ -611,7 +717,7 @@ function collapseAllTree() {
                 <span v-else class="node-icon__doc">📄</span>
               </span>
               <el-input
-                v-if="renamingId === data.id"
+                v-if="!isOutlineTreeNode(data) && renamingId === data.id"
                 ref="renameInputRef"
                 v-model="renameValue"
                 size="small"
@@ -629,6 +735,10 @@ function collapseAllTree() {
               >
                 <span class="node-label">{{ node.label }}</span>
               </ElTooltip>
+              <span
+                v-if="!isVirtualPageTreeExtra(data) && isDocumentPage(data) && isPageOutlineExpanded(data.id) && outlineLoadingPageIds.has(data.id)"
+                class="node-outline-loading"
+              >…</span>
             </span>
           </template>
         </el-tree>
@@ -663,6 +773,12 @@ function collapseAllTree() {
         <div class="context-menu-item" @click="onStartRename(contextMenu.node!)">
           重命名
         </div>
+        <template v-if="contextMenu.node && isDocumentPage(contextMenu.node)">
+          <div class="context-menu-divider" />
+          <div class="context-menu-item" @click="onTogglePageOutlineFromContextMenu">
+            {{ isPageOutlineExpanded(contextMenu.node.id) ? '收起目录' : '展开目录' }}
+          </div>
+        </template>
         <div class="context-menu-divider" />
         <div
           class="context-menu-item context-menu-item--danger"
@@ -829,6 +945,35 @@ function collapseAllTree() {
 
 .page-tree {
   background: transparent;
+}
+
+.tree-node--outline .node-label {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.tree-node--outline-placeholder .node-label {
+  color: #94a3b8;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.node-icon__outline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  font-size: 10px;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.node-outline-loading {
+  flex: 0 0 auto;
+  margin-left: 4px;
+  color: #94a3b8;
+  font-size: 12px;
 }
 
 .page-tree :deep(.el-tree-node__content) {
