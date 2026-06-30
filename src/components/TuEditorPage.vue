@@ -21,6 +21,7 @@ import KnowledgePointPicker from './KnowledgePointPicker.vue'
 import KnowledgeRelationList from './KnowledgeRelationList.vue'
 import { useExpandCollapse } from '@/composables/useExpandCollapse'
 import { useAnchoredFloating, type FloatingAnchorRect } from '@/composables/useAnchoredFloating'
+import { useViewportClampedFixedPanel } from '@/utils/viewportPanel'
 import { blockSyncManager } from '@/utils/blockSyncManager'
 import { useWorkspaceStore } from '@/stores/workspace'
 import { normalizeBlockTags } from '@/utils/blockMetadata'
@@ -425,6 +426,16 @@ const tocContextMenu = ref<{ visible: boolean; top: number; left: number; item: 
   top: 0,
   left: 0,
   item: null,
+})
+
+const tocContextMenuSourcePoint = computed(() =>
+  tocContextMenu.value.visible
+    ? { x: tocContextMenu.value.left, y: tocContextMenu.value.top }
+    : null,
+)
+const { panelRef: tocContextMenuRef, position: tocContextMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => tocContextMenu.value.visible),
+  getSourcePoint: () => tocContextMenuSourcePoint.value,
 })
 
 const getSelectionAnchor = (): FloatingAnchorRect | null => {
@@ -2785,8 +2796,9 @@ onBeforeUnmount(() => {
 
     <div
       v-if="tocContextMenu.visible"
+      ref="tocContextMenuRef"
       class="toc-context-menu"
-      :style="{ top: `${tocContextMenu.top}px`, left: `${tocContextMenu.left}px` }"
+      :style="{ top: `${tocContextMenuPosition.top}px`, left: `${tocContextMenuPosition.left}px` }"
       @mousedown.prevent
     >
       <button type="button" @click="handleTocEditTags">编辑标签</button>

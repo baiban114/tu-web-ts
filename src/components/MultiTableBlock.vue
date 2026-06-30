@@ -19,8 +19,8 @@ import {
 import { useWorkspaceStore } from '@/stores/workspace'
 import {
   MultiTableColumnController,
-  tableContextMenuPosition,
 } from './tableCore'
+import { useViewportClampedFixedPanel } from '@/utils/viewportPanel'
 import MultiTableKanbanCard from './MultiTableKanbanCard.vue'
 import TableCellRichEditor from './TableCellRichEditor.vue'
 
@@ -175,6 +175,22 @@ const fieldMenu = ref({
   fieldId: '',
   x: 0,
   y: 0,
+})
+
+const fieldMenuSourcePoint = computed(() =>
+  fieldMenu.value.visible ? { x: fieldMenu.value.x, y: fieldMenu.value.y } : null,
+)
+const { panelRef: fieldMenuRef, position: fieldMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => fieldMenu.value.visible),
+  getSourcePoint: () => fieldMenuSourcePoint.value,
+})
+
+const kanbanMenuSourcePoint = computed(() =>
+  kanbanMenu.value.visible ? { x: kanbanMenu.value.x, y: kanbanMenu.value.y } : null,
+)
+const { panelRef: kanbanMenuRef, position: kanbanMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => kanbanMenu.value.visible),
+  getSourcePoint: () => kanbanMenuSourcePoint.value,
 })
 
 const normalized = computed<MultiTableData>(() => {
@@ -751,7 +767,8 @@ const openFieldMenu = (event: MouseEvent, fieldId: string) => {
   fieldMenu.value = {
     visible: true,
     fieldId,
-    ...tableContextMenuPosition(event),
+    x: event.clientX,
+    y: event.clientY,
   }
 }
 
@@ -764,7 +781,8 @@ const openKanbanColumnMenu = (event: MouseEvent, groupId: string) => {
     visible: true,
     fieldId: kanbanField.value.id,
     optionId: groupId,
-    ...tableContextMenuPosition(event),
+    x: event.clientX,
+    y: event.clientY,
   }
 }
 
@@ -1403,8 +1421,9 @@ onBeforeUnmount(() => {
     <Teleport to="body">
       <div
         v-if="fieldMenu.visible"
+        ref="fieldMenuRef"
         class="multi-table-menu"
-        :style="{ left: `${fieldMenu.x}px`, top: `${fieldMenu.y}px` }"
+        :style="{ left: `${fieldMenuPosition.left}px`, top: `${fieldMenuPosition.top}px` }"
         @mousedown.stop
         @click.stop
         @contextmenu.prevent.stop
@@ -1418,8 +1437,9 @@ onBeforeUnmount(() => {
 
       <div
         v-if="kanbanMenu.visible"
+        ref="kanbanMenuRef"
         class="multi-table-menu"
-        :style="{ left: `${kanbanMenu.x}px`, top: `${kanbanMenu.y}px` }"
+        :style="{ left: `${kanbanMenuPosition.left}px`, top: `${kanbanMenuPosition.top}px` }"
         @mousedown.stop
         @click.stop
         @contextmenu.prevent.stop

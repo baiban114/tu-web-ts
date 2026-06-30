@@ -5,8 +5,8 @@ import TableCellRichEditor from './TableCellRichEditor.vue';
 import {
   PlainTableColumnController,
   closedTableContextMenu,
-  tableContextMenuPosition,
 } from './tableCore';
+import { useViewportClampedFixedPanel } from '@/utils/viewportPanel';
 import type { Editor } from '@tiptap/core';
 
 type BorderDirection = 'top' | 'bottom' | 'left' | 'right';
@@ -66,6 +66,14 @@ const richCellRefs = ref<Record<string, {
 const columnMenu = ref({
   ...closedTableContextMenu(),
   columnIndex: -1,
+});
+
+const columnMenuSourcePoint = computed(() =>
+  columnMenu.value.visible ? { x: columnMenu.value.x, y: columnMenu.value.y } : null,
+);
+const { panelRef: columnMenuRef, position: columnMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => columnMenu.value.visible),
+  getSourcePoint: () => columnMenuSourcePoint.value,
 });
 
 function looksLikeRichMarkdown(value: string): boolean {
@@ -355,7 +363,8 @@ function openColumnMenu(event: MouseEvent, columnIndex: number) {
   columnMenu.value = {
     visible: true,
     columnIndex,
-    ...tableContextMenuPosition(event, 180, 140),
+    x: event.clientX,
+    y: event.clientY,
   };
 }
 
@@ -844,8 +853,9 @@ defineExpose({
     <Teleport to="body">
       <div
         v-if="columnMenu.visible"
+        ref="columnMenuRef"
         class="table-block__column-context-menu"
-        :style="{ left: `${columnMenu.x}px`, top: `${columnMenu.y}px` }"
+        :style="{ left: `${columnMenuPosition.left}px`, top: `${columnMenuPosition.top}px` }"
         @mousedown.stop
         @click.stop
         @contextmenu.prevent.stop

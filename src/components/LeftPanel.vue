@@ -13,6 +13,7 @@ import {
   ElDropdownItem,
   ElTooltip,
 } from 'element-plus';
+import { useViewportClampedFixedPanel } from '@/utils/viewportPanel';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useOutlineCacheStore } from '@/stores/outlineCache';
 import type { PageItem } from '@/api/page';
@@ -372,6 +373,14 @@ function allowDrag(node: any) {
 }
 
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as PageItem | null });
+
+const contextMenuSourcePoint = computed(() =>
+  contextMenu.value.visible ? { x: contextMenu.value.x, y: contextMenu.value.y } : null,
+);
+const { panelRef: contextMenuRef, position: contextMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => contextMenu.value.visible),
+  getSourcePoint: () => contextMenuSourcePoint.value,
+});
 
 function onNodeContextMenu(event: Event, data: unknown) {
   (event as MouseEvent).preventDefault();
@@ -756,8 +765,9 @@ function collapseAllTree() {
     <Teleport to="body">
       <div
         v-if="contextMenu.visible && contextMenu.node"
+        ref="contextMenuRef"
         class="context-menu"
-        :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+        :style="{ left: `${contextMenuPosition.left}px`, top: `${contextMenuPosition.top}px` }"
         @mousedown.stop
         @click.stop
       >
@@ -940,7 +950,13 @@ function collapseAllTree() {
 
 .page-tree-scroll {
   flex: 1;
+  min-height: 0;
+  height: 0;
   padding: 0 4px 8px;
+}
+
+.page-tree-scroll :deep(.el-scrollbar) {
+  height: 100%;
 }
 
 .page-tree {

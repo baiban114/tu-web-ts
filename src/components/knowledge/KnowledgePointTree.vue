@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { ElButton, ElInput, ElMessage, ElScrollbar, ElTree } from 'element-plus';
 import type { KnowledgePoint } from '@/api/types';
+import { useViewportClampedFixedPanel } from '@/utils/viewportPanel';
 import {
   createKnowledgePoint,
   deleteKnowledgePoint,
@@ -63,6 +64,14 @@ const movingPoint = ref(false);
 const treeDropHandled = ref(false);
 const dragPromoteTarget = ref<{ draggingId: string; parentId: string } | null>(null);
 const contextMenu = ref({ visible: false, x: 0, y: 0, node: null as KnowledgePoint | null });
+
+const contextMenuSourcePoint = computed(() =>
+  contextMenu.value.visible ? { x: contextMenu.value.x, y: contextMenu.value.y } : null,
+);
+const { panelRef: contextMenuRef, position: contextMenuPosition } = useViewportClampedFixedPanel({
+  visible: computed(() => contextMenu.value.visible),
+  getSourcePoint: () => contextMenuSourcePoint.value,
+});
 
 const treeProps = { label: 'title', children: 'children' };
 const isDraggable = computed(() => props.draggable ?? props.mode === 'manage');
@@ -436,8 +445,9 @@ defineExpose({
     <Teleport to="body">
       <div
         v-if="contextMenu.visible && contextMenu.node"
+        ref="contextMenuRef"
         class="kpt-context-menu"
-        :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+        :style="{ left: `${contextMenuPosition.left}px`, top: `${contextMenuPosition.top}px` }"
         @mousedown.stop
         @click.stop
       >

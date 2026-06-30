@@ -143,8 +143,10 @@ export const closedTableContextMenu = (): TableContextMenuState => ({
   y: 0,
 })
 
-export const tableContextMenuPosition = (event: MouseEvent, width = 180, height = 220) => ({
-  x: Math.max(8, Math.min(event.clientX, window.innerWidth - width)),
-  y: Math.max(8, Math.min(event.clientY, window.innerHeight - height)),
-})
+import { estimateFixedPanelPosition } from '@/utils/viewportPanel'
+
+export const tableContextMenuPosition = (event: MouseEvent, width = 180, height = 220) => {
+  const { left, top } = estimateFixedPanelPosition(event.clientX, event.clientY, width, height)
+  return { x: left, y: top }
+}
 
