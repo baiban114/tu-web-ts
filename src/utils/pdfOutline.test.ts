@@ -66,4 +66,23 @@ describe('pdfOutline', () => {
     expect(resolveSidebarNodePage(node, 3, 10)).toBe(8)
     expect(resolveSidebarNodePage(node, 1, 10)).toBe(2)
   })
+
+  it('buildPdfSidebarTree skips huge page list in full mode without outline', async () => {
+    const doc = mockDoc({ outline: null })
+    const { nodes, source } = await buildPdfSidebarTree(doc, 1, 120, { viewMode: 'full' })
+    expect(source).toBe('none')
+    expect(nodes).toHaveLength(0)
+  })
+
+  it('buildPdfSidebarTree includes all outline items in full mode', async () => {
+    const refA = { id: 'a' }
+    const doc = mockDoc({
+      outline: [{ title: 'Intro', dest: [refA], items: [] }],
+      pageIndexByRef: new Map([[refA, 0]]),
+    })
+    const { nodes, source } = await buildPdfSidebarTree(doc, 1, 100, { viewMode: 'full' })
+    expect(source).toBe('outline')
+    expect(nodes).toHaveLength(1)
+    expect(nodes[0].pageNumber).toBe(1)
+  })
 })

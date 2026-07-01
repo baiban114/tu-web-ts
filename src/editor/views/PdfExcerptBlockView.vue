@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { nodeViewProps, NodeViewWrapper } from '@tiptap/vue-3'
 import { buildFileUrl } from '@/api/fileStorage'
 import ResizableBlockWrapper from '../components/ResizableBlockWrapper.vue'
 import {
   PDF_EXCERPT_DEFAULT_HEIGHT,
+  PDF_EXCERPT_LARGE_DOC_PAGES,
   PDF_EXCERPT_MAX_HEIGHT,
   PDF_EXCERPT_MIN_HEIGHT,
-  normalizePdfPageRange,
+  PDF_EXCERPT_SCROLL_EVENT,
+  PDF_EXCERPT_ZOOM_MAX,
+  PDF_EXCERPT_ZOOM_MIN,
+  PDF_EXCERPT_ZOOM_STEP,
+  formatPdfExcerptMetaLabel,
+  parsePdfExcerptViewMode,
+  resolvePageRange,
 } from '@/utils/pdfExcerpt'
 import { acquirePdfDocument, releasePdfDocument } from '@/utils/pdfDocumentCache'
 import type { PdfDocumentProxy } from '@/utils/pdfjsSetup'
@@ -16,6 +23,7 @@ import {
   type PdfSidebarNode,
   type PdfSidebarSource,
 } from '@/utils/pdfOutline'
+import { PdfPageRenderManager } from '@/utils/pdfPageRender'
 import PdfExcerptSidebar from './PdfExcerptSidebar.vue'
 
 const props = defineProps(nodeViewProps)
@@ -23,6 +31,7 @@ const props = defineProps(nodeViewProps)
 const blockId = computed(() => props.node.attrs.blockId || '')
 const fileId = computed(() => String(props.node.attrs.fileId || ''))
 const fileName = computed(() => String(props.node.attrs.fileName || 'PDF'))
+const viewMode = computed(() => parsePdfExcerptViewMode(String(props.node.attrs.viewMode || 'excerpt')))
 const startPage = computed(() => Number(props.node.attrs.startPage) || 1)
 const endPage = computed(() => Number(props.node.attrs.endPage) || 1)
 const height = computed(() => Number(props.node.attrs.height) || PDF_EXCERPT_DEFAULT_HEIGHT)
@@ -30,21 +39,60 @@ const height = computed(() => Number(props.node.attrs.height) || PDF_EXCERPT_DEF
 const fileUrl = computed(() => (fileId.value ? buildFileUrl(fileId.value) : ''))
 const loadError = ref('')
 const loading = ref(false)
-const pageCanvases = ref<Array<{ pageNumber: number; height: number }>>([])
+const largeDocWarning = ref('')
+const pageCanvases = ref<Array<{ pageNumber: number; placeholderHeight: number }>>([])
 const docRef = shallowRef<PdfDocumentProxy | null>(null)
 const sidebarNodes = ref<PdfSidebarNode[]>([])
 const sidebarSource = ref<PdfSidebarSource>('pages')
 const sidebarOpen = ref(true)
 const activePage = ref<number | null>(null)
 const pagesScrollRef = ref<HTMLElement | null>(null)
+const pdfBlockRef = ref<HTMLElement | null>(null)
+const isPdfBlockHovered = ref(false)
+const zoomScale = ref(1)
+
+let scrollHost: HTMLElement | null = null
+let wheelTarget: HTMLElement | null = null
+let pendingZoomDelta = 0
+let zoomRafId = 0
 
 const pageRefs = new Map<number, HTMLElement>()
-const renderedPages = new Set<number>()
-const renderTasks = new Map<number, { cancel?: () => void }>()
+let renderManager: PdfPageRenderManager | null = null
 let observer: IntersectionObserver | null = null
 let resizeObserver: ResizeObserver | null = null
 let boundUrl = ''
 let loadGeneration = 0
+let resolvedStartPage = 1
+let resolvedEndPage = 1
+
+const metaLabel = computed(() => formatPdfExcerptMetaLabel(
+  fileName.value,
+  viewMode.value,
+  resolvedStartPage,
+  resolvedEndPage,
+))
+
+const sidebarTitle = computed(() => {
+  if (sidebarSource.value === 'outline') return '书签'
+  if (sidebarSource.value === 'pages') return '目录'
+  return '导航'
+})
+
+const showSidebar = computed(() => sidebarNodes.value.length > 0 || sidebarSource.value === 'none')
+const sidebarEmptyHint = computed(() => (
+  sidebarSource.value === 'none'
+    ? '该 PDF 无书签目录，请滚动浏览各页'
+    : ''
+))
+
+const zoomLabel = computed(() => `${Math.round(zoomScale.value * 100)}%`)
+
+const showZoomBadge = computed(() => (
+  isPdfBlockHovered.value
+  && !loading.value
+  && !loadError.value
+  && pageCanvases.value.length > 0
+))
 
 function setPageRef(pageNumber: number, el: unknown) {
   if (el instanceof HTMLElement) {
@@ -54,19 +102,20 @@ function setPageRef(pageNumber: number, el: unknown) {
   }
 }
 
-const sidebarTitle = computed(() => (sidebarSource.value === 'outline' ? '书签' : '目录'))
-const showSidebar = computed(() => sidebarNodes.value.length > 0)
+function getPlaceholderHeight(pageNumber: number): number {
+  return renderManager?.getPlaceholderHeight(pageNumber) ?? 120
+}
 
 function toggleSidebar() {
   sidebarOpen.value = !sidebarOpen.value
 }
 
 function scrollToPage(pageNumber: number) {
-  if (pageNumber < startPage.value || pageNumber > endPage.value) return
+  if (pageNumber < resolvedStartPage || pageNumber > resolvedEndPage) return
   activePage.value = pageNumber
   const el = pageRefs.get(pageNumber)
   el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  void renderPage(pageNumber)
+  renderManager?.requestRender(pageNumber)
 }
 
 function openInNewTab() {
@@ -80,6 +129,72 @@ function onResize(_width: number | null, nextHeight: number | null) {
   props.updateAttributes({ height: clamped })
 }
 
+function disposeRenderManager() {
+  renderManager?.dispose()
+  renderManager = null
+}
+
+function createRenderManager() {
+  disposeRenderManager()
+  renderManager = new PdfPageRenderManager({
+    getDoc: () => docRef.value,
+    getHost: (pageNumber) => pageRefs.get(pageNumber),
+    getScrollRoot: () => pagesScrollRef.value,
+    onRenderError: (message) => {
+      loadError.value = message
+    },
+    onPlaceholderHeight: (pageNumber, placeholderHeight) => {
+      const index = pageCanvases.value.findIndex((page) => page.pageNumber === pageNumber)
+      if (index >= 0) {
+        pageCanvases.value[index] = { ...pageCanvases.value[index], placeholderHeight }
+      }
+    },
+  })
+  renderManager.setRange(resolvedStartPage, resolvedEndPage)
+  renderManager.setZoomScale(zoomScale.value)
+}
+
+function applyZoomScale(nextScale: number) {
+  const clamped = Math.min(
+    PDF_EXCERPT_ZOOM_MAX,
+    Math.max(PDF_EXCERPT_ZOOM_MIN, Math.round(nextScale * 100) / 100),
+  )
+  if (Math.abs(clamped - zoomScale.value) < 0.001) return
+  zoomScale.value = clamped
+  renderManager?.setZoomScale(clamped)
+}
+
+function flushZoomDelta() {
+  zoomRafId = 0
+  if (pendingZoomDelta === 0) return
+  const delta = pendingZoomDelta
+  pendingZoomDelta = 0
+  applyZoomScale(zoomScale.value + delta)
+}
+
+function onPdfBlockWheel(event: WheelEvent) {
+  if (!isPdfBlockHovered.value || !event.ctrlKey) return
+  event.preventDefault()
+  event.stopPropagation()
+  if (loading.value || loadError.value || pageCanvases.value.length === 0) return
+  const direction = event.deltaY < 0 ? 1 : -1
+  pendingZoomDelta += direction * PDF_EXCERPT_ZOOM_STEP
+  if (!zoomRafId) {
+    zoomRafId = requestAnimationFrame(flushZoomDelta)
+  }
+}
+
+function bindWheelListener() {
+  unbindWheelListener()
+  wheelTarget = pdfBlockRef.value
+  wheelTarget?.addEventListener('wheel', onPdfBlockWheel, { passive: false })
+}
+
+function unbindWheelListener() {
+  wheelTarget?.removeEventListener('wheel', onPdfBlockWheel)
+  wheelTarget = null
+}
+
 function disconnectObserver() {
   observer?.disconnect()
   observer = null
@@ -87,61 +202,23 @@ function disconnectObserver() {
   resizeObserver = null
 }
 
-function cancelRenderTasks() {
-  renderTasks.forEach((task) => task.cancel?.())
-  renderTasks.clear()
-  renderedPages.clear()
-}
-
-async function renderPage(pageNumber: number) {
-  if (!docRef.value || renderedPages.has(pageNumber)) return
-  const host = pageRefs.get(pageNumber)
-  if (!host) return
-
-  const hostWidth = host.clientWidth || host.parentElement?.clientWidth || 0
-  if (hostWidth <= 0) return
-
-  renderedPages.add(pageNumber)
-  try {
-    const page = await docRef.value.getPage(pageNumber)
-    const viewport = page.getViewport({ scale: 1 })
-    const scale = hostWidth / viewport.width
-    const scaledViewport = page.getViewport({ scale })
-
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.floor(scaledViewport.width)
-    canvas.height = Math.floor(scaledViewport.height)
-    canvas.className = 'pdf-excerpt-block__canvas'
-    host.replaceChildren(canvas)
-
-    const context = canvas.getContext('2d')
-    if (!context) return
-    const task = page.render({ canvasContext: context, viewport: scaledViewport, canvas })
-    renderTasks.set(pageNumber, task)
-    await task.promise
-    renderTasks.delete(pageNumber)
-  } catch (error) {
-    renderedPages.delete(pageNumber)
-    loadError.value = error instanceof Error ? error.message : 'PDF 页面渲染失败'
-  }
-}
-
 function setupObserver() {
   disconnectObserver()
+  const root = pagesScrollRef.value
+
   observer = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
-      if (!entry.isIntersecting) return
       const pageNumber = Number((entry.target as HTMLElement).dataset.pageNumber)
       if (!Number.isFinite(pageNumber)) return
-      void renderPage(pageNumber)
+      renderManager?.handleIntersection(pageNumber, entry.isIntersecting)
     })
-  }, { root: null, threshold: 0.1 })
+  }, { root, threshold: 0.05, rootMargin: '120px 0px' })
 
   resizeObserver = new ResizeObserver((entries) => {
     entries.forEach((entry) => {
       const pageNumber = Number((entry.target as HTMLElement).dataset.pageNumber)
-      if (!Number.isFinite(pageNumber) || renderedPages.has(pageNumber)) return
-      void renderPage(pageNumber)
+      if (!Number.isFinite(pageNumber)) return
+      renderManager?.handleResize(pageNumber)
     })
   })
 
@@ -159,10 +236,8 @@ async function schedulePageRendering() {
       requestAnimationFrame(() => resolve())
     })
   }
+  createRenderManager()
   setupObserver()
-  pageRefs.forEach((_el, pageNumber) => {
-    void renderPage(pageNumber)
-  })
 }
 
 async function loadDocument() {
@@ -176,7 +251,9 @@ async function loadDocument() {
 
   loading.value = true
   loadError.value = ''
-  cancelRenderTasks()
+  largeDocWarning.value = ''
+  zoomScale.value = 1
+  disposeRenderManager()
   pageCanvases.value = []
   sidebarNodes.value = []
   sidebarSource.value = 'pages'
@@ -194,22 +271,41 @@ async function loadDocument() {
     if (generation !== loadGeneration) return
 
     const doc = docRef.value
-    const normalized = normalizePdfPageRange(startPage.value, endPage.value, doc.numPages)
+    const normalized = resolvePageRange(viewMode.value, startPage.value, endPage.value, doc.numPages)
+    resolvedStartPage = normalized.startPage
+    resolvedEndPage = normalized.endPage
+
     if (
-      normalized.startPage !== startPage.value
-      || normalized.endPage !== endPage.value
+      viewMode.value === 'full'
+      && (startPage.value !== normalized.startPage || endPage.value !== normalized.endPage)
     ) {
       props.updateAttributes({
         startPage: normalized.startPage,
         endPage: normalized.endPage,
       })
+    } else if (viewMode.value === 'excerpt' && (
+      normalized.startPage !== startPage.value
+      || normalized.endPage !== endPage.value
+    )) {
+      props.updateAttributes({
+        startPage: normalized.startPage,
+        endPage: normalized.endPage,
+      })
     }
-    const pages: Array<{ pageNumber: number; height: number }> = []
+
+    if (viewMode.value === 'full' && doc.numPages > PDF_EXCERPT_LARGE_DOC_PAGES) {
+      largeDocWarning.value = `该 PDF 共 ${doc.numPages} 页，全文模式将按需加载；若卡顿可改用摘页或在新标签打开。`
+    }
+
+    const pages: Array<{ pageNumber: number; placeholderHeight: number }> = []
     for (let pageNumber = normalized.startPage; pageNumber <= normalized.endPage; pageNumber += 1) {
-      pages.push({ pageNumber, height: 0 })
+      pages.push({ pageNumber, placeholderHeight: 120 })
     }
     pageCanvases.value = pages
-    const sidebar = await buildPdfSidebarTree(doc, normalized.startPage, normalized.endPage)
+
+    const sidebar = await buildPdfSidebarTree(doc, normalized.startPage, normalized.endPage, {
+      viewMode: viewMode.value,
+    })
     if (generation !== loadGeneration) return
     sidebarNodes.value = sidebar.nodes
     sidebarSource.value = sidebar.source
@@ -227,25 +323,54 @@ async function loadDocument() {
     return
   }
   await schedulePageRendering()
+  await bindPdfScrollListener()
 }
+
+onMounted(() => {
+  void nextTick().then(() => bindWheelListener())
+})
 
 watch(fileUrl, () => {
   void loadDocument()
 }, { immediate: true })
 
-watch([startPage, endPage], () => {
+watch([viewMode, startPage, endPage], () => {
   void loadDocument()
 })
 
 watch(sidebarOpen, () => {
-  renderedPages.clear()
-  cancelRenderTasks()
-  void nextTick().then(() => schedulePageRendering())
+  void nextTick().then(() => {
+    renderManager?.dispose()
+    createRenderManager()
+    setupObserver()
+  })
 })
 
+function onPdfExcerptScrollEvent(event: Event) {
+  const detail = (event as CustomEvent<{ pageNumber?: number }>).detail
+  const pageNumber = Number(detail?.pageNumber)
+  if (!Number.isFinite(pageNumber)) return
+  void nextTick().then(() => scrollToPage(pageNumber))
+}
+
+async function bindPdfScrollListener() {
+  await nextTick()
+  scrollHost?.removeEventListener(PDF_EXCERPT_SCROLL_EVENT, onPdfExcerptScrollEvent as EventListener)
+  scrollHost = pagesScrollRef.value?.closest<HTMLElement>('[data-block-id]') ?? null
+  scrollHost?.addEventListener(PDF_EXCERPT_SCROLL_EVENT, onPdfExcerptScrollEvent as EventListener)
+}
+
 onBeforeUnmount(() => {
+  if (zoomRafId) {
+    cancelAnimationFrame(zoomRafId)
+    zoomRafId = 0
+  }
+  pendingZoomDelta = 0
+  unbindWheelListener()
+  scrollHost?.removeEventListener(PDF_EXCERPT_SCROLL_EVENT, onPdfExcerptScrollEvent as EventListener)
+  scrollHost = null
   disconnectObserver()
-  cancelRenderTasks()
+  disposeRenderManager()
   if (boundUrl) {
     releasePdfDocument(boundUrl)
     boundUrl = ''
@@ -262,18 +387,23 @@ onBeforeUnmount(() => {
       :height="height"
       :min-height="PDF_EXCERPT_MIN_HEIGHT"
       :max-height="PDF_EXCERPT_MAX_HEIGHT"
-      block-type-label="PDF 摘页"
+      block-type-label="PDF"
       :block-id="blockId"
       block-type="pdfExcerpt"
       @resize="onResize"
     >
       <template #header-meta>
-        <span class="pdf-excerpt-block__meta" :title="fileName">
-          {{ fileName }} · 第 {{ startPage }}–{{ endPage }} 页
+        <span class="pdf-excerpt-block__meta" :title="metaLabel">
+          {{ metaLabel }}
         </span>
       </template>
 
-      <div class="pdf-excerpt-block">
+      <div
+        ref="pdfBlockRef"
+        class="pdf-excerpt-block"
+        @mouseenter="isPdfBlockHovered = true"
+        @mouseleave="isPdfBlockHovered = false"
+      >
         <div v-if="loading" class="pdf-excerpt-block__status">正在加载 PDF…</div>
         <div v-else-if="loadError" class="pdf-excerpt-block__fallback">
           <p class="pdf-excerpt-block__error">{{ loadError }}</p>
@@ -299,15 +429,18 @@ onBeforeUnmount(() => {
                 ‹
               </button>
             </div>
-            <nav class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
+            <nav v-if="sidebarNodes.length > 0" class="pdf-excerpt-block__sidebar-nav" aria-label="PDF 目录">
               <PdfExcerptSidebar
                 :nodes="sidebarNodes"
-                :start-page="startPage"
-                :end-page="endPage"
+                :start-page="resolvedStartPage"
+                :end-page="resolvedEndPage"
                 :active-page="activePage"
                 @navigate="scrollToPage"
               />
             </nav>
+            <p v-else-if="sidebarEmptyHint" class="pdf-excerpt-block__sidebar-empty">
+              {{ sidebarEmptyHint }}
+            </p>
           </aside>
           <div class="pdf-excerpt-block__main">
             <button
@@ -324,11 +457,20 @@ onBeforeUnmount(() => {
             </button>
             <div ref="pagesScrollRef" class="pdf-excerpt-block__pages">
               <div
+                v-if="showZoomBadge"
+                class="pdf-excerpt-block__zoom-badge"
+                aria-live="polite"
+              >
+                {{ zoomLabel }}
+              </div>
+              <p v-if="largeDocWarning" class="pdf-excerpt-block__warn">{{ largeDocWarning }}</p>
+              <div
                 v-for="page in pageCanvases"
                 :key="page.pageNumber"
                 :ref="(el) => setPageRef(page.pageNumber, el)"
                 class="pdf-excerpt-block__page"
                 :data-page-number="page.pageNumber"
+                :style="{ minHeight: `${page.placeholderHeight || getPlaceholderHeight(page.pageNumber)}px` }"
               >
                 <div class="pdf-excerpt-block__page-label">第 {{ page.pageNumber }} 页</div>
               </div>
@@ -407,6 +549,21 @@ onBeforeUnmount(() => {
   color: #334155;
 }
 
+.pdf-excerpt-block__sidebar-nav {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px 8px;
+}
+
+.pdf-excerpt-block__sidebar-empty {
+  margin: 0;
+  padding: 8px 12px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #64748b;
+}
+
 .pdf-excerpt-block__main {
   flex: 1;
   min-width: 0;
@@ -448,13 +605,6 @@ onBeforeUnmount(() => {
   letter-spacing: 0.08em;
 }
 
-.pdf-excerpt-block__sidebar-nav {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 0 6px 8px;
-}
-
 .pdf-excerpt-block__pages {
   flex: 1;
   min-width: 0;
@@ -465,6 +615,35 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 12px;
   box-sizing: border-box;
+  position: relative;
+}
+
+.pdf-excerpt-block__zoom-badge {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
+  align-self: flex-end;
+  margin: 0 0 -28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #f8fafc;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  pointer-events: none;
+  user-select: none;
+}
+
+.pdf-excerpt-block__warn {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  font-size: 12px;
+  color: #92400e;
+  line-height: 1.5;
 }
 
 .pdf-excerpt-block__status,
@@ -500,6 +679,8 @@ onBeforeUnmount(() => {
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 8px;
+  box-sizing: border-box;
+  overflow-x: auto;
 }
 
 .pdf-excerpt-block__page-label {
@@ -510,7 +691,6 @@ onBeforeUnmount(() => {
 
 .pdf-excerpt-block__page :deep(.pdf-excerpt-block__canvas) {
   display: block;
-  width: 100%;
-  height: auto;
+  max-width: none;
 }
 </style>

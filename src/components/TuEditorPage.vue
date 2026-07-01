@@ -93,6 +93,7 @@ import {
 import type { GraphData } from '@/api/types'
 import type { UrlHoverTarget } from '@/editor/urlHoverTarget'
 import type { UrlDisplayMode } from '@/utils/urlDisplay'
+import { PDF_EXCERPT_SCROLL_EVENT } from '@/utils/pdfExcerpt'
 
 type TocItem = TocTreeItem
 const NODEVIEW_TYPES = ['x6Block', 'tableBlock', 'multiTableBlock', 'timelineBlock', 'spacerBlock', 'refBlock', 'externalResourceBlock']
@@ -1339,6 +1340,22 @@ const scrollToSelectionRange = (_pageId: string, from: number, to: number) => {
   }
 }
 
+const scrollToBlockByBlockId = (
+  _pageId: string,
+  blockId: string,
+  options?: { pdfPage?: number },
+) => {
+  const editorDom = tuEditorRef.value?.editor?.view.dom
+  const el = editorDom?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`)
+  if (el) scrollElementIntoEditorView(el)
+  if (options?.pdfPage != null && Number.isFinite(options.pdfPage)) {
+    el?.dispatchEvent(new CustomEvent(PDF_EXCERPT_SCROLL_EVENT, {
+      detail: { pageNumber: options.pdfPage },
+      bubbles: true,
+    }))
+  }
+}
+
 const knowledgeNavigateHandlers = computed<KnowledgeAnchorNavigateHandlers>(() => ({
   router,
   selectPage: (pageId) => workspaceStore.selectPage(pageId),
@@ -1346,6 +1363,7 @@ const knowledgeNavigateHandlers = computed<KnowledgeAnchorNavigateHandlers>(() =
   scrollToAnnotation: scrollToAnnotationById,
   scrollToHeading: scrollToHeadingByBlockId,
   scrollToSelection: scrollToSelectionRange,
+  scrollToBlock: scrollToBlockByBlockId,
 }))
 
 const findHeadingInEmbedBlock = (blockId: string, headingText?: string): HTMLElement | null => {

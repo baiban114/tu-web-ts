@@ -4,6 +4,7 @@ import { getAnnotationSelectionPayload } from '@/editor/annotationText';
 import type { Editor } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import { listKnowledgePointAnchors } from '@/api/knowledgePoint';
+import { formatBlockLocator, formatPdfExcerptLocator } from '@/utils/pdfExcerpt';
 
 export interface KnowledgeAnchorNavigateHandlers {
   router: Router;
@@ -12,6 +13,7 @@ export interface KnowledgeAnchorNavigateHandlers {
   scrollToAnnotation?: (pageId: string, annotationId: string) => void;
   scrollToHeading?: (pageId: string, headingBlockId: string) => void;
   scrollToSelection?: (pageId: string, from: number, to: number) => void;
+  scrollToBlock?: (pageId: string, blockId: string, options?: { pdfPage?: number }) => void;
 }
 
 export function pageAnchor(pageId: string, title?: string): KnowledgeAnchor {
@@ -62,6 +64,30 @@ export function resourceExcerptAnchor(itemId: string, excerptId: string, title?:
   };
 }
 
+export function blockAnchor(pageId: string, blockId: string, title?: string): KnowledgeAnchor {
+  return {
+    kind: 'block',
+    locator: formatBlockLocator(pageId, blockId),
+    snapshot: title ? { title, blockId } : { blockId },
+  };
+}
+
+export function pdfExcerptBlockAnchor(
+  pageId: string,
+  blockId: string,
+  pdfPage?: number,
+  title?: string,
+): KnowledgeAnchor {
+  const snapshot: Record<string, unknown> = { blockId, blockType: 'pdfExcerpt' };
+  if (title) snapshot.title = title;
+  if (pdfPage != null && Number.isFinite(pdfPage)) snapshot.pdfPage = pdfPage;
+  return {
+    kind: 'block',
+    locator: formatPdfExcerptLocator(pageId, blockId, pdfPage),
+    snapshot,
+  };
+}
+
 export function buildAnnotationAnchorFromEditor(
   editor: Editor,
   pageId: string,
@@ -100,6 +126,17 @@ export function buildBlockAnchor(
   const title = node.textContent.trim()
   if (node.type.name === 'heading') {
     return headingAnchor(pageId, blockId, title || undefined)
+  }
+
+  if (node.type.name === 'pdfExcerptBlock') {
+    const fileName = String(node.attrs.fileName || 'PDF')
+    const pdfPage = Number(node.attrs.startPage) || 1
+    const label = title || fileName
+    return pdfExcerptBlockAnchor(pageId, blockId, pdfPage, label || undefined)
+  }
+
+  if (node.type.spec.atom) {
+    return blockAnchor(pageId, blockId, title || undefined)
   }
 
   const from = pos
@@ -146,6 +183,8 @@ export function parseLocator(locator: string): {
   resourceItemId?: string;
   excerptId?: string;
   entityId?: string;
+  blockId?: string;
+  pdfPage?: number;
   from?: number;
   to?: number;
   display: string;
@@ -158,6 +197,16 @@ export function parseLocator(locator: string): {
       return { kind: 'page', pageId, display: `页面 ${pageId}` };
     }
     const entityType = parts[1];
+    if (entityType === 'block') {
+      const blockId = parts[2];
+      let pdfPage: number | undefined;
+      if (parts[3] === 'pdfPage' && parts[4]) {
+        const parsed = Number(parts[4]);
+        if (Number.isFinite(parsed)) pdfPage = parsed;
+      }
+      const display = pdfPage != null ? `PDF 第 ${pdfPage} 页` : `块 ${blockId}`;
+      return { kind: 'block', pageId, blockId, entityId: blockId, pdfPage, display };
+    }
     const entityId = parts.slice(2).join(':');
     if (entityType === 'heading') return { kind: 'heading', pageId, entityId, display: `标题 ${entityId}` };
     if (entityType === 'annotation') return { kind: 'annotation', pageId, entityId, display: `标注 ${entityId}` };
@@ -207,6 +256,17 @@ export async function navigateKnowledgeAnchor(
     if (parsed.kind === 'heading' && parsed.entityId && handlers.scrollToHeading) {
       handlers.scrollToHeading(parsed.pageId, parsed.entityId);
     }
+    return;
+  }
+
+  if (parsed.kind === 'block' && parsed.blockId) {
+    if (handlers.currentPageId !== parsed.pageId) {
+      await handlers.selectPage(parsed.pageId);
+    }
+    const snapshotPdfPage = anchor.snapshot?.pdfPage;
+    const pdfPage = parsed.pdfPage
+      ?? (typeof snapshotPdfPage === 'number' ? snapshotPdfPage : undefined);
+    handlers.scrollToBlock?.(parsed.pageId, parsed.blockId, { pdfPage });
     return;
   }
 

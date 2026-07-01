@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   anchorLabel,
   annotationAnchor,
+  blockAnchor,
   pageAnchor,
   parseLocator,
+  pdfExcerptBlockAnchor,
   resourceExcerptAnchor,
   sectionAnchor,
 } from './knowledgeAnchor';
@@ -39,5 +41,20 @@ describe('knowledgeAnchor', () => {
 
   it('builds section anchor with section key', () => {
     expect(sectionAnchor('p1', 'local:blk', '节标题').locator).toBe('page:p1:section:local:blk');
+  });
+
+  it('builds block and pdf excerpt locators', () => {
+    expect(blockAnchor('p1', 'pe-abc', 'PDF').locator).toBe('page:p1:block:pe-abc');
+    expect(pdfExcerptBlockAnchor('p1', 'pe-abc', 5, 'book.pdf').locator).toBe(
+      'page:p1:block:pe-abc:pdfPage:5',
+    );
+  });
+
+  it('parses block locator with pdf page', () => {
+    const parsed = parseLocator('page:p1:block:pe-abc:pdfPage:12');
+    expect(parsed.kind).toBe('block');
+    expect(parsed.pageId).toBe('p1');
+    expect(parsed.blockId).toBe('pe-abc');
+    expect(parsed.pdfPage).toBe(12);
   });
 });

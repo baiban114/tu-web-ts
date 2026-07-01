@@ -20,6 +20,7 @@ export const PdfExcerptBlockNode = Node.create({
       blockId: { default: '' },
       fileId: { default: '' },
       fileName: { default: '' },
+      viewMode: { default: 'excerpt' },
       startPage: { default: 1 },
       endPage: { default: 1 },
       height: { default: PDF_EXCERPT_DEFAULT_HEIGHT },
@@ -44,6 +45,7 @@ export const PdfExcerptBlockNode = Node.create({
 export function createPdfExcerptNodeAttrs(input: {
   fileId: string
   fileName: string
+  viewMode?: 'excerpt' | 'full'
   startPage: number
   endPage: number
   height?: number
@@ -53,6 +55,7 @@ export function createPdfExcerptNodeAttrs(input: {
     blockId: input.blockId || createPdfExcerptBlockId(),
     fileId: input.fileId,
     fileName: input.fileName,
+    viewMode: input.viewMode ?? 'excerpt',
     startPage: input.startPage,
     endPage: input.endPage,
     height: input.height ?? PDF_EXCERPT_DEFAULT_HEIGHT,

@@ -644,6 +644,7 @@ const completePendingExternalResourceInsert = (block: Block) => {
 const insertPdfExcerptBlock = (input: {
   fileId: string
   fileName: string
+  viewMode?: 'excerpt' | 'full'
   startPage: number
   endPage: number
   height?: number

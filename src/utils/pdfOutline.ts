@@ -1,6 +1,7 @@
 import type { PdfDocumentProxy } from './pdfjsSetup'
+import type { PdfExcerptViewMode } from './pdfExcerpt'
 
-export type PdfSidebarSource = 'outline' | 'pages'
+export type PdfSidebarSource = 'outline' | 'pages' | 'none'
 
 export interface PdfSidebarNode {
   id: string
@@ -8,6 +9,12 @@ export interface PdfSidebarNode {
   /** 1-based page number from PDF destination; null if unresolved */
   pageNumber: number | null
   children: PdfSidebarNode[]
+}
+
+export interface BuildPdfSidebarOptions {
+  viewMode?: PdfExcerptViewMode
+  /** Skip flat page list when full document has more pages than this threshold */
+  skipPageListOver?: number
 }
 
 type RawOutlineItem = {
@@ -76,6 +83,7 @@ async function mapOutlineItems(
   startPage: number,
   endPage: number,
   idPrefix: string,
+  clipToRange: boolean,
 ): Promise<PdfSidebarNode[]> {
   const result: PdfSidebarNode[] = []
   for (let index = 0; index < items.length; index += 1) {
@@ -84,7 +92,7 @@ async function mapOutlineItems(
     const pageNumber = await resolveDestPageNumber(doc, item.dest ?? null)
     const childItems = Array.isArray(item.items) ? item.items : []
     const children = childItems.length > 0
-      ? await mapOutlineItems(doc, childItems, startPage, endPage, `${idPrefix}-${index}`)
+      ? await mapOutlineItems(doc, childItems, startPage, endPage, `${idPrefix}-${index}`, clipToRange)
       : []
     const node: PdfSidebarNode = {
       id: `${idPrefix}-${index}`,
@@ -92,7 +100,7 @@ async function mapOutlineItems(
       pageNumber,
       children,
     }
-    if (nodeHasInRangeContent(node, startPage, endPage)) {
+    if (!clipToRange || nodeHasInRangeContent(node, startPage, endPage)) {
       result.push(node)
     }
   }
@@ -103,11 +111,24 @@ export async function buildPdfSidebarTree(
   doc: PdfDocumentProxy,
   startPage: number,
   endPage: number,
+  options: BuildPdfSidebarOptions = {},
 ): Promise<{ nodes: PdfSidebarNode[]; source: PdfSidebarSource }> {
+  const viewMode = options.viewMode ?? 'excerpt'
+  const clipToRange = viewMode !== 'full'
+  const skipPageListOver = options.skipPageListOver ?? 50
+  const pageCount = endPage - startPage + 1
+
   try {
     const rawOutline = await doc.getOutline()
     if (Array.isArray(rawOutline) && rawOutline.length > 0) {
-      const nodes = await mapOutlineItems(doc, rawOutline as RawOutlineItem[], startPage, endPage, 'outline')
+      const nodes = await mapOutlineItems(
+        doc,
+        rawOutline as RawOutlineItem[],
+        startPage,
+        endPage,
+        'outline',
+        clipToRange,
+      )
       if (nodes.length > 0) {
         return { nodes, source: 'outline' }
       }
@@ -115,5 +136,10 @@ export async function buildPdfSidebarTree(
   } catch {
     // fall through to page list
   }
+
+  if (viewMode === 'full' && pageCount > skipPageListOver) {
+    return { nodes: [], source: 'none' }
+  }
+
   return { nodes: buildPageList(startPage, endPage), source: 'pages' }
 }

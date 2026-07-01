@@ -40,6 +40,8 @@ flowchart LR
 | `annotation` | `page:{pageId}:annotation:{id}` | `page:abc:annotation:ann1` |
 | `resourceItem` | `resource:{itemId}` | |
 | `resourceExcerpt` | `resource:{itemId}:excerpt:{excerptId}` | |
+| `block` | `page:{pageId}:block:{blockId}` | 文档内嵌入块（画板、表格、PDF 等） |
+| `block`（PDF 页） | `page:{pageId}:block:{blockId}:pdfPage:{n}` | 跳转到 PDF 摘页块内第 n 页 |
 
 `snapshot` JSON 存展示用标题等；跳转以 locator 为准。反查路径：`by-anchor` → 找到关联知识点 → `by-point` 展示点间关系。
 
